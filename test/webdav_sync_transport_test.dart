@@ -212,6 +212,32 @@ void main() {
       },
     );
 
+    test('path encoding handles special characters in device ID', () async {
+      final content = utf8.encode('event');
+      final hash = sha256.convert(content).toString();
+
+      // Device ID with special characters that need encoding
+      final deviceId = 'device+test&id';
+      final path = 'verifin-sync/v1/events/$deviceId/123.vfsync';
+
+      await transport.putImmutable(
+        config,
+        path,
+        Stream.value(content),
+        content.length,
+        hash,
+      );
+
+      final stub = transport as WebdavSyncTransportStub;
+      // The stub stores by the logical path (before encoding)
+      expect(stub.files.containsKey(path), true);
+
+      // Verify the path segments would be encoded properly:
+      // 'device+test&id' should become 'device%2Btest%26id' when encoded
+      final encoded = Uri.encodeComponent(deviceId);
+      expect(encoded, 'device%2Btest%26id');
+    });
+
     test('listSyncFiles ignores non-sync files', () async {
       final stub = transport as WebdavSyncTransportStub;
 

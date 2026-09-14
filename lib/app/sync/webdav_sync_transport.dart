@@ -129,15 +129,13 @@ Uri _collectionUri(WebdavConfig config) {
   return uri;
 }
 
-/// Build a sync path by encoding each segment individually.
-String _buildSyncPath(List<String> segments) {
-  return segments.map((s) => Uri.encodeComponent(s)).join('/');
-}
-
-/// Join base collection URL with relative sync path.
+/// Join base collection URL with relative sync path, encoding each segment.
 Uri _syncFileUri(WebdavConfig config, String relativePath) {
   final base = _collectionUri(config);
-  return base.resolve(relativePath);
+  // Split path, encode each segment individually, then join
+  final segments = relativePath.split('/');
+  final encodedPath = segments.map((s) => Uri.encodeComponent(s)).join('/');
+  return base.resolve(encodedPath);
 }
 
 /// Parse sync file kind from extension.
