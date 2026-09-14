@@ -166,6 +166,7 @@ mixin _ControllerState on ChangeNotifier {
   BackupSettings _backupSettings = const BackupSettings();
   String _backupPassphrase = '';
   WebdavConfig _webdavConfig = const WebdavConfig();
+  BackupTransportMode _backupTransportMode = BackupTransportMode.manual;
   ReminderSettings _reminderSettings = ReminderSettings.disabled;
   FabActionMode _fabActionMode = FabActionMode.manual;
   HomeTrendConfig _homeTrendConfig = HomeTrendConfig.defaults;
@@ -259,6 +260,7 @@ mixin _ControllerState on ChangeNotifier {
     _backupSettings = BackupSettings.decode(_store.read(_backupSettingsKey));
     _backupPassphrase = _store.read(_backupPassphraseKey) ?? '';
     _webdavConfig = WebdavConfig.decode(_store.read(_webdavKey));
+    _loadBackupTransportMode();
     _reminderSettings = ReminderSettings.decode(_store.read(_reminderKey));
     _fabActionMode = FabActionMode.fromStorage(_store.read(_fabActionKey));
     _numberPadLayout = NumberPadLayout.fromStorage(
@@ -288,6 +290,46 @@ mixin _ControllerState on ChangeNotifier {
     }
     _aiChatHistory = _decodeChatHistory(_store.read(_aiChatHistoryKey));
     _homeTrendConfig = HomeTrendConfig.decode(_store.read(_homeTrendKey));
+  }
+
+  /// 载入/迁移备份传输模式：优先信任规范键（版本+校验和），未写入或校验和不匹配
+  /// （视为写到一半被打断）时一律从旧字段重新推导，绝不使用半份/损坏值。
+  ///
+  /// 推导规则：`WebdavConfig.autoUpload` 为真，或旧 `BackupSettings.frequency`
+  /// 非手动，任一成立即推导为 [BackupTransportMode.autoUpload]（两者都成立视为
+  /// 冲突，同样默认到 autoUpload，不默认到更激进的 autoSync）；否则为 [manual]。
+  /// 推导后立即写规范键，并清掉旧 `WebdavConfig.autoUpload`（避免它继续被
+  /// [backup_coordinator] 读到而与新模式重复触发上传）——本地目录的
+  /// `BackupSettings.frequency` 保留，它是独立的本地备份计划，不受传输模式影响。
+  void _loadBackupTransportMode() {
+    final decoded = BackupTransportModeCodec.decode(
+      _store.read(_backupTransportModeKey),
+    );
+    if (decoded != null) {
+      _backupTransportMode = decoded;
+      return;
+    }
+    final legacyAutoActive =
+        _webdavConfig.autoUpload || _backupSettings.autoBackupEnabled;
+    _backupTransportMode = legacyAutoActive
+        ? BackupTransportMode.autoUpload
+        : BackupTransportMode.manual;
+    _persistBackupTransportMode();
+    if (_webdavConfig.autoUpload) {
+      _webdavConfig = _webdavConfig.copyWith(autoUpload: false);
+      if (_webdavConfig.isConfigured) {
+        _store.write(_webdavKey, _webdavConfig.encode());
+      } else {
+        _store.delete(_webdavKey);
+      }
+    }
+  }
+
+  void _persistBackupTransportMode() {
+    _store.write(
+      _backupTransportModeKey,
+      BackupTransportModeCodec.encode(_backupTransportMode),
+    );
   }
 
   /// 当前活动账本是否实际涉及多个币种。账户、历史交易、周期规则或已维护汇率中

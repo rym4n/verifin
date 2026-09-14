@@ -498,6 +498,41 @@ class SqliteSyncRepository implements SyncRepository {
     );
   }
 
+  // ---- KV journal 重放 ----
+
+  /// 按 id 升序返回，使同一批内先写入的行在调用方按 key 排序前仍有稳定的
+  /// 次序基准（排序不稳定时至少不引入额外的不确定性）。
+  @override
+  Future<List<KvJournalEntry>> loadPendingKvJournal() async {
+    final rows = await _database.query(
+      'sync_apply_journal',
+      where: 'applied = 0',
+      orderBy: 'id ASC',
+    );
+    return <KvJournalEntry>[
+      for (final row in rows)
+        KvJournalEntry(
+          id: row['id'] as int,
+          batchId: row['batch_id'] as String,
+          key: row['kv_key'] as String,
+          value: row['kv_value'] as String,
+          targetHash: row['target_hash'] as String,
+        ),
+    ];
+  }
+
+  @override
+  Future<void> markKvJournalApplied(int id) {
+    return _enqueue(() async {
+      await _database.update(
+        'sync_apply_journal',
+        <String, Object?>{'applied': 1},
+        where: 'id = ?',
+        whereArgs: <Object?>[id],
+      );
+    });
+  }
+
   // ---- JSON 解码 ----
 
   static Map<String, Object?> _decodeObject(String raw) {

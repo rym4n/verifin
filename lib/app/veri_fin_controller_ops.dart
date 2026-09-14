@@ -1,5 +1,21 @@
 part of 'veri_fin_controller.dart';
 
+/// 设置页「同步状态」展示所需的两个计数：待重放的 KV 偏好 journal 行数，
+/// 与未决的实体冲突数。两者语义不同——前者是"知道怎么应用、只是还没应用"，
+/// 后者是"需要用户决议"——分开计数而不是合并成一个数字，UI 才能分别提示。
+class SyncPreferenceStatus {
+  const SyncPreferenceStatus({
+    required this.pendingCount,
+    required this.conflictCount,
+  });
+
+  final int pendingCount;
+  final int conflictCount;
+
+  bool get hasError => conflictCount > 0;
+  bool get hasPending => pendingCount > 0;
+}
+
 /// 控制器的「领域操作」层：交易/账户/分组/账本/分类/标签/预算/偏好/备份/
 /// 导入导出等所有对外方法。字段与持久化在 [_ControllerState]。
 mixin _ControllerOps on ChangeNotifier, _ControllerState {
@@ -766,19 +782,31 @@ mixin _ControllerOps on ChangeNotifier, _ControllerState {
     setWebdavConfig(_webdavConfig.copyWith(autoUpload: enabled));
   }
 
+  /// 数据管理页的显式提交。传输模式与旧的备份频率/保留份数一起落库：
+  /// 模式走 [BackupTransportModeCodec] 的规范键（带版本+校验和），频率/保留仍写
+  /// 旧的 `BackupSettings` JSON——本地目录计划与传输模式是两件事，后者不改前者。
+  ///
+  /// `autoUpload` 标记由 [BackupTransportMode] 折算，不再由调用方直接传：
+  /// 互斥约束只有 [BackupTransportMode] 一处知道，让 UI 自己算会把这条规则复制出去。
   Future<bool> saveDataManagementPreferencesDraft({
     required BackupFrequency frequency,
     required int intervalHours,
     required int retention,
-    required bool webdavAutoUpload,
+    required BackupTransportMode transportMode,
   }) async {
     final nextBackup = _backupSettings.copyWith(
       frequency: frequency,
       intervalHours: intervalHours < 1 ? 1 : intervalHours,
       retention: retention < 1 ? 1 : retention,
     );
-    final nextWebdav = _webdavConfig.copyWith(autoUpload: webdavAutoUpload);
+    final nextWebdav = _webdavConfig.copyWith(
+      autoUpload: transportMode == BackupTransportMode.autoUpload,
+    );
     try {
+      await _store.writeAndFlush(
+        _backupTransportModeKey,
+        BackupTransportModeCodec.encode(transportMode),
+      );
       await _store.writeAndFlush(_backupSettingsKey, nextBackup.encode());
       if (nextWebdav.isConfigured) {
         await _store.writeAndFlush(_webdavKey, nextWebdav.encode());
@@ -787,6 +815,7 @@ mixin _ControllerOps on ChangeNotifier, _ControllerState {
       _handlePersistError(error, stackTrace);
       return false;
     }
+    _backupTransportMode = transportMode;
     _backupSettings = nextBackup;
     _webdavConfig = nextWebdav;
     notifyListeners();
@@ -797,6 +826,96 @@ mixin _ControllerOps on ChangeNotifier, _ControllerState {
     _webdavConfig = const WebdavConfig();
     _store.delete(_webdavKey);
     notifyListeners();
+  }
+
+  /// 当前备份传输模式（手动 / 自动上传 / 自动双向同步）。三者互斥，见
+  /// [setBackupTransportMode]。
+  BackupTransportMode get backupTransportMode => _backupTransportMode;
+
+  /// 传输模式与 [WebdavConfig.autoUpload] 理应互斥（`autoSync` 时旧字段必须为
+  /// false）；若发现两者同时「自动」，说明有代码绕过了 [setBackupTransportMode]
+  /// 直接改了 [WebdavConfig]（如旧版遗留路径），需要用户走 [recoverBackupTransportMode]
+  /// 显式复位，而不是静默吞掉这个不一致。
+  bool get backupTransportModeConflict =>
+      _backupTransportMode == BackupTransportMode.autoSync &&
+      _webdavConfig.autoUpload;
+
+  /// 设置传输模式；`autoSync`/`autoUpload` 与旧 `WebdavConfig.autoUpload` 互斥——
+  /// 选 `autoSync` 会关闭旧的自动上传标记，选 `autoUpload` 会打开它（沿用
+  /// [BackupCoordinator] 现有的「本地备份后按此标记决定是否上传」逻辑），
+  /// 选 `manual` 两者都关。规范键与 WebDAV 配置一次性 flush，失败则整体不提交。
+  Future<bool> setBackupTransportMode(BackupTransportMode mode) async {
+    final nextWebdav = _webdavConfig.copyWith(
+      autoUpload: mode == BackupTransportMode.autoUpload,
+    );
+    try {
+      await _store.writeAndFlush(
+        _backupTransportModeKey,
+        BackupTransportModeCodec.encode(mode),
+      );
+      if (nextWebdav.isConfigured) {
+        await _store.writeAndFlush(_webdavKey, nextWebdav.encode());
+      }
+    } catch (error, stackTrace) {
+      _handlePersistError(error, stackTrace);
+      return false;
+    }
+    _backupTransportMode = mode;
+    _webdavConfig = nextWebdav;
+    notifyListeners();
+    return true;
+  }
+
+  /// 修复 [backupTransportModeConflict]：与迁移时的冲突消解规则一致，
+  /// 默认收敛到 `autoUpload`（而不是更激进的 `autoSync`）。
+  Future<bool> recoverBackupTransportMode() =>
+      setBackupTransportMode(BackupTransportMode.autoUpload);
+
+  /// 待重放的 KV 偏好 journal 行数与未决冲突数，供设置页「同步状态」展示。
+  /// 两者都来自同步元数据仓储，只读，不产生副作用。
+  Future<SyncPreferenceStatus> loadSyncPreferenceStatus() async {
+    final sync = _repository.sync;
+    final pending = await sync.loadPendingKvJournal();
+    final conflicts = await sync.loadConflicts();
+    return SyncPreferenceStatus(
+      pendingCount: pending.length,
+      conflictCount: conflicts.length,
+    );
+  }
+
+  /// 重放 `sync_apply_journal` 中未应用的 KV 偏好行：按 key 确定性顺序逐个
+  /// `writeAndFlush` 到本地 KV，成功一条标记一条 applied。**必须在应用重启时、
+  /// 投影对账（shadow 比较）之前调用**——否则本地 KV 还停留在旧值，投影会把
+  /// 「远端已应用但 KV 未落地」的字段错误地判成一次新的本地变更再传回去。
+  ///
+  /// 单条写入失败时停止本批剩余写入（保持待处理 + 让上层据此展示"同步出错"），
+  /// 不会把失败的行标记为已应用，也不会影响已经成功落地的行——重放本身是
+  /// 幂等的（下次重放会跳过已 applied 的行，未成功的行会原样重试）。
+  Future<void> applySyncPreferenceJournal() async {
+    final pending = await _repository.sync.loadPendingKvJournal();
+    if (pending.isEmpty) {
+      return;
+    }
+    final ordered = List<KvJournalEntry>.of(pending)
+      ..sort((a, b) => a.key.compareTo(b.key));
+    var appliedAny = false;
+    for (final entry in ordered) {
+      try {
+        await _store.writeAndFlush(entry.key, entry.value);
+        await _repository.sync.markKvJournalApplied(entry.id);
+        appliedAny = true;
+      } catch (error, stackTrace) {
+        _handlePersistError(error, stackTrace);
+        break;
+      }
+    }
+    if (appliedAny) {
+      // 重放改的是别的字段的本地 KV 镜像；重新走一遍偏好载入，让内存字段与
+      // 刚落地的 KV 保持一致（比逐个字段判断"这条 journal 对应哪个内存字段"更
+      // 不容易漏)。载入是纯读，不会覆盖尚未走 journal 的其它偏好。
+      _loadPreferences();
+      notifyListeners();
+    }
   }
 
   List<Category> categoriesForType(EntryType type) {

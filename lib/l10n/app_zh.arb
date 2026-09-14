@@ -1783,6 +1783,88 @@
   "autoUploadWebdav": "自动上传到 WebDAV",
   "clearWebdav": "清除 WebDAV 配置",
   "disconnectLabel": "断开连接",
+  "syncModeLabel": "同步方式",
+  "@syncModeLabel": {
+    "description": "数据管理页:同步方式区块标题"
+  },
+  "syncModeManual": "手动",
+  "@syncModeManual": {
+    "description": "传输模式:仅手动"
+  },
+  "syncModeAutoUpload": "自动上传",
+  "@syncModeAutoUpload": {
+    "description": "传输模式:自动上传(单向)"
+  },
+  "syncModeAutoSync": "自动同步",
+  "@syncModeAutoSync": {
+    "description": "传输模式:自动双向同步"
+  },
+  "syncStatusLabel": "同步状态",
+  "@syncStatusLabel": {
+    "description": "数据管理页:同步状态行标题"
+  },
+  "syncStatusConnected": "已连接",
+  "@syncStatusConnected": {
+    "description": "同步状态:正常，无待处理项"
+  },
+  "syncStatusPending": "待同步",
+  "@syncStatusPending": {
+    "description": "同步状态:有待重放的偏好变更"
+  },
+  "syncStatusError": "同步出错",
+  "@syncStatusError": {
+    "description": "同步状态:存在冲突或写入失败"
+  },
+  "syncConflictCount": "{count, plural, =0{无冲突} other{{count} 个冲突待处理}}",
+  "@syncConflictCount": {
+    "description": "同步冲突计数",
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "syncPendingCount": "{count, plural, =0{无待同步项} other{{count} 项待同步}}",
+  "@syncPendingCount": {
+    "description": "待重放的 KV 偏好 journal 计数",
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "syncTransportModeConflict": "自动同步与自动上传同时处于开启状态，请重置传输模式",
+  "@syncTransportModeConflict": {
+    "description": "两种自动模式同时开启时的恢复提示"
+  },
+  "syncCollisionDetected": "存在并发修改冲突，需要手动决议",
+  "@syncCollisionDetected": {
+    "description": "同步冲突详情提示：并发修改碰撞"
+  },
+  "syncKeyMismatch": "同步密钥不匹配，无法解密远端数据",
+  "@syncKeyMismatch": {
+    "description": "同步冲突详情提示：密钥指纹不一致"
+  },
+  "syncRecoveryReset": "重置为自动上传",
+  "@syncRecoveryReset": {
+    "description": "恢复守卫：把冲突的传输模式重置为自动上传"
+  },
+  "syncRecoverySuccess": "已重置同步模式",
+  "@syncRecoverySuccess": {
+    "description": "重置传输模式成功提示"
+  },
+  "syncRecoveryFailed": "重置失败，请重试",
+  "@syncRecoveryFailed": {
+    "description": "重置传输模式失败提示"
+  },
+  "syncEnabledAutoSyncFeedback": "已开启自动同步，自动上传已关闭",
+  "@syncEnabledAutoSyncFeedback": {
+    "description": "开启自动同步时的互斥反馈"
+  },
+  "syncEnabledAutoUploadFeedback": "已开启自动上传，自动同步已关闭",
+  "@syncEnabledAutoUploadFeedback": {
+    "description": "开启自动上传时的互斥反馈"
+  },
   "resetData": "初始化数据",
   "deleteAllLocal": "删除所有本地数据",
   "neverBackedUp": "尚未备份",

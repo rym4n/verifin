@@ -119,6 +119,10 @@ class RecordingSyncRepository implements SyncRepository {
   Future<List<SyncConflictRecord>> loadConflicts() => _inner.loadConflicts();
 
   @override
+  Future<void> storeConflict(SyncConflictRecord conflict) =>
+      _inner.storeConflict(conflict);
+
+  @override
   Future<Map<SyncEntityKey, String>> loadShadow() => _inner.loadShadow();
 
   @override
@@ -126,6 +130,13 @@ class RecordingSyncRepository implements SyncRepository {
     saveShadowCalls++;
     return _inner.saveShadow(shadow);
   }
+
+  @override
+  Future<List<KvJournalEntry>> loadPendingKvJournal() =>
+      _inner.loadPendingKvJournal();
+
+  @override
+  Future<void> markKvJournalApplied(int id) => _inner.markKvJournalApplied(id);
 }
 
 typedef _Tracked = ({

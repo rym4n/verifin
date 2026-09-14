@@ -46,6 +46,41 @@ abstract interface class SyncRepository {
   /// 若只传差异，上一轮被删除的实体行会残留，下一轮 reconcile 会把同一个删除
   /// 反复判成新变更。实现方在单事务内先清空再写入，保证不会读到半份 shadow。
   Future<void> saveShadow(Map<SyncEntityKey, String> shadow);
+
+  /// 读取 `sync_apply_journal` 中所有 `applied = 0` 的行，供
+  /// `VeriFinController.applySyncPreferenceJournal()` 重放到本地 KV。
+  ///
+  /// 只读；不隐含任何顺序保证——调用方按 [KvJournalEntry.key] 排序后逐个写入，
+  /// 使「同一批内多个 KV 键的写入顺序」在任意实现、任意次重放间保持确定。
+  Future<List<KvJournalEntry>> loadPendingKvJournal();
+
+  /// 把一条 journal 行标记为已应用（`applied = 1`）。
+  ///
+  /// 只在对应的 [LocalKeyValueStore] 写入真正成功后调用——调用方必须保证
+  /// 「标记为已应用」与「KV 已落地」同步，否则重启后会误判该行已重放而跳过它，
+  /// 但本地 KV 其实还是旧值。
+  Future<void> markKvJournalApplied(int id);
+}
+
+/// 一条待重放的 KV journal 行：`applyRemoteBatch` 在写 SQLite 元数据的同一事务内
+/// 插入（见 [RemoteApplyPlan.kvJournalValues]），[key]/[value] 就是要写进本地
+/// [LocalKeyValueStore] 的键值对本身（不是同步实体键），[targetHash] 供调试/校验
+/// 用（等于 `computeSyncPayloadHash(value)`）。
+class KvJournalEntry {
+  const KvJournalEntry({
+    required this.id,
+    required this.batchId,
+    required this.key,
+    required this.value,
+    required this.targetHash,
+  });
+
+  /// 行自增 id（SQLite `sync_apply_journal.id`），标记已应用时按它定位。
+  final int id;
+  final String batchId;
+  final String key;
+  final String value;
+  final String targetHash;
 }
 
 /// 远端批次与本地已落库状态互斥时抛出。调用方据此保留 pending 并提示用户，

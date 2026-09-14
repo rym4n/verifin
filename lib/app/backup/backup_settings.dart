@@ -1,4 +1,7 @@
 import 'dart:convert';
+
+import 'package:crypto/crypto.dart';
+
 import '../../l10n/app_localizations.dart';
 
 /// 自动备份触发频率。
@@ -176,6 +179,83 @@ class BackupFileInfo {
       modifiedAt: DateTime.fromMillisecondsSinceEpoch(millis),
       sizeBytes: (map['sizeBytes'] as num?)?.toInt() ?? 0,
     );
+  }
+}
+
+/// 备份/WebDAV 传输模式：替代旧的 `BackupFrequency` 非手动值与
+/// `WebdavConfig.autoUpload` 二元组合，三者互斥、单一真相。
+///
+/// - [manual]：仅手动「立即上传」，不自动触发任何 WebDAV 传输。
+/// - [autoUpload]：本地自动备份触发时单向上传到 WebDAV（沿用旧
+///   `WebdavConfig.autoUpload` 语义）。
+/// - [autoSync]：启用双向同步引擎，与 [autoUpload] 互斥（引擎自行决定何时上传/下载）。
+enum BackupTransportMode {
+  manual,
+  autoUpload,
+  autoSync;
+
+  String label(AppLocalizations l10n) {
+    switch (this) {
+      case BackupTransportMode.manual:
+        return l10n.syncModeManual;
+      case BackupTransportMode.autoUpload:
+        return l10n.syncModeAutoUpload;
+      case BackupTransportMode.autoSync:
+        return l10n.syncModeAutoSync;
+    }
+  }
+
+  static BackupTransportMode? fromName(String? value) {
+    for (final mode in BackupTransportMode.values) {
+      if (mode.name == value) {
+        return mode;
+      }
+    }
+    return null;
+  }
+}
+
+/// [BackupTransportMode] 的持久化编解码：带版本号与校验和的 JSON，
+/// 用于探测「写到一半被打断」的损坏值（SharedPreferences 不保证跨键原子性，
+/// 单键写入本身也可能因平台/进程被杀而只落一半）。校验和不匹配一律当作
+/// 「未写入」处理，交给迁移逻辑从旧字段重新推导，绝不把损坏值当成合法模式使用。
+abstract final class BackupTransportModeCodec {
+  static const int _schemaVersion = 1;
+
+  static String _checksum(int version, String mode) =>
+      sha256.convert(utf8.encode('$version:$mode')).toString();
+
+  static String encode(BackupTransportMode mode) {
+    return jsonEncode(<String, Object?>{
+      'version': _schemaVersion,
+      'mode': mode.name,
+      'checksum': _checksum(_schemaVersion, mode.name),
+    });
+  }
+
+  /// 解析失败（缺失/格式错误/版本未知/校验和不匹配）一律返回 null。
+  static BackupTransportMode? decode(String? raw) {
+    if (raw == null || raw.isEmpty) {
+      return null;
+    }
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is! Map) {
+        return null;
+      }
+      final version = (decoded['version'] as num?)?.toInt();
+      final modeName = decoded['mode'] as String?;
+      final checksum = decoded['checksum'] as String?;
+      if (version == null || modeName == null || checksum == null) {
+        return null;
+      }
+      if (checksum != _checksum(version, modeName)) {
+        return null;
+      }
+      return BackupTransportMode.fromName(modeName);
+    } catch (_) {
+      return null;
+    }
   }
 }
 

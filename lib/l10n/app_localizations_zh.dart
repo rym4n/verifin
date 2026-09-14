@@ -2748,6 +2748,76 @@ class AppLocalizationsZh extends AppLocalizations {
   String get disconnectLabel => '断开连接';
 
   @override
+  String get syncModeLabel => '同步方式';
+
+  @override
+  String get syncModeManual => '手动';
+
+  @override
+  String get syncModeAutoUpload => '自动上传';
+
+  @override
+  String get syncModeAutoSync => '自动同步';
+
+  @override
+  String get syncStatusLabel => '同步状态';
+
+  @override
+  String get syncStatusConnected => '已连接';
+
+  @override
+  String get syncStatusPending => '待同步';
+
+  @override
+  String get syncStatusError => '同步出错';
+
+  @override
+  String syncConflictCount(int count) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: '$count 个冲突待处理',
+      zero: '无冲突',
+    );
+    return '$_temp0';
+  }
+
+  @override
+  String syncPendingCount(int count) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: '$count 项待同步',
+      zero: '无待同步项',
+    );
+    return '$_temp0';
+  }
+
+  @override
+  String get syncTransportModeConflict => '自动同步与自动上传同时处于开启状态，请重置传输模式';
+
+  @override
+  String get syncCollisionDetected => '存在并发修改冲突，需要手动决议';
+
+  @override
+  String get syncKeyMismatch => '同步密钥不匹配，无法解密远端数据';
+
+  @override
+  String get syncRecoveryReset => '重置为自动上传';
+
+  @override
+  String get syncRecoverySuccess => '已重置同步模式';
+
+  @override
+  String get syncRecoveryFailed => '重置失败，请重试';
+
+  @override
+  String get syncEnabledAutoSyncFeedback => '已开启自动同步，自动上传已关闭';
+
+  @override
+  String get syncEnabledAutoUploadFeedback => '已开启自动上传，自动同步已关闭';
+
+  @override
   String get resetData => '初始化数据';
 
   @override

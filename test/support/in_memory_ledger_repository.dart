@@ -31,6 +31,7 @@ class InMemoryLedgerRepository
   Map<String, double> _dailyBudgets = <String, double>{};
 
   /// 同步元数据的内存镜像，与 [SqliteLedgerRepository.sync] 同契约。
+  @override
   late final SyncRepository sync = _InMemorySyncRepository(this);
 
   @override
@@ -271,6 +272,13 @@ class _InMemorySyncRepository implements SyncRepository {
   );
   final List<SyncConflictRecord> _conflicts = <SyncConflictRecord>[];
 
+  /// journal 行的内存镜像，与 SQLite 的 `sync_apply_journal` 同契约：
+  /// applyRemoteBatch 插入未应用行，`markKvJournalApplied` 原地翻转其 applied 位
+  /// （用 `_applied` 前缀命名的可变字段区分同名的 `_applied` 已应用操作表）。
+  final List<KvJournalEntry> _kvJournal = <KvJournalEntry>[];
+  final Set<int> _kvJournalApplied = <int>{};
+  int _kvJournalNextId = 1;
+
   /// operationId → (batchId, payloadHash)：等价于 sync_applied_ops 与
   /// sync_entity_versions 的合并视角。
   final Map<String, ({String batchId, String payloadHash})> _applied =
@@ -384,6 +392,21 @@ class _InMemorySyncRepository implements SyncRepository {
       }
     }
 
+    // KV journal：与 SqliteSyncRepository 同步——先记未应用行，重放时才真正
+    // 写本地 KV，让 InMemoryLedgerRepository 也能驱动
+    // `applySyncPreferenceJournal()` 的测试路径。
+    for (final entry in plan.kvJournalValues.entries) {
+      _kvJournal.add(
+        KvJournalEntry(
+          id: _kvJournalNextId++,
+          batchId: plan.batchId,
+          key: entry.key,
+          value: entry.value,
+          targetHash: computeSyncPayloadHash(entry.value),
+        ),
+      );
+    }
+
     // Update shadow from plan's shadowHashes so the next causality check
     // within the same scan cycle sees the freshly applied state.
     for (final entry in plan.shadowHashes.entries) {
@@ -459,6 +482,17 @@ class _InMemorySyncRepository implements SyncRepository {
     if (_conflicts.every((c) => c.id != conflict.id)) {
       _conflicts.add(conflict);
     }
+  }
+
+  @override
+  Future<List<KvJournalEntry>> loadPendingKvJournal() async => <KvJournalEntry>[
+    for (final entry in _kvJournal)
+      if (!_kvJournalApplied.contains(entry.id)) entry,
+  ];
+
+  @override
+  Future<void> markKvJournalApplied(int id) async {
+    _kvJournalApplied.add(id);
   }
 
   /// shadow 的内存镜像。语义与 SQLite 实现一致：整体替换，不合并。

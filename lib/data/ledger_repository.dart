@@ -46,6 +46,12 @@ class LedgerDataSnapshot {
 ///
 /// 语义为「整表覆盖」：每次 saveX 以传入列表整体替换该类数据。
 abstract interface class LedgerRepository {
+  /// 同步元数据仓储（KV journal、outbox、shadow、冲突…）。生产实现与内存测试
+  /// 实现各自内部持有一个 [SyncRepository]；提到接口上是因为 Task 6 起
+  /// [VeriFinController] 需要经由它重放 KV journal，不该为此下转型
+  /// 到具体实现类。
+  SyncRepository get sync;
+
   Future<List<LedgerEntry>> loadEntries();
   Future<void> saveEntries(List<LedgerEntry> entries);
 
@@ -125,6 +131,7 @@ class SqliteLedgerRepository implements LedgerRepository {
 
   /// 同步元数据仓储。与业务表共用同一连接和同一条写队列，使远端批次应用能
   /// 与本地 saveX 互不插队；见 [SqliteSyncRepository] 的原子性说明。
+  @override
   late final SyncRepository sync = SqliteSyncRepository(
     database: _db,
     enqueue: _enqueueWrite,

@@ -2802,6 +2802,83 @@ class AppLocalizationsEn extends AppLocalizations {
   String get disconnectLabel => 'Disconnect';
 
   @override
+  String get syncModeLabel => 'Sync mode';
+
+  @override
+  String get syncModeManual => 'Manual';
+
+  @override
+  String get syncModeAutoUpload => 'Auto-upload';
+
+  @override
+  String get syncModeAutoSync => 'Auto-sync';
+
+  @override
+  String get syncStatusLabel => 'Sync status';
+
+  @override
+  String get syncStatusConnected => 'Connected';
+
+  @override
+  String get syncStatusPending => 'Pending';
+
+  @override
+  String get syncStatusError => 'Sync error';
+
+  @override
+  String syncConflictCount(int count) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: '$count conflicts pending',
+      one: '1 conflict pending',
+      zero: 'No conflicts',
+    );
+    return '$_temp0';
+  }
+
+  @override
+  String syncPendingCount(int count) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: '$count items pending',
+      one: '1 item pending',
+      zero: 'Nothing pending',
+    );
+    return '$_temp0';
+  }
+
+  @override
+  String get syncTransportModeConflict =>
+      'Auto-sync and auto-upload are both enabled — please reset the transport mode.';
+
+  @override
+  String get syncCollisionDetected =>
+      'A concurrent-edit collision was detected and needs manual resolution.';
+
+  @override
+  String get syncKeyMismatch =>
+      'Sync key mismatch — remote data can\'t be decrypted.';
+
+  @override
+  String get syncRecoveryReset => 'Reset to auto-upload';
+
+  @override
+  String get syncRecoverySuccess => 'Sync mode has been reset';
+
+  @override
+  String get syncRecoveryFailed => 'Reset failed, please try again';
+
+  @override
+  String get syncEnabledAutoSyncFeedback =>
+      'Auto-sync enabled; auto-upload has been turned off.';
+
+  @override
+  String get syncEnabledAutoUploadFeedback =>
+      'Auto-upload enabled; auto-sync has been turned off.';
+
+  @override
   String get resetData => 'Reset data';
 
   @override

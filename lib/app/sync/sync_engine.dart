@@ -10,6 +10,7 @@ import 'sync_change_tracker.dart';
 import 'sync_clock.dart';
 import 'sync_codec.dart';
 import 'sync_conflict.dart';
+import 'sync_kv_projection.dart';
 import 'sync_models.dart';
 import 'sync_projection.dart';
 import 'sync_store.dart';
@@ -579,7 +580,7 @@ class SyncEngine {
       entityVersions: [entityVersion],
       appliedOperationIds: [event.operationId],
       shadowHashes: {encodeSyncEntityKey(event.entity): event.payloadHash},
-      kvJournalValues: const {},
+      kvJournalValues: _kvJournalValuesFor(event),
       appliedPayloadHashes: {event.operationId: event.payloadHash},
     );
 
@@ -591,6 +592,35 @@ class SyncEngine {
     } else {
       await _repository.applyRemoteBatch(plan);
     }
+  }
+
+  /// 若 [event] 命中 KV 偏好类型（profile/主题/面板/排序/默认账户/FAB/金额/
+  /// 小组件定义，见 [SyncKvProjection]），把它折算成一条「本地 KV 键 → 目标完整
+  /// 值」的 journal 行；否则返回空表——SQLite 落库的账目类实体（entries/
+  /// accounts/…）不经这条路径。
+  ///
+  /// 合并需要「当前完整值」打底（这些 KV 键各自只有一份整存的值，远端片段只是
+  /// 其中一角），取自 [_controller.exportDataForSync()] 而不是本地 KV 原始字符串：
+  /// 前者是控制器已解码好的内存视图，与 [SyncProjection.fromExportData] 拆分
+  /// 片段时用的是同一份数据，两边字段语义天然对齐。
+  Map<String, String> _kvJournalValuesFor(SyncEvent event) {
+    final entityType = event.entity.type;
+    final storageKey = SyncKvProjection.storageKeyFor(entityType);
+    if (storageKey == null) {
+      return const <String, String>{};
+    }
+    final current = _controller.exportDataForSync()[entityType];
+    final merged = SyncKvProjection.mergeToStorageValue(
+      entityType: entityType,
+      entityId: event.entity.id,
+      currentValue: current,
+      payload: event.payload,
+      deleted: event.operation == SyncOperationKind.delete,
+    );
+    if (merged == null) {
+      return const <String, String>{};
+    }
+    return <String, String>{storageKey: merged};
   }
 
   Future<void> _storeConflict(SyncEvent remoteEvent) async {

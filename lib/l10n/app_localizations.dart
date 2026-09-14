@@ -5054,6 +5054,114 @@ abstract class AppLocalizations {
   /// **'断开连接'**
   String get disconnectLabel;
 
+  /// 数据管理页:同步方式区块标题
+  ///
+  /// In zh, this message translates to:
+  /// **'同步方式'**
+  String get syncModeLabel;
+
+  /// 传输模式:仅手动
+  ///
+  /// In zh, this message translates to:
+  /// **'手动'**
+  String get syncModeManual;
+
+  /// 传输模式:自动上传(单向)
+  ///
+  /// In zh, this message translates to:
+  /// **'自动上传'**
+  String get syncModeAutoUpload;
+
+  /// 传输模式:自动双向同步
+  ///
+  /// In zh, this message translates to:
+  /// **'自动同步'**
+  String get syncModeAutoSync;
+
+  /// 数据管理页:同步状态行标题
+  ///
+  /// In zh, this message translates to:
+  /// **'同步状态'**
+  String get syncStatusLabel;
+
+  /// 同步状态:正常，无待处理项
+  ///
+  /// In zh, this message translates to:
+  /// **'已连接'**
+  String get syncStatusConnected;
+
+  /// 同步状态:有待重放的偏好变更
+  ///
+  /// In zh, this message translates to:
+  /// **'待同步'**
+  String get syncStatusPending;
+
+  /// 同步状态:存在冲突或写入失败
+  ///
+  /// In zh, this message translates to:
+  /// **'同步出错'**
+  String get syncStatusError;
+
+  /// 同步冲突计数
+  ///
+  /// In zh, this message translates to:
+  /// **'{count, plural, =0{无冲突} other{{count} 个冲突待处理}}'**
+  String syncConflictCount(int count);
+
+  /// 待重放的 KV 偏好 journal 计数
+  ///
+  /// In zh, this message translates to:
+  /// **'{count, plural, =0{无待同步项} other{{count} 项待同步}}'**
+  String syncPendingCount(int count);
+
+  /// 两种自动模式同时开启时的恢复提示
+  ///
+  /// In zh, this message translates to:
+  /// **'自动同步与自动上传同时处于开启状态，请重置传输模式'**
+  String get syncTransportModeConflict;
+
+  /// 同步冲突详情提示：并发修改碰撞
+  ///
+  /// In zh, this message translates to:
+  /// **'存在并发修改冲突，需要手动决议'**
+  String get syncCollisionDetected;
+
+  /// 同步冲突详情提示：密钥指纹不一致
+  ///
+  /// In zh, this message translates to:
+  /// **'同步密钥不匹配，无法解密远端数据'**
+  String get syncKeyMismatch;
+
+  /// 恢复守卫：把冲突的传输模式重置为自动上传
+  ///
+  /// In zh, this message translates to:
+  /// **'重置为自动上传'**
+  String get syncRecoveryReset;
+
+  /// 重置传输模式成功提示
+  ///
+  /// In zh, this message translates to:
+  /// **'已重置同步模式'**
+  String get syncRecoverySuccess;
+
+  /// 重置传输模式失败提示
+  ///
+  /// In zh, this message translates to:
+  /// **'重置失败，请重试'**
+  String get syncRecoveryFailed;
+
+  /// 开启自动同步时的互斥反馈
+  ///
+  /// In zh, this message translates to:
+  /// **'已开启自动同步，自动上传已关闭'**
+  String get syncEnabledAutoSyncFeedback;
+
+  /// 开启自动上传时的互斥反馈
+  ///
+  /// In zh, this message translates to:
+  /// **'已开启自动上传，自动同步已关闭'**
+  String get syncEnabledAutoUploadFeedback;
+
   /// No description provided for @resetData.
   ///
   /// In zh, this message translates to:

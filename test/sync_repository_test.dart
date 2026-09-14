@@ -564,6 +564,10 @@ class _DeferredSyncRepository implements SyncRepository {
       (await _ready).loadConflicts();
 
   @override
+  Future<void> storeConflict(SyncConflictRecord conflict) async =>
+      (await _ready).storeConflict(conflict);
+
+  @override
   Future<List<SyncOutboxRecord>> loadOutbox() async =>
       (await _ready).loadOutbox();
 
@@ -589,6 +593,14 @@ class _DeferredSyncRepository implements SyncRepository {
   @override
   Future<void> saveShadow(Map<SyncEntityKey, String> shadow) async =>
       (await _ready).saveShadow(shadow);
+
+  @override
+  Future<List<KvJournalEntry>> loadPendingKvJournal() async =>
+      (await _ready).loadPendingKvJournal();
+
+  @override
+  Future<void> markKvJournalApplied(int id) async =>
+      (await _ready).markKvJournalApplied(id);
 }
 
 SyncBatchRecord _batch(String batchId, List<String> operationIds) {

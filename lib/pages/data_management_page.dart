@@ -43,8 +43,15 @@ class _DataManagementPageState extends State<DataManagementPage> {
   late int _draftIntervalHours;
   late int _initialRetention;
   late int _draftRetention;
-  late bool _initialWebdavAutoUpload;
-  late bool _draftWebdavAutoUpload;
+
+  /// 传输模式草稿。取代旧的 `webdavAutoUpload` 布尔：单一枚举表达三种互斥状态，
+  /// 保存时再折算回 `WebdavConfig.autoUpload`（见 [VeriFinController.setBackupTransportMode]）。
+  late BackupTransportMode _initialTransportMode;
+  late BackupTransportMode _draftTransportMode;
+
+  /// 同步状态行数据（待重放偏好数 / 未决冲突数）。异步读取，未就绪时为 null，
+  /// 此时状态行显示为「已连接」占位而不是闪烁错误色。
+  SyncPreferenceStatus? _syncStatus;
   bool _initialized = false;
 
   @override
@@ -58,9 +65,21 @@ class _DataManagementPageState extends State<DataManagementPage> {
     _initialFrequency = _draftFrequency = backup.frequency;
     _initialIntervalHours = _draftIntervalHours = backup.intervalHours;
     _initialRetention = _draftRetention = backup.retention;
-    _initialWebdavAutoUpload = _draftWebdavAutoUpload =
-        controller.webdavConfig.autoUpload;
+    _initialTransportMode = _draftTransportMode =
+        controller.backupTransportMode;
     _initialized = true;
+    unawaited(_refreshSyncStatus(controller));
+  }
+
+  Future<void> _refreshSyncStatus(VeriFinController controller) async {
+    try {
+      final status = await controller.loadSyncPreferenceStatus();
+      if (mounted) {
+        setState(() => _syncStatus = status);
+      }
+    } catch (error) {
+      controller.logger?.error('读取同步状态失败', source: 'sync', error: error);
+    }
   }
 
   @override
@@ -318,16 +337,6 @@ class _DataManagementPageState extends State<DataManagementPage> {
                           onTap: () => _restoreFromWebdav(context, controller),
                         ),
                         const Divider(),
-                        CompactSwitchRow(
-                          icon: Icons.sync_outlined,
-                          title: Text(
-                            AppLocalizations.of(context).autoUploadWebdav,
-                          ),
-                          value: _draftWebdavAutoUpload,
-                          onChanged: (value) =>
-                              setState(() => _draftWebdavAutoUpload = value),
-                        ),
-                        const Divider(),
                         SettingsRow(
                           icon: Icons.cloud_off_outlined,
                           title: AppLocalizations.of(context).clearWebdav,
@@ -342,6 +351,52 @@ class _DataManagementPageState extends State<DataManagementPage> {
                     ],
                   ),
                 ),
+                if (controller.webdavConfig.isConfigured) ...<Widget>[
+                  const SizedBox(height: 10),
+                  _sectionLabel(
+                    context,
+                    AppLocalizations.of(context).syncModeLabel,
+                  ),
+                  VeriCard(
+                    child: Column(
+                      children: <Widget>[
+                        VeriAnchoredChoice<BackupTransportMode>(
+                          values: BackupTransportMode.values,
+                          selected: _draftTransportMode,
+                          idOf: (value) => 'sync_mode_${value.name}',
+                          labelOf: (value) =>
+                              value.label(AppLocalizations.of(context)),
+                          iconOf: (value) => switch (value) {
+                            BackupTransportMode.manual =>
+                              Icons.touch_app_outlined,
+                            BackupTransportMode.autoUpload =>
+                              Icons.cloud_upload_outlined,
+                            BackupTransportMode.autoSync => Icons.sync_alt,
+                          },
+                          onSelected: _selectTransportMode,
+                          semanticLabel: AppLocalizations.of(
+                            context,
+                          ).syncModeLabel,
+                          builder: (context, openMenu, menuOpen) => SettingsRow(
+                            icon: Icons.sync_outlined,
+                            title: AppLocalizations.of(context).syncModeLabel,
+                            trailing: _draftTransportMode.label(
+                              AppLocalizations.of(context),
+                            ),
+                            trailingIcon: Icons.chevron_right,
+                            onTap: openMenu,
+                          ),
+                        ),
+                        const Divider(),
+                        _syncStatusRow(context, controller),
+                        if (controller.backupTransportModeConflict) ...<Widget>[
+                          const Divider(),
+                          _transportModeConflictRow(context, controller),
+                        ],
+                      ],
+                    ),
+                  ),
+                ],
                 const SizedBox(height: 10),
                 _sectionLabel(
                   context,
@@ -430,6 +485,77 @@ class _DataManagementPageState extends State<DataManagementPage> {
           fontWeight: FontWeight.w700,
         ),
       ),
+    );
+  }
+
+  /// 同步状态行：`已连接` / `待同步 N 项` / `同步出错`。三个状态互斥且按严重程度
+  /// 排序——冲突（需要用户决议）比待重放（系统自己会处理）更需要被看到，所以
+  /// 有冲突时整行走错误色。状态数据还没读到时按「已连接」显示，避免首帧闪一下
+  /// 错误色。
+  Widget _syncStatusRow(BuildContext context, VeriFinController controller) {
+    final l10n = AppLocalizations.of(context);
+    final status = _syncStatus;
+    final String detail;
+    final Color? color;
+    if (status == null) {
+      detail = l10n.syncStatusConnected;
+      color = null;
+    } else if (status.conflictCount > 0) {
+      detail = l10n.syncConflictCount(status.conflictCount);
+      color = veriSemantic(context, veriExpense);
+    } else if (status.pendingCount > 0) {
+      detail = l10n.syncPendingCount(status.pendingCount);
+      color = null;
+    } else {
+      detail = l10n.syncStatusConnected;
+      color = null;
+    }
+    return SettingsRow(
+      icon: Icons.cloud_done_outlined,
+      title: l10n.syncStatusLabel,
+      trailing: detail,
+      contentColor: color,
+      onTap: () => unawaited(_refreshSyncStatus(controller)),
+    );
+  }
+
+  /// 恢复守卫：两种自动模式同时开启（[VeriFinController.backupTransportModeConflict]）
+  /// 时出现，提供一键复位。提示文案说明「为什么」而操作按钮只说「做什么」，
+  /// 因为用户看到这条时最需要的是知道状态坏了，其次才是怎么修。
+  Widget _transportModeConflictRow(
+    BuildContext context,
+    VeriFinController controller,
+  ) {
+    final l10n = AppLocalizations.of(context);
+    return SettingsRow(
+      icon: Icons.warning_amber_outlined,
+      title: l10n.syncTransportModeConflict,
+      trailing: l10n.syncRecoveryReset,
+      trailingIcon: Icons.restart_alt,
+      contentColor: veriSemantic(context, veriExpense),
+      onTap: () => _recoverTransportMode(context, controller),
+    );
+  }
+
+  Future<void> _recoverTransportMode(
+    BuildContext context,
+    VeriFinController controller,
+  ) async {
+    final l10n = AppLocalizations.of(context);
+    final ok = await controller.recoverBackupTransportMode();
+    if (!context.mounted) {
+      return;
+    }
+    if (ok) {
+      setState(() {
+        _initialTransportMode = _draftTransportMode =
+            BackupTransportMode.autoUpload;
+      });
+    }
+    _notify(
+      context,
+      message: ok ? l10n.syncRecoverySuccess : l10n.syncRecoveryFailed,
+      tone: ok ? VeriFeedbackTone.success : VeriFeedbackTone.error,
     );
   }
 
@@ -750,7 +876,11 @@ class _DataManagementPageState extends State<DataManagementPage> {
       controller.setWebdavConfig(saved);
       if (mounted) {
         setState(() {
-          _initialWebdavAutoUpload = _draftWebdavAutoUpload = saved.autoUpload;
+          // 编辑服务器只改地址/账号/密码，传输模式不在这里变——它是独立的设置项，
+          // 用控制器当前值刷新草稿（而不是 `saved.autoUpload`，那个字段已不再由
+          // 对话框驱动）。
+          _initialTransportMode = _draftTransportMode =
+              controller.backupTransportMode;
         });
       }
       if (context.mounted) {
@@ -787,27 +917,72 @@ class _DataManagementPageState extends State<DataManagementPage> {
       _draftFrequency != _initialFrequency ||
       _draftIntervalHours != _initialIntervalHours ||
       _draftRetention != _initialRetention ||
-      _draftWebdavAutoUpload != _initialWebdavAutoUpload;
+      _draftTransportMode != _initialTransportMode;
 
   Future<void> _saveAndExit() async {
     if (await _save() && mounted) {
-      setState(() {
-        _initialFrequency = _draftFrequency;
-        _initialIntervalHours = _draftIntervalHours;
-        _initialRetention = _draftRetention;
-        _initialWebdavAutoUpload = _draftWebdavAutoUpload;
-      });
       _exitController.exit();
     }
   }
 
-  Future<bool> _save() =>
-      VeriFinScope.of(context).saveDataManagementPreferencesDraft(
-        frequency: _draftFrequency,
-        intervalHours: _draftIntervalHours,
-        retention: _draftRetention,
-        webdavAutoUpload: _draftWebdavAutoUpload,
+  /// 提交草稿并回写「初始值」。互斥反馈放在这里而不是 [_saveAndExit]：
+  /// 页头「保存」与「保存并返回」两个入口共用一个提示出口，避免只有一个按钮
+  /// 会告诉用户「刚刚关掉了另一个模式」。
+  Future<bool> _save() async {
+    final previous = _initialTransportMode;
+    final saved = await VeriFinScope.of(context)
+        .saveDataManagementPreferencesDraft(
+          frequency: _draftFrequency,
+          intervalHours: _draftIntervalHours,
+          retention: _draftRetention,
+          transportMode: _draftTransportMode,
+        );
+    if (!saved || !mounted) {
+      return saved;
+    }
+    setState(() {
+      _initialFrequency = _draftFrequency;
+      _initialIntervalHours = _draftIntervalHours;
+      _initialRetention = _draftRetention;
+      _initialTransportMode = _draftTransportMode;
+    });
+    _notifyTransportModeExclusion(context, previous);
+    return true;
+  }
+
+  /// 选中一个传输模式：`autoSync`/`autoUpload` 互斥，选其一必关另一方。
+  /// 只改草稿，落库走页面底部的「保存」；互斥反馈在保存成功后由
+  /// [_notifyTransportModeExclusion] 给出。
+  void _selectTransportMode(BackupTransportMode mode) {
+    if (mode == _draftTransportMode) {
+      return;
+    }
+    setState(() => _draftTransportMode = mode);
+  }
+
+  /// 保存成功后的一次性互斥反馈：仅在用户这次真的从一个自动模式切到另一个时提示，
+  /// 切到手动或模式未变时不打扰。
+  void _notifyTransportModeExclusion(
+    BuildContext context,
+    BackupTransportMode previous,
+  ) {
+    final l10n = AppLocalizations.of(context);
+    if (previous == BackupTransportMode.autoUpload &&
+        _draftTransportMode == BackupTransportMode.autoSync) {
+      _notify(
+        context,
+        message: l10n.syncEnabledAutoSyncFeedback,
+        tone: VeriFeedbackTone.success,
       );
+    } else if (previous == BackupTransportMode.autoSync &&
+        _draftTransportMode == BackupTransportMode.autoUpload) {
+      _notify(
+        context,
+        message: l10n.syncEnabledAutoUploadFeedback,
+        tone: VeriFeedbackTone.success,
+      );
+    }
+  }
 
   Future<void> _uploadToWebdav(
     BuildContext context,

@@ -30,6 +30,7 @@ import 'models.dart';
 import 'recurring.dart';
 import 'reminder/reminder_settings.dart';
 import 'sync/sync_change_tracker.dart';
+import 'sync/sync_store.dart';
 
 part 'veri_fin_controller_state.dart';
 part 'veri_fin_controller_ops.dart';
@@ -93,6 +94,7 @@ const String _aiCapabilitiesKey = 'verifin.ai_capabilities.v1';
 const String _aiChatHistoryKey = 'verifin.ai_chat.v1';
 const String _homeTrendKey = 'verifin.home_metrics.v1';
 const String _onboardingKey = 'verifin.onboarding.v1';
+const String _backupTransportModeKey = 'verifin.backup_transport_mode.v1';
 
 String _panelsKeyFor(PanelPageKind page) {
   switch (page) {
@@ -141,6 +143,12 @@ class VeriFinController extends ChangeNotifier
 
   /// 唯一的构造入口：同步载入偏好类 KV 数据后，从 SQLite 载入账目类数据
   /// （全新数据库首启动写入默认数据）。账目类数据只以 SQLite 为准。
+  ///
+  /// 载入序列的最后一件事是重放未完成的 KV 偏好 journal：上次会话若在
+  /// 「SQLite 元数据已提交、本地 KV 还没写」之间被打断，这里补写并让内存字段与
+  /// KV 对齐。**必须在启动时、投影对账之前完成**——对账拿的是
+  /// [exportDataForSync] 的内存投影，若 KV 仍是旧值，远端已应用的偏好在本地看起来
+  /// 从未生效，会被判成本地新变更再上传一遍。
   static Future<VeriFinController> create(
     LocalKeyValueStore store, {
     required LedgerRepository repository,
@@ -154,6 +162,7 @@ class VeriFinController extends ChangeNotifier
       systemIsEnglish: systemIsEnglish,
     );
     await controller._loadFromRepository();
+    await controller.applySyncPreferenceJournal();
     controller._syncAmountFormatContext();
     return controller;
   }
