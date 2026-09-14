@@ -2821,6 +2821,18 @@ class AppLocalizationsZh extends AppLocalizations {
   String get syncConflictsTitle => '同步冲突';
 
   @override
+  String get syncNow => '立即同步';
+
+  @override
+  String get syncNowHint => '上传本地变更并下载远端更新';
+
+  @override
+  String get syncSuccess => '同步完成';
+
+  @override
+  String get syncFailed => '同步失败';
+
+  @override
   String get syncConflictsSubtitle => '这些条目在多台设备上被同时修改，需要你决定保留哪一版';
 
   @override

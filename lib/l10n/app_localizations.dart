@@ -5168,6 +5168,30 @@ abstract class AppLocalizations {
   /// **'同步冲突'**
   String get syncConflictsTitle;
 
+  /// 数据管理页:手动同步按钮
+  ///
+  /// In zh, this message translates to:
+  /// **'立即同步'**
+  String get syncNow;
+
+  /// 数据管理页:手动同步按钮副标题
+  ///
+  /// In zh, this message translates to:
+  /// **'上传本地变更并下载远端更新'**
+  String get syncNowHint;
+
+  /// 手动同步成功反馈
+  ///
+  /// In zh, this message translates to:
+  /// **'同步完成'**
+  String get syncSuccess;
+
+  /// 手动同步失败反馈
+  ///
+  /// In zh, this message translates to:
+  /// **'同步失败'**
+  String get syncFailed;
+
   /// 冲突审阅页副标题
   ///
   /// In zh, this message translates to:

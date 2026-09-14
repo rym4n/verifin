@@ -2882,6 +2882,18 @@ class AppLocalizationsEn extends AppLocalizations {
   String get syncConflictsTitle => 'Sync conflicts';
 
   @override
+  String get syncNow => 'Sync now';
+
+  @override
+  String get syncNowHint => 'Upload local changes and download remote updates';
+
+  @override
+  String get syncSuccess => 'Sync complete';
+
+  @override
+  String get syncFailed => 'Sync failed';
+
+  @override
   String get syncConflictsSubtitle =>
       'These items were changed on more than one device — choose which version to keep.';
 
