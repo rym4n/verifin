@@ -106,13 +106,18 @@ void main() {
         expect(remaining.map((r) => r.batchId).toSet(), <String>{'b2'});
       });
 
-      test('outbox 记录带 payload hash 与重试计数', () async {
+      test('outbox 记录带 payload hash、重试计数与协议相对路径', () async {
         final sync = open();
         await sync.enqueueBatch(_batch('b1', <String>['op-1']));
         final record = (await sync.loadOutbox()).single;
         expect(record.payloadHash, isNotEmpty);
         expect(record.retryCount, 0);
-        expect(record.relativePath, contains('op-1'));
+        // 协议布局：events/<deviceId>/<20 位零填充 sequence>-<operationId>.vfsync。
+        // 零填充不得丢失——扫描按目录字典序推进 sequence，缺了填充顺序就乱了。
+        expect(
+          record.relativePath,
+          'events/dev-1/00000000000000000001-op-1.vfsync',
+        );
       });
 
       test('扫描状态默认值：无连续序列、无 gap、无成功时间', () async {

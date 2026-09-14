@@ -243,9 +243,12 @@ class _InMemorySyncRepository implements SyncRepository {
         SyncOutboxRecord(
           batchId: batch.batchId,
           operationId: event.operationId,
+          // 与 SqliteSyncRepository._relativePathFor 保持一致：序列零填充到 20 位，
+          // 使远端目录的字典序等于序列序。契约测试逐字比对完整路径。
           relativePath:
               'events/${event.version.dot.deviceId}/'
-              '${event.version.dot.sequence}-${event.operationId}.vfsync',
+              '${event.version.dot.sequence.toString().padLeft(20, '0')}'
+              '-${event.operationId}.vfsync',
           payloadHash: event.payloadHash,
           retryCount: 0,
         ),
