@@ -330,6 +330,20 @@ class _InMemorySyncRepository implements SyncRepository {
   Future<List<SyncConflictRecord>> loadConflicts() async =>
       List<SyncConflictRecord>.of(_conflicts);
 
+  /// shadow 的内存镜像。语义与 SQLite 实现一致：整体替换，不合并。
+  final Map<SyncEntityKey, String> _shadow = <SyncEntityKey, String>{};
+
+  @override
+  Future<Map<SyncEntityKey, String>> loadShadow() async =>
+      Map<SyncEntityKey, String>.of(_shadow);
+
+  @override
+  Future<void> saveShadow(Map<SyncEntityKey, String> shadow) async {
+    _shadow
+      ..clear()
+      ..addAll(shadow);
+  }
+
   KnownSyncEntityVersion? _latestVersionFor(SyncEntityKey key) {
     final bucket = _versions[key];
     if (bucket == null || bucket.isEmpty) {

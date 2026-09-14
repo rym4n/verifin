@@ -29,6 +29,7 @@ import 'logging/app_logger.dart';
 import 'models.dart';
 import 'recurring.dart';
 import 'reminder/reminder_settings.dart';
+import 'sync/sync_change_tracker.dart';
 
 part 'veri_fin_controller_state.dart';
 part 'veri_fin_controller_ops.dart';
@@ -115,7 +116,8 @@ int _compareEntriesLatestFirst(LedgerEntry a, LedgerEntry b) {
 /// 由应用根组件注入，控制器本身不做文件 I/O，测试宿主保持为空。
 
 class VeriFinController extends ChangeNotifier
-    with _ControllerState, _ControllerOps {
+    with _ControllerState, _ControllerOps
+    implements SyncProjectionSource {
   VeriFinController._(
     this._store,
     this._repository, {
@@ -168,8 +170,18 @@ class VeriFinController extends ChangeNotifier
   /// 软件日志入口，供「软件日志」页读取；未注入时为 null。
   AppLogger? get logger => _logger;
 
+  /// 同步层读取当前全量数据的入口。
+  ///
+  /// 复用 [exportDataJson] 的**同一份**内容（`exportDataSection()`），避免出现
+  /// 「备份导出的字段集」与「同步上传的字段集」两套真相。这里刻意返回结构化 `Map`
+  /// 而不是 JSON 字符串：投影每次比较都要读它，字符串往返纯属浪费，且会把已经规范
+  /// 化过的数值表示再改变一次。
+  @override
+  Map<String, Object?> exportDataForSync() => exportDataSection();
+
   @override
   void dispose() {
+    _syncChangeTracker?.dispose();
     themePreferenceListenable.dispose();
     localePreferenceListenable.dispose();
     aiCapabilityListenable.dispose();

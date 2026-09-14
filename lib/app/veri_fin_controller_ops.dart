@@ -984,6 +984,7 @@ mixin _ControllerOps on ChangeNotifier, _ControllerState {
     themePreferenceListenable.value = preference;
     _store.write(_themeKey, preference.name);
     notifyListeners();
+    _notifySyncChanged();
   }
 
   LocalePreference get localePreference => _localePreference;
@@ -1034,6 +1035,7 @@ mixin _ControllerOps on ChangeNotifier, _ControllerState {
     _hapticsEnabled = enabled;
     _store.write(_hapticsKey, enabled.toString());
     notifyListeners();
+    _notifySyncChanged();
   }
 
   /// 首页 FAB（记一笔）的行为：手动记账（默认）或 AI 对话记账。设备本地偏好，
@@ -1044,6 +1046,7 @@ mixin _ControllerOps on ChangeNotifier, _ControllerState {
     _fabActionMode = mode;
     _store.write(_fabActionKey, mode.name);
     notifyListeners();
+    _notifySyncChanged();
   }
 
   /// 金额数字键盘的数字排列。设备本地偏好，不影响账目数据。
@@ -1057,12 +1060,14 @@ mixin _ControllerOps on ChangeNotifier, _ControllerState {
     _homeTrendConfig = config;
     _store.write(_homeTrendKey, config.encode());
     notifyListeners();
+    _notifySyncChanged();
   }
 
   void resetHomeTrendConfig() {
     _homeTrendConfig = HomeTrendConfig.defaults;
     _store.delete(_homeTrendKey);
     notifyListeners();
+    _notifySyncChanged();
   }
 
   Future<bool> saveBudgetSettingsDraft({
@@ -1138,6 +1143,7 @@ mixin _ControllerOps on ChangeNotifier, _ControllerState {
     _budgetCycleStartDays
       ..clear()
       ..addAll(nextCycleDays);
+    _notifySyncChanged();
     notifyListeners();
     return true;
   }
@@ -1151,6 +1157,7 @@ mixin _ControllerOps on ChangeNotifier, _ControllerState {
     }
     _homeTrendConfig = config;
     notifyListeners();
+    _notifySyncChanged();
     return true;
   }
 
@@ -1179,6 +1186,7 @@ mixin _ControllerOps on ChangeNotifier, _ControllerState {
     }
     _persistDefaultAccounts();
     notifyListeners();
+    _notifySyncChanged();
   }
 
   /// 账户编辑页显式提交默认账户偏好，KV 写入成功后才更新内存。
@@ -1199,6 +1207,7 @@ mixin _ControllerOps on ChangeNotifier, _ControllerState {
       ..clear()
       ..addAll(next);
     notifyListeners();
+    _notifySyncChanged();
     return true;
   }
 
@@ -1212,6 +1221,7 @@ mixin _ControllerOps on ChangeNotifier, _ControllerState {
     amount_format.amountForceTwoDecimals = value;
     _store.write(_amountFormatKey, value.toString());
     notifyListeners();
+    _notifySyncChanged();
   }
 
   MoneyUnitStyle get moneyUnitStyle => _moneyUnitStyle;
@@ -1231,6 +1241,7 @@ mixin _ControllerOps on ChangeNotifier, _ControllerState {
     _store.write(_moneyUnitStyleKey, unitStyle.name);
     _store.write(_hideSingleCurrencyUnitKey, hideInSingleCurrency.toString());
     notifyListeners();
+    _notifySyncChanged();
   }
 
   /// 记账自动识别（`category_suggest.dart` 的 `suggestEntry`）总开关：关闭后手动记账
@@ -1254,6 +1265,7 @@ mixin _ControllerOps on ChangeNotifier, _ControllerState {
     _autoSuggestEnabled = value;
     _store.write(_autoSuggestKey, value.toString());
     notifyListeners();
+    _notifySyncChanged();
   }
 
   /// 主设置页一次性提交显示与记账偏好；所有 KV 写入完成后才更新 Controller。
@@ -1325,6 +1337,7 @@ mixin _ControllerOps on ChangeNotifier, _ControllerState {
     themePreferenceListenable.value = themePreference;
     localePreferenceListenable.value = localePreference;
     notifyListeners();
+    _notifySyncChanged();
     return true;
   }
 
@@ -1525,6 +1538,7 @@ mixin _ControllerOps on ChangeNotifier, _ControllerState {
         : AssetAccountViewMode.group;
     _store.write(_assetViewModeKey, _assetAccountViewMode.name);
     notifyListeners();
+    _notifySyncChanged();
   }
 
   /// Saves the asset page's appearance and ordering as one explicit editor
@@ -1644,6 +1658,7 @@ mixin _ControllerOps on ChangeNotifier, _ControllerState {
       ..clear()
       ..addAll(nextCollapsedSections);
     notifyListeners();
+    _notifySyncChanged();
     return true;
   }
 
@@ -1666,6 +1681,7 @@ mixin _ControllerOps on ChangeNotifier, _ControllerState {
     }
     _persistAssetSectionCollapsed();
     notifyListeners();
+    _notifySyncChanged();
   }
 
   List<Account> sortedAccountsForAssetSection({
@@ -1721,6 +1737,7 @@ mixin _ControllerOps on ChangeNotifier, _ControllerState {
         .toList();
     _persistAssetAccountOrders();
     notifyListeners();
+    _notifySyncChanged();
   }
 
   List<T> sortedAssetSections<T>({
@@ -1774,6 +1791,7 @@ mixin _ControllerOps on ChangeNotifier, _ControllerState {
         next.map(idOf).toList();
     _persistAssetSectionOrders();
     notifyListeners();
+    _notifySyncChanged();
   }
 
   /// 页面的面板配置(含关闭项),顺序即渲染顺序。
@@ -1802,6 +1820,7 @@ mixin _ControllerOps on ChangeNotifier, _ControllerState {
     panels[index] = panels[index].copyWith(enabled: enabled);
     _persistPagePanels(page);
     notifyListeners();
+    _notifySyncChanged();
     return true;
   }
 
@@ -1810,6 +1829,7 @@ mixin _ControllerOps on ChangeNotifier, _ControllerState {
     _pagePanels[page] = _defaultPanelSettings(page.specs);
     _persistPagePanels(page);
     notifyListeners();
+    _notifySyncChanged();
   }
 
   void reorderPanels(PanelPageKind page, int oldIndex, int newIndex) {
@@ -1824,6 +1844,7 @@ mixin _ControllerOps on ChangeNotifier, _ControllerState {
     panels.insert(newIndex.clamp(0, panels.length).toInt(), moved);
     _persistPagePanels(page);
     notifyListeners();
+    _notifySyncChanged();
   }
 
   Future<bool> savePanelSettingsDraft(
@@ -1842,6 +1863,7 @@ mixin _ControllerOps on ChangeNotifier, _ControllerState {
     }
     _pagePanels[page] = normalized;
     notifyListeners();
+    _notifySyncChanged();
     return true;
   }
 
@@ -2795,6 +2817,7 @@ mixin _ControllerOps on ChangeNotifier, _ControllerState {
     _activeBookId = bookId;
     _store.write(_activeBookKey, _activeBookId);
     notifyListeners();
+    _notifySyncChanged();
   }
 
   bool deleteLedgerBook(String bookId) {
@@ -2834,6 +2857,7 @@ mixin _ControllerOps on ChangeNotifier, _ControllerState {
     _persistAssetAccountOrders();
     _persistAssetSectionOrders();
     notifyListeners();
+    _notifySyncChanged();
     return true;
   }
 
@@ -3913,6 +3937,7 @@ mixin _ControllerOps on ChangeNotifier, _ControllerState {
     }
     _profile = profile;
     notifyListeners();
+    _notifySyncChanged();
     return true;
   }
 
@@ -3924,6 +3949,7 @@ mixin _ControllerOps on ChangeNotifier, _ControllerState {
       _store.write(_assetCoverKey, _assetCoverUrl);
     }
     notifyListeners();
+    _notifySyncChanged();
   }
 
   void resetAllData() {
@@ -3988,6 +4014,7 @@ mixin _ControllerOps on ChangeNotifier, _ControllerState {
     _persistAllLedgerData();
     themePreferenceListenable.value = _themePreference;
     notifyListeners();
+    _notifySyncChanged();
   }
 
   String exportDataJson() {
@@ -3995,47 +4022,56 @@ mixin _ControllerOps on ChangeNotifier, _ControllerState {
       'app': 'verifin',
       'version': 3,
       'exportedAt': DateTime.now().toIso8601String(),
-      'data': <String, Object?>{
-        'ledgerBooks': _ledgerBooks.map((book) => book.toJson()).toList(),
-        'activeBookId': _activeBookId,
-        'entries': _entries.map((entry) => entry.toJson()).toList(),
-        'accounts': _accounts.map((account) => account.toJson()).toList(),
-        'accountGroups': _accountGroups.map((group) => group.toJson()).toList(),
-        'categories': _categories.map((category) => category.toJson()).toList(),
-        'tags': _tags.map((tag) => tag.toJson()).toList(),
-        'attachments': _attachments.map((a) => a.toJson()).toList(),
-        'recurringRules': _recurringRules.map((r) => r.toJson()).toList(),
-        'exchangeRates': _exchangeRates.map((rate) => rate.toJson()).toList(),
-        'monthlyBudgets': Map<String, double>.from(_monthlyBudgets),
-        'categoryBudgets': Map<String, double>.from(_categoryBudgets),
-        'dailyBudgets': Map<String, double>.from(_dailyBudgets),
-        'budgetCycleStartDays': Map<String, int>.from(_budgetCycleStartDays),
-        'profile': _profile.toJson(),
-        'themePreference': _themePreference.name,
-        'assetCoverUrl': _assetCoverUrl,
-        'hapticsEnabled': _hapticsEnabled,
-        'assetAccountViewMode': _assetAccountViewMode.name,
-        'collapsedAssetSections': _collapsedAssetSections.toList(),
-        'assetAccountOrders': _assetAccountOrders,
-        'assetSectionOrders': _assetSectionOrders,
-        'homePanels': _pagePanels[PanelPageKind.home]!
-            .map((item) => item.toJson())
-            .toList(),
-        'reportPanels': _pagePanels[PanelPageKind.reports]!
-            .map((item) => item.toJson())
-            .toList(),
-        'defaultAccountIds': Map<String, String>.from(_defaultAccountIds),
-        'fabActionMode': _fabActionMode.name,
-        'amountForceTwoDecimals': _amountForceTwoDecimals,
-        'currencyFractionStyle': amount_format.currencyFractionStyle.name,
-        'moneyUnitStyle': _moneyUnitStyle.name,
-        'hideUnitInSingleCurrency': _hideUnitInSingleCurrency,
-        'autoSuggestEnabled': _autoSuggestEnabled,
-        'showRunningBalance': _showRunningBalance,
-        'homeTrendConfig': _homeTrendConfig.toJson(),
-      },
+      'data': exportDataSection(),
     };
     return const JsonEncoder.withIndent('  ').convert(payload);
+  }
+
+  /// 导出内容的 `data` 段。备份导出与同步投影**共用这一处**，保证
+  /// 「能备份的字段」与「能同步的字段」不会各自漂移成两份清单。
+  ///
+  /// 公开（而非私有）是因为同步层要拿结构化 `Map`，而不是让调用方去解析上面那段
+  /// pretty-printed JSON：投影每次比较都要读它，字符串往返纯属浪费。
+  Map<String, Object?> exportDataSection() {
+    return <String, Object?>{
+      'ledgerBooks': _ledgerBooks.map((book) => book.toJson()).toList(),
+      'activeBookId': _activeBookId,
+      'entries': _entries.map((entry) => entry.toJson()).toList(),
+      'accounts': _accounts.map((account) => account.toJson()).toList(),
+      'accountGroups': _accountGroups.map((group) => group.toJson()).toList(),
+      'categories': _categories.map((category) => category.toJson()).toList(),
+      'tags': _tags.map((tag) => tag.toJson()).toList(),
+      'attachments': _attachments.map((a) => a.toJson()).toList(),
+      'recurringRules': _recurringRules.map((r) => r.toJson()).toList(),
+      'exchangeRates': _exchangeRates.map((rate) => rate.toJson()).toList(),
+      'monthlyBudgets': Map<String, double>.from(_monthlyBudgets),
+      'categoryBudgets': Map<String, double>.from(_categoryBudgets),
+      'dailyBudgets': Map<String, double>.from(_dailyBudgets),
+      'budgetCycleStartDays': Map<String, int>.from(_budgetCycleStartDays),
+      'profile': _profile.toJson(),
+      'themePreference': _themePreference.name,
+      'assetCoverUrl': _assetCoverUrl,
+      'hapticsEnabled': _hapticsEnabled,
+      'assetAccountViewMode': _assetAccountViewMode.name,
+      'collapsedAssetSections': _collapsedAssetSections.toList(),
+      'assetAccountOrders': _assetAccountOrders,
+      'assetSectionOrders': _assetSectionOrders,
+      'homePanels': _pagePanels[PanelPageKind.home]!
+          .map((item) => item.toJson())
+          .toList(),
+      'reportPanels': _pagePanels[PanelPageKind.reports]!
+          .map((item) => item.toJson())
+          .toList(),
+      'defaultAccountIds': Map<String, String>.from(_defaultAccountIds),
+      'fabActionMode': _fabActionMode.name,
+      'amountForceTwoDecimals': _amountForceTwoDecimals,
+      'currencyFractionStyle': amount_format.currencyFractionStyle.name,
+      'moneyUnitStyle': _moneyUnitStyle.name,
+      'hideUnitInSingleCurrency': _hideUnitInSingleCurrency,
+      'autoSuggestEnabled': _autoSuggestEnabled,
+      'showRunningBalance': _showRunningBalance,
+      'homeTrendConfig': _homeTrendConfig.toJson(),
+    };
   }
 
   /// 从明文导出 JSON 导入。**字节层的格式判定（zip/加密信封/明文）不在 controller**
@@ -4348,6 +4384,9 @@ mixin _ControllerOps on ChangeNotifier, _ControllerState {
     }
     themePreferenceListenable.value = _themePreference;
     notifyListeners();
+    // 导入/恢复是真实的本地变更（整库替换），必须上报同步：否则下一次比较只会
+    // 看到「导出内容变了」而无法区分它是本地改动还是远端回声。
+    _notifySyncChanged();
   }
 
   void _validateImportedCurrencyData({

@@ -5,6 +5,12 @@ import 'package:crypto/crypto.dart';
 /// Causality relationship between two version vectors.
 enum SyncCausality { before, after, equal, concurrent }
 
+/// 协议版本。写入每个事件的 `protocolVersion`，远端据此判定兼容性。
+///
+/// 单点定义：事件构造方（变更捕获、冲突决议、首次基线）都引用这里，
+/// 避免各处硬编码出「同一协议、不同版本号」的文件。
+const String syncProtocolVersion = '1';
+
 /// A single logical timestamp: (deviceId, sequence).
 class SyncDot {
   const SyncDot({required this.deviceId, required this.sequence});

@@ -24,6 +24,23 @@ abstract interface class SyncRepository {
   Future<void> saveScanState(SyncScanState state);
 
   Future<List<SyncConflictRecord>> loadConflicts();
+
+  /// 读取当前 `sync_shadow`：实体键 → 规范化 payload hash。
+  ///
+  /// shadow 是「上一次已知的投影」，`SyncChangeTracker.reconcile()` 用它做本地
+  /// 变更检测。**只存 hash 不存 payload**：变更判定只需要「是否与已知一致」，
+  /// 旧 payload 体积随账目增长而膨胀，且远端应用本就是合并而非回读。
+  ///
+  /// 键编码走 [encodeSyncEntityKey] / [decodeSyncEntityKey]，与
+  /// [RemoteApplyPlan.shadowHashes] 同一格式，调用方不要自行拼接。
+  Future<Map<SyncEntityKey, String>> loadShadow();
+
+  /// 整体替换 `sync_shadow`。
+  ///
+  /// **语义是替换而非合并**：调用方传入的必须是「本次投影的完整结果」。
+  /// 若只传差异，上一轮被删除的实体行会残留，下一轮 reconcile 会把同一个删除
+  /// 反复判成新变更。实现方在单事务内先清空再写入，保证不会读到半份 shadow。
+  Future<void> saveShadow(Map<SyncEntityKey, String> shadow);
 }
 
 /// 远端批次与本地已落库状态互斥时抛出。调用方据此保留 pending 并提示用户，

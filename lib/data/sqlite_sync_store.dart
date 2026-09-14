@@ -302,6 +302,50 @@ class SqliteSyncRepository implements SyncRepository {
     return result;
   }
 
+  // ---- shadow ----
+
+  /// 读取当前投影快照的 hash 表。行数随实体数增长（账目、账户各占一行），
+  /// 但每行只有两个短字符串，比保存完整 payload 的旧列表轻得多。
+  @override
+  Future<Map<SyncEntityKey, String>> loadShadow() async {
+    final rows = await _database.query(
+      'sync_shadow',
+      columns: <String>['scope', 'type', 'id', 'payload_hash'],
+    );
+    return <SyncEntityKey, String>{
+      for (final row in rows)
+        SyncEntityKey(
+          scope: row['scope'] as String,
+          type: row['type'] as String,
+          id: row['id'] as String,
+        ): row['payload_hash'] as String,
+    };
+  }
+
+  /// 整体替换 shadow。先清空再写入，且在同一事务内完成：既避免旧实体行残留
+  /// 导致删除被反复重放，也避免并发读看到半份 shadow 而误判本地变更。
+  @override
+  Future<void> saveShadow(Map<SyncEntityKey, String> shadow) {
+    return _enqueue(() async {
+      await _database.transaction((txn) async {
+        await txn.delete('sync_shadow');
+        final statement = txn.batch();
+        for (final entry in shadow.entries) {
+          statement.insert('sync_shadow', <String, Object?>{
+            'scope': entry.key.scope,
+            'type': entry.key.type,
+            'id': entry.key.id,
+            'payload_hash': entry.value,
+            // 本地投影的 shadow 行没有远端版本上下文，写入空对象而不是编造一个
+            // 版本：伪造的 dot 会让后续因果比较误判为「已有版本」。
+            'version_json': '{}',
+          }, conflictAlgorithm: ConflictAlgorithm.replace);
+        }
+        await statement.commit(noResult: true);
+      });
+    });
+  }
+
   // ---- 扫描状态 ----
 
   @override

@@ -87,6 +87,68 @@ void main() {
         expect(loaded.nextSequence, 9);
       });
 
+      test('shadow 保存后原样读回，含 id 里的竖线', () async {
+        final sync = open();
+        const key = SyncEntityKey(
+          scope: 'ledger',
+          type: 'entries',
+          id: 'entry_1',
+        );
+        const oddId = SyncEntityKey(
+          scope: 'global',
+          type: 'monthlyBudgets',
+          id: 'default:2026-09',
+        );
+        await sync.saveShadow(<SyncEntityKey, String>{
+          key: 'hash-a',
+          oddId: 'hash-b',
+        });
+
+        final loaded = await sync.loadShadow();
+        expect(loaded.length, 2);
+        expect(loaded[key], 'hash-a');
+        expect(loaded[oddId], 'hash-b');
+      });
+
+      test('shadow 保存是整体替换而非合并（否则删除会被反复判成新变更）', () async {
+        final sync = open();
+        const kept = SyncEntityKey(
+          scope: 'ledger',
+          type: 'entries',
+          id: 'kept',
+        );
+        const removed = SyncEntityKey(
+          scope: 'ledger',
+          type: 'entries',
+          id: 'removed',
+        );
+        await sync.saveShadow(<SyncEntityKey, String>{
+          kept: 'hash-kept',
+          removed: 'hash-removed',
+        });
+
+        // 第二轮投影里 removed 已消失：shadow 必须随之消失。
+        await sync.saveShadow(<SyncEntityKey, String>{kept: 'hash-kept'});
+
+        final loaded = await sync.loadShadow();
+        expect(loaded.length, 1);
+        expect(loaded.containsKey(removed), isFalse);
+      });
+
+      test('shadow 可整体清空（恢复/重置时重建基线）', () async {
+        final sync = open();
+        await sync.saveShadow(<SyncEntityKey, String>{
+          const SyncEntityKey(scope: 'ledger', type: 'entries', id: 'e1'): 'h',
+        });
+        await sync.saveShadow(<SyncEntityKey, String>{});
+        expect(await sync.loadShadow(), isEmpty);
+      });
+
+      test('空库的 shadow 是空表而不是抛错', () async {
+        final sync = open();
+        expect(await sync.loadShadow(), isEmpty);
+      });
+
       test('outbox 入队后可按批次读回，标记上传后不再出现在待传列表', () async {
         final sync = open();
         expect(await sync.loadOutbox(), isEmpty);
@@ -519,6 +581,14 @@ class _DeferredSyncRepository implements SyncRepository {
   @override
   Future<void> saveScanState(SyncScanState state) async =>
       (await _ready).saveScanState(state);
+
+  @override
+  Future<Map<SyncEntityKey, String>> loadShadow() async =>
+      (await _ready).loadShadow();
+
+  @override
+  Future<void> saveShadow(Map<SyncEntityKey, String> shadow) async =>
+      (await _ready).saveShadow(shadow);
 }
 
 SyncBatchRecord _batch(String batchId, List<String> operationIds) {
