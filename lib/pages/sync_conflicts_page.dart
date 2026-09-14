@@ -563,7 +563,7 @@ SyncConflictPayloadSummary summarizeSyncConflictPayload(
   void put(String label, Object? value) {
     if (value == null) return;
     if (value is String && value.isEmpty) return;
-    summary[label] = _renderValue(l10n, label, value, accounts, categories);
+    summary[label] = _renderValue(l10n, value);
   }
 
   switch (entityType) {
@@ -585,9 +585,13 @@ SyncConflictPayloadSummary summarizeSyncConflictPayload(
             ? formatAmount(map['initialBalance'] as num)
             : null,
       );
+      // 账户类型经 `label()` 本地化：直接把存储用的枚举名（如 `onlinePayment`）
+      // 显示给用户既不是文案语言，也暴露内部取值。
       put(
         l10n.syncConflictFieldType,
-        map['type'] is String ? map['type'] : null,
+        map['type'] is String
+            ? AccountType.fromStorage(map['type'] as String).label(l10n)
+            : null,
       );
     case 'categories':
     case 'tags':
@@ -645,13 +649,11 @@ List<SyncConflictDiffRow> compareSyncConflictPayloads(
   return rows;
 }
 
-String _renderValue(
-  AppLocalizations l10n,
-  String label,
-  Object value,
-  List<Account> accounts,
-  List<Category> categories,
-) {
+/// 把非字符串值渲染成简短摘要。
+///
+/// 嵌套结构与列表只给「项数」而不是展开内容：对比视图里逐字展开一个数组
+/// 既读不懂，也会把内部字段名泄露出去。
+String _renderValue(AppLocalizations l10n, Object value) {
   if (value is bool) {
     return value ? l10n.syncConflictValueTrue : l10n.syncConflictValueFalse;
   }
