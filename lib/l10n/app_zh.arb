@@ -1869,6 +1869,22 @@
   "@syncConflictsTitle": {
     "description": "冲突审阅页标题"
   },
+  "syncNow": "立即同步",
+  "@syncNow": {
+    "description": "数据管理页:手动同步按钮"
+  },
+  "syncNowHint": "上传本地变更并下载远端更新",
+  "@syncNowHint": {
+    "description": "数据管理页:手动同步按钮副标题"
+  },
+  "syncSuccess": "同步完成",
+  "@syncSuccess": {
+    "description": "手动同步成功反馈"
+  },
+  "syncFailed": "同步失败",
+  "@syncFailed": {
+    "description": "手动同步失败反馈"
+  },
   "syncConflictsSubtitle": "这些条目在多台设备上被同时修改，需要你决定保留哪一版",
   "@syncConflictsSubtitle": {
     "description": "冲突审阅页副标题"

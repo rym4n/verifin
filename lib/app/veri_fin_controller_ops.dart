@@ -909,6 +909,21 @@ mixin _ControllerOps on ChangeNotifier, _ControllerState {
     await engine.resolveConflict(conflictId, resolution);
   }
 
+  /// 运行一次同步循环：上传 outbox，扫描远端，下载并合并。
+  ///
+  /// 供 [SyncCoordinator] 调用，封装引擎构造与传输层注入。无 WebDAV 配置时
+  /// 返回 `no_config` 错误而不抛异常，让调用方决定如何反馈用户。
+  Future<SyncRunResult> runSyncEngine(SyncTrigger trigger) async {
+    final engine = SyncEngine(
+      repository: _repository.sync,
+      transport: _webdavConfig.isConfigured ? WebdavSyncTransportImpl() : null,
+      controller: this as SyncProjectionSource,
+      config: _webdavConfig,
+      remoteApply: runRemoteApply,
+    );
+    return engine.run(trigger: trigger);
+  }
+
   /// 重放 `sync_apply_journal` 中未应用的 KV 偏好行：按 key 确定性顺序逐个
   /// `writeAndFlush` 到本地 KV，成功一条标记一条 applied。**必须在应用重启时、
   /// 投影对账（shadow 比较）之前调用**——否则本地 KV 还停留在旧值，投影会把

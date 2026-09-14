@@ -31,8 +31,10 @@ import 'recurring.dart';
 import 'reminder/reminder_settings.dart';
 import 'sync/sync_change_tracker.dart';
 import 'sync/sync_conflict.dart';
+import 'sync/sync_coordinator.dart';
 import 'sync/sync_engine.dart';
 import 'sync/sync_store.dart';
+import 'sync/webdav_sync_transport.dart';
 
 part 'veri_fin_controller_state.dart';
 part 'veri_fin_controller_ops.dart';

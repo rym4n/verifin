@@ -1,5 +1,7 @@
 part of 'veri_fin_controller.dart';
 
+/// 控制器的「状态」层：字段持有与持久化，不含业务逻辑。
+
 /// 控制器的「状态与持久化」层：集中所有内存字段、KV/SQLite 载入与落库、
 /// 以及少量被载入流程调用的基础方法。领域操作在 [_ControllerOps]。
 mixin _ControllerState on ChangeNotifier {
@@ -30,12 +32,31 @@ mixin _ControllerState on ChangeNotifier {
   /// 不感知同步状态机。
   SyncChangeTracker? _syncChangeTracker;
 
+  /// 同步协调器：由应用根组件（`main.dart`）注入，协调启动/恢复/本地变更的
+  /// 自动同步触发与手动同步请求。可空：同步未配置时不存在。
+  SyncCoordinator? _syncCoordinator;
+
   /// 绑定/解绑变更捕获器。绑定后本地写路径开始上报变更。
   set syncChangeTracker(SyncChangeTracker? tracker) {
     _syncChangeTracker = tracker;
   }
 
   SyncChangeTracker? get syncChangeTracker => _syncChangeTracker;
+
+  /// 绑定/解绑同步协调器。由应用根组件注入，供手动同步按钮调用。
+  set syncCoordinator(SyncCoordinator? coordinator) {
+    _syncCoordinator = coordinator;
+  }
+
+  /// 手动同步入口：绕过防抖直接运行一次同步，返回结果供 UI 反馈。
+  /// 未配置时返回 null。
+  Future<SyncRunResult?> runManualSync() async {
+    final coordinator = _syncCoordinator;
+    if (coordinator == null) {
+      return null;
+    }
+    return coordinator.runManual();
+  }
 
   /// 成功写入后的统一上报入口：既调用外部回调，也（若已绑定）标记本地变更。
   void _notifySyncChanged() {

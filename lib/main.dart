@@ -13,6 +13,7 @@ import 'app/models.dart';
 import 'app/platform_bridge.dart';
 import 'app/reminder/notification_scheduler.dart';
 import 'app/reminder/reminder_settings.dart';
+import 'app/sync/sync_coordinator.dart';
 import 'app/veri_fin_controller.dart';
 import 'app/veri_fin_scope.dart';
 import 'data/app_database.dart';
@@ -183,6 +184,7 @@ class _VeriFinAppState extends State<VeriFinApp> with WidgetsBindingObserver {
   final NotificationScheduler _notifications = NotificationScheduler();
   final VeriFeedbackController _feedbackController = VeriFeedbackController();
   Timer? _widgetRefreshTimer;
+  SyncCoordinator? _syncCoordinator;
 
   @override
   void initState() {
@@ -202,6 +204,14 @@ class _VeriFinAppState extends State<VeriFinApp> with WidgetsBindingObserver {
       _controller.reminderSettings,
       l10n: l10nForPreference(_controller.localePreference),
     );
+    // 同步协调器：自动同步模式下触发启动、恢复与本地变更同步。
+    _syncCoordinator = SyncCoordinator(
+      getTransportMode: () => _controller.backupTransportMode,
+      runSync: _controller.runSyncEngine,
+    );
+    _controller.syncCoordinator = _syncCoordinator;
+    _controller.onSyncChanged = _syncCoordinator!.onLocalMutation;
+    unawaited(_syncCoordinator!.onStartup());
     BackupCoordinator.maybeBackupOnOpen(_controller);
     // 打开应用时刷新桌面小组件「今日支出」。
     pushWidgetData(_controller);
@@ -244,6 +254,7 @@ class _VeriFinAppState extends State<VeriFinApp> with WidgetsBindingObserver {
 
   Future<void> _postDueRecurringAndRefresh() async {
     await _controller.applyDueRecurring(DateTime.now());
+    await _syncCoordinator?.onResumed();
     await BackupCoordinator.maybeBackupOnOpen(_controller);
     await pushWidgetData(_controller);
   }
@@ -273,7 +284,9 @@ class _VeriFinAppState extends State<VeriFinApp> with WidgetsBindingObserver {
   @override
   void dispose() {
     _widgetRefreshTimer?.cancel();
+    _syncCoordinator?.dispose();
     _controller.onWidgetProjectionInvalidated = null;
+    _controller.onSyncChanged = null;
     WidgetsBinding.instance.removeObserver(this);
     if (_controller.onEntryAdded == _handleEntryAdded) {
       _controller.onEntryAdded = null;

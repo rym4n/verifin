@@ -390,6 +390,14 @@ class _DataManagementPageState extends State<DataManagementPage> {
                         ),
                         const Divider(),
                         _syncStatusRow(context, controller),
+                        const Divider(),
+                        SettingsRow(
+                          icon: Icons.sync,
+                          title: AppLocalizations.of(context).syncNow,
+                          trailing: AppLocalizations.of(context).syncNowHint,
+                          trailingIcon: Icons.chevron_right,
+                          onTap: () => _runManualSync(context, controller),
+                        ),
                         if (controller.backupTransportModeConflict) ...<Widget>[
                           const Divider(),
                           _transportModeConflictRow(context, controller),
@@ -540,6 +548,56 @@ class _DataManagementPageState extends State<DataManagementPage> {
       return;
     }
     await _refreshSyncStatus(controller);
+  }
+
+  /// 手动同步：立即运行一次同步循环，等待完成并更新状态显示。
+  Future<void> _runManualSync(
+    BuildContext context,
+    VeriFinController controller,
+  ) async {
+    final l10n = AppLocalizations.of(context);
+
+    try {
+      final result = await controller.runManualSync();
+      if (result == null) {
+        // 未配置同步协调器
+        return;
+      }
+
+      if (!context.mounted) {
+        return;
+      }
+
+      // 刷新同步状态显示
+      await _refreshSyncStatus(controller);
+
+      if (result.errorCode != null) {
+        _notify(
+          context,
+          message: l10n.syncFailed,
+          tone: VeriFeedbackTone.error,
+          duration: VeriFeedbackDuration.long,
+          priority: VeriFeedbackPriority.high,
+        );
+      } else {
+        _notify(
+          context,
+          message: l10n.syncSuccess,
+          tone: VeriFeedbackTone.success,
+        );
+      }
+    } catch (error) {
+      controller.logger?.error('手动同步失败', source: 'sync', error: error);
+      if (context.mounted) {
+        _notify(
+          context,
+          message: l10n.syncFailed,
+          tone: VeriFeedbackTone.error,
+          duration: VeriFeedbackDuration.long,
+          priority: VeriFeedbackPriority.high,
+        );
+      }
+    }
   }
 
   /// 恢复守卫：两种自动模式同时开启（[VeriFinController.backupTransportModeConflict]）
