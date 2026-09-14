@@ -1,7 +1,7 @@
 import 'dart:convert';
 import 'dart:math';
 
-import 'package:crypto/crypto.dart';
+import 'package:crypto/crypto.dart' as crypto;
 import 'package:cryptography/cryptography.dart';
 
 import 'sync_models.dart';
@@ -16,7 +16,6 @@ class SyncCodecException implements Exception {
   String toString() => message;
 }
 
-const String _encName = 'aes-gcm';
 const int _pbkdf2Iterations = 120000;
 const int _saltLength = 16;
 
@@ -139,7 +138,7 @@ class SyncCodec {
   /// Compute a fingerprint of the passphrase for key identification.
   String _computeKeyFingerprint(String passphrase) {
     final bytes = utf8.encode(passphrase);
-    final hash = sha256.convert(bytes);
+    final hash = crypto.sha256.convert(bytes);
     return hash.toString().substring(0, 16);
   }
 }
