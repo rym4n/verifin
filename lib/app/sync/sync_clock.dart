@@ -11,8 +11,8 @@ class SyncClock {
     required this.deviceId,
     required int nextSequence,
     required SyncVersionVector knownVector,
-  })  : _nextSequence = nextSequence,
-        _knownVector = knownVector;
+  }) : _nextSequence = nextSequence,
+       _knownVector = knownVector;
 
   final String deviceId;
   int _nextSequence;
@@ -42,11 +42,7 @@ class SyncClock {
     final dotAsVector = SyncVersionVector({deviceId: sequence});
     _knownVector = known.merged(dotAsVector);
 
-    return SyncVersion(
-      dot: dot,
-      context: known,
-      logicalTime: logicalTime,
-    );
+    return SyncVersion(dot: dot, context: known, logicalTime: logicalTime);
   }
 
   /// Generate a unique operation ID.

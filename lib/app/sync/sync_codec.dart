@@ -57,7 +57,9 @@ class SyncCodec {
   ) async {
     final payload = event.payload;
     final payloadHash = event.payloadHash;
-    final keyFingerprint = passphrase.isEmpty ? 'none' : _computeKeyFingerprint(passphrase);
+    final keyFingerprint = passphrase.isEmpty
+        ? 'none'
+        : _computeKeyFingerprint(passphrase);
 
     if (passphrase.isEmpty) {
       // Plaintext envelope.
@@ -104,7 +106,9 @@ class SyncCodec {
     } else {
       // Encrypted envelope.
       if (passphrase.isEmpty) {
-        throw const SyncCodecException('Passphrase required to decrypt envelope');
+        throw const SyncCodecException(
+          'Passphrase required to decrypt envelope',
+        );
       }
 
       final expectedFingerprint = _computeKeyFingerprint(passphrase);
@@ -123,7 +127,9 @@ class SyncCodec {
         final payloadJson = utf8.decode(decrypted);
         return jsonDecode(payloadJson);
       } on SecretBoxAuthenticationError {
-        throw const SyncCodecException('Decryption failed: wrong passphrase or corrupted data');
+        throw const SyncCodecException(
+          'Decryption failed: wrong passphrase or corrupted data',
+        );
       } catch (e) {
         throw SyncCodecException('Decryption error: $e');
       }

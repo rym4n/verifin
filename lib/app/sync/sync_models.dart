@@ -12,10 +12,7 @@ class SyncDot {
   final String deviceId;
   final int sequence;
 
-  Map<String, Object?> toJson() => {
-        'deviceId': deviceId,
-        'sequence': sequence,
-      };
+  Map<String, Object?> toJson() => {'deviceId': deviceId, 'sequence': sequence};
 
   static SyncDot fromJson(Map<String, Object?> json) {
     final deviceId = json['deviceId'] as String?;
@@ -92,7 +89,9 @@ class SyncVersionVector {
         throw FormatException('SyncVersionVector deviceId must be non-empty');
       }
       if (sequence == null || sequence < 0) {
-        throw FormatException('SyncVersionVector sequence must be non-negative');
+        throw FormatException(
+          'SyncVersionVector sequence must be non-negative',
+        );
       }
       result[deviceId] = sequence;
     }
@@ -105,7 +104,8 @@ class SyncVersionVector {
       other is SyncVersionVector && _mapsEqual(values, other.values);
 
   @override
-  int get hashCode => Object.hashAll(values.entries.map((e) => Object.hash(e.key, e.value)));
+  int get hashCode =>
+      Object.hashAll(values.entries.map((e) => Object.hash(e.key, e.value)));
 
   @override
   String toString() => 'SyncVersionVector($values)';
@@ -132,10 +132,10 @@ class SyncVersion {
   final int logicalTime;
 
   Map<String, Object?> toJson() => {
-        'dot': dot.toJson(),
-        'context': context.toJson(),
-        'logicalTime': logicalTime,
-      };
+    'dot': dot.toJson(),
+    'context': context.toJson(),
+    'logicalTime': logicalTime,
+  };
 
   static SyncVersion fromJson(Map<String, Object?> json) {
     final dotJson = json['dot'] as Map<String, Object?>?;
@@ -169,7 +169,8 @@ class SyncVersion {
   int get hashCode => Object.hash(dot, context, logicalTime);
 
   @override
-  String toString() => 'SyncVersion(dot: $dot, context: $context, logicalTime: $logicalTime)';
+  String toString() =>
+      'SyncVersion(dot: $dot, context: $context, logicalTime: $logicalTime)';
 }
 
 /// Entity key: (scope, type, id).
@@ -184,11 +185,7 @@ class SyncEntityKey {
   final String type;
   final String id;
 
-  Map<String, Object?> toJson() => {
-        'scope': scope,
-        'type': type,
-        'id': id,
-      };
+  Map<String, Object?> toJson() => {'scope': scope, 'type': type, 'id': id};
 
   static SyncEntityKey fromJson(Map<String, Object?> json) {
     final scope = json['scope'] as String?;
@@ -278,10 +275,12 @@ String _canonicalJson(Object? value) {
     return '[$items]';
   } else if (value is Map) {
     final keys = value.keys.cast<String>().toList()..sort();
-    final pairs = keys.map((k) {
-      final v = value[k];
-      return '${jsonEncode(k)}:${_canonicalJson(v)}';
-    }).join(',');
+    final pairs = keys
+        .map((k) {
+          final v = value[k];
+          return '${jsonEncode(k)}:${_canonicalJson(v)}';
+        })
+        .join(',');
     return '{$pairs}';
   } else {
     throw FormatException('Unsupported payload type: ${value.runtimeType}');
@@ -313,16 +312,16 @@ class SyncEvent {
   final String keyFingerprint;
 
   Map<String, Object?> toJson() => {
-        'protocolVersion': protocolVersion,
-        'operationId': operationId,
-        'version': version.toJson(),
-        'entity': entity.toJson(),
-        'operation': operation.toJson(),
-        'payloadHash': payloadHash,
-        'payload': payload,
-        'batchId': batchId,
-        'keyFingerprint': keyFingerprint,
-      };
+    'protocolVersion': protocolVersion,
+    'operationId': operationId,
+    'version': version.toJson(),
+    'entity': entity.toJson(),
+    'operation': operation.toJson(),
+    'payloadHash': payloadHash,
+    'payload': payload,
+    'batchId': batchId,
+    'keyFingerprint': keyFingerprint,
+  };
 
   static SyncEvent fromJson(Map<String, Object?> json) {
     final protocolVersion = json['protocolVersion'] as String?;
@@ -401,18 +400,19 @@ class SyncEvent {
 
   @override
   int get hashCode => Object.hash(
-        protocolVersion,
-        operationId,
-        version,
-        entity,
-        operation,
-        payloadHash,
-        batchId,
-        keyFingerprint,
-      );
+    protocolVersion,
+    operationId,
+    version,
+    entity,
+    operation,
+    payloadHash,
+    batchId,
+    keyFingerprint,
+  );
 
   @override
-  String toString() => 'SyncEvent(op: $operationId, entity: $entity, operation: $operation)';
+  String toString() =>
+      'SyncEvent(op: $operationId, entity: $entity, operation: $operation)';
 
   static bool _payloadEquals(Object? a, Object? b) {
     if (identical(a, b)) return true;

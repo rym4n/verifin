@@ -51,19 +51,13 @@ void main() {
     test('fromJson rejects missing protocolVersion', () {
       final json = makeTestEvent().toJson();
       json.remove('protocolVersion');
-      expect(
-        () => SyncEvent.fromJson(json),
-        throwsA(isA<FormatException>()),
-      );
+      expect(() => SyncEvent.fromJson(json), throwsA(isA<FormatException>()));
     });
 
     test('fromJson rejects empty operationId', () {
       final json = makeTestEvent().toJson();
       json['operationId'] = '';
-      expect(
-        () => SyncEvent.fromJson(json),
-        throwsA(isA<FormatException>()),
-      );
+      expect(() => SyncEvent.fromJson(json), throwsA(isA<FormatException>()));
     });
 
     test('fromJson rejects negative sequence', () {
@@ -72,28 +66,19 @@ void main() {
         'deviceId': 'dev1',
         'sequence': -1,
       };
-      expect(
-        () => SyncEvent.fromJson(json),
-        throwsA(isA<FormatException>()),
-      );
+      expect(() => SyncEvent.fromJson(json), throwsA(isA<FormatException>()));
     });
 
     test('fromJson rejects unknown SyncOperationKind', () {
       final json = makeTestEvent().toJson();
       json['operation'] = 'unknown_operation';
-      expect(
-        () => SyncEvent.fromJson(json),
-        throwsA(isA<FormatException>()),
-      );
+      expect(() => SyncEvent.fromJson(json), throwsA(isA<FormatException>()));
     });
 
     test('fromJson rejects mismatched payloadHash', () {
       final json = makeTestEvent().toJson();
       json['payloadHash'] = 'wrong_hash';
-      expect(
-        () => SyncEvent.fromJson(json),
-        throwsA(isA<FormatException>()),
-      );
+      expect(() => SyncEvent.fromJson(json), throwsA(isA<FormatException>()));
     });
   });
 }
