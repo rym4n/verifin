@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:verifin/app/models.dart';
 import 'package:verifin/app/sync/sync_change_tracker.dart';
@@ -20,6 +22,47 @@ class _ThrowingOnEntrySaveRepository extends InMemoryLedgerRepository {
     List<ExchangeRate>? exchangeRates,
   }) async {
     throw StateError('disk full');
+  }
+}
+
+/// [RecordingSyncRepository] 的 [loadShadow] 可通过 [loadShadowCompleter] 暂停。
+///
+/// 用于精确控制「第一次 reconcile 正在等 loadShadow」这个时机，使第二次
+/// reconcile 调用到达时 `_reconciling` 一定是 `true`，从而重现重入竞态。
+class _BlockingRecordingSyncRepository extends RecordingSyncRepository {
+  _BlockingRecordingSyncRepository(super.inner);
+
+  /// 每次调用 [loadShadow] 时，若该字段不为空，则等待其完成后再继续。
+  /// 调用完成后自动置 null，使后续调用不再阻塞。
+  Completer<void>? loadShadowCompleter;
+
+  @override
+  Future<Map<SyncEntityKey, String>> loadShadow() async {
+    final completer = loadShadowCompleter;
+    if (completer != null) {
+      loadShadowCompleter = null;
+      await completer.future;
+    }
+    return super.loadShadow();
+  }
+
+  /// 每次调用 [saveShadow] 时，若该字段不为空，则等待其完成后再继续。
+  ///
+  /// `saveShadow` 是 `_reconcileOnce` 里最后一步、且在 `exportDataForSync()` /
+  /// `enqueueBatch()` 都已执行之后才会被调用。阻塞在这里而不是 [loadShadow]，
+  /// 使得「第一轮已经把它看到的那份投影提交完毕，只差 shadow 还没落」——之后
+  /// 再发生的任何控制器变更，只会被「重入触发的第二轮」看到，不会被第一轮
+  /// 吸收。这正是重现「重入丢失 alignShadowOnly 意图」竞态所需要的时序。
+  Completer<void>? saveShadowCompleter;
+
+  @override
+  Future<void> saveShadow(Map<SyncEntityKey, String> shadow) async {
+    final completer = saveShadowCompleter;
+    if (completer != null) {
+      saveShadowCompleter = null;
+      await completer.future;
+    }
+    return super.saveShadow(shadow);
   }
 }
 
@@ -383,6 +426,130 @@ void main() {
               event.entity.type == 'hapticsEnabled' && event.payload == false,
         ),
         isTrue,
+      );
+    });
+
+    test('重入丢失对齐意图会产生回声：alignShadowOnly=true 的请求在第一轮尚未提交时到达，'
+        'rerun 必须仍按对齐模式跑，不能把重入期间发生的新变更当本地事件入队', () async {
+      final repository = InMemoryLedgerRepository();
+      final repo = _BlockingRecordingSyncRepository(repository.sync);
+      final store = LocalKeyValueStore();
+      final controller = await makeController(store);
+      final clock = await SyncClock.create(store);
+      final tracker = SyncChangeTracker(
+        controller: controller,
+        repository: repo,
+        clock: clock,
+      );
+
+      // 建立基线：shadow 与当前投影一致，之后的差异才会真正触发入队路径。
+      await tracker.reconcile();
+
+      // 变更 A（真实的本地变更，发生在第一轮开始之前）：第一轮理应把它当成
+      // 一次合法的本地变更提交，这是预期行为，不受本次修复影响。
+      controller.setThemePreference(ThemePreference.dark);
+
+      // 让第一轮卡在 saveShadow——此时它已经读过 exportDataForSync()、算出
+      // 了「变更 A」的 diff、也已经调用过 enqueueBatch 把这批提交，只差把
+      // shadow 推进这最后一步。选在这里挂起，是为了让「变更 A」完整地被
+      // 第一轮自己吸收，不掺进重入触发的第二轮里。
+      final gate = Completer<void>();
+      repo.saveShadowCompleter = gate;
+      final first = tracker.reconcile(); // alignShadowOnly: false（默认）
+
+      // 让第一轮推进到卡在 saveShadow 的那一步（中间只有微任务级别的
+      // await，一次事件循环足够）。
+      await Future<void>.delayed(Duration.zero);
+
+      // 变更 B：模拟远端批次已经应用完毕、业务数据已被改写。这必须发生在
+      // 第一轮读完投影（已经卡在 saveShadow）之后，才能保证只有重入触发的
+      // 第二轮会看到它。
+      controller.setHapticsEnabled(false);
+
+      // runRemoteApply 在 apply() 完成后调用的正是这个：因为 `_reconciling`
+      // 仍为 true（第一轮还没跑完），这次调用只能设位等待 rerun。
+      final second = tracker.reconcile(alignShadowOnly: true);
+
+      // 释放 saveShadow，让第一轮完成提交；随后应触发一次 rerun。
+      gate.complete();
+      await first;
+      await second;
+
+      // 第一轮的合法提交（变更 A）必须存在且只有这一条。
+      expect(repo.enqueued.length, 1);
+      final firstBatchEvents = repo.enqueued.single.events;
+      expect(firstBatchEvents.single.entity.type, 'themePreference');
+      expect(firstBatchEvents.single.payload, 'dark');
+
+      // rerun 必须按对齐模式跑：变更 B（模拟的远端结果）绝不能作为第二个
+      // 批次入队——否则就是本次修复要堵住的回声。
+      expect(
+        repo.enqueued.any(
+          (batch) => batch.events.any(
+            (event) => event.entity.type == 'hapticsEnabled',
+          ),
+        ),
+        isFalse,
+      );
+
+      // 但 shadow 仍必须推进到反映变更 B，否则窗口关闭后的下一次比较会把
+      // 它误判成本地新变更、重新回传一次。
+      final shadow = await repo.loadShadow();
+      expect(
+        shadow[const SyncEntityKey(
+          scope: 'global',
+          type: 'hapticsEnabled',
+          id: 'singleton',
+        )],
+        computeSyncPayloadHash(false),
+      );
+    });
+
+    test('重入的 OR 语义不会被后到的普通请求降级：先到的 alignShadowOnly=true 意图'
+        '必须在整个忙碌窗口内一直保持，即使窗口关闭前又有一次普通 reconcile() 插队', () async {
+      final repository = InMemoryLedgerRepository();
+      final repo = _BlockingRecordingSyncRepository(repository.sync);
+      final store = LocalKeyValueStore();
+      final controller = await makeController(store);
+      final clock = await SyncClock.create(store);
+      final tracker = SyncChangeTracker(
+        controller: controller,
+        repository: repo,
+        clock: clock,
+      );
+
+      await tracker.reconcile();
+      controller.setThemePreference(ThemePreference.dark);
+
+      final gate = Completer<void>();
+      repo.saveShadowCompleter = gate;
+      final first = tracker.reconcile();
+      await Future<void>.delayed(Duration.zero);
+
+      controller.setHapticsEnabled(false);
+
+      // 先到的请求要求对齐：把 `_rerunAlignShadowOnly` 置为 true。
+      final second = tracker.reconcile(alignShadowOnly: true);
+      // 后到的普通请求：如果实现错误地用「最后一次赋值」而非 OR 语义，
+      // 这次调用会把 `_rerunAlignShadowOnly` 错误地覆盖回 false。
+      final third = tracker.reconcile();
+
+      gate.complete();
+      await first;
+      await second;
+      await third;
+
+      expect(repo.enqueued.length, 1);
+      expect(
+        repo.enqueued.any(
+          (batch) => batch.events.any(
+            (event) => event.entity.type == 'hapticsEnabled',
+          ),
+        ),
+        isFalse,
+        reason:
+            'OR 语义必须保留先到请求的对齐意图，不能被后到的普通请求降级'
+            '（否则重入触发的第二轮会把 hapticsEnabled 的变化当本地事件入队）',
       );
     });
   });

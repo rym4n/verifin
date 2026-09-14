@@ -61,6 +61,16 @@ class SyncChangeTracker {
   Timer? _debounceTimer;
   bool _reconciling = false;
   bool _rerunRequested = false;
+
+  /// rerun 时是否只对齐 shadow 而不入队。
+  ///
+  /// 在 `_reconciling` 为 true 时到达的 `reconcile(alignShadowOnly: true)` 调用无法
+  /// 立即执行，只能设位等待下一轮。若此时用原始调用的 `alignShadowOnly: false` 跑
+  /// rerun，会把远端应用的结果当成本地新变更入队——这正是 `alignShadowOnly` 存在的
+  /// 原因。因此要单独记录「有没有人请求了对齐模式」，并在 rerun 时取 OR：任何一个
+  /// 调用方想要对齐模式，rerun 就必须用对齐模式（对齐比入队更保守，不会丢变更）。
+  bool _rerunAlignShadowOnly = false;
+
   int _remoteApplyDepth = 0;
 
   /// 首次比较只建立基线、不入队。见 [_reconcileOnce] 的说明。
@@ -84,8 +94,12 @@ class SyncChangeTracker {
   /// `operationId`，重复入队会被远端按操作去重，是可接受的一侧。
   Future<void> reconcile({bool alignShadowOnly = false}) async {
     if (_reconciling) {
-      // 正在比较时到达的新变更不能在结束时丢：置位让本次结束后再跑一轮。
+      // 正在比较时到达的新请求不能在结束时丢：置位让本次结束后再跑一轮。
       _rerunRequested = true;
+      // 对齐意图取 OR：任何一个调用方请求了 alignShadowOnly，rerun 就必须用对齐
+      // 模式。反之则不行——把 alignShadowOnly=true 的请求吞掉并以普通模式重跑，
+      // 会把远端应用的结果当成本地新变更入队，产生回声。
+      _rerunAlignShadowOnly = _rerunAlignShadowOnly || alignShadowOnly;
       return;
     }
     if (remoteApplyActive && !alignShadowOnly) {
@@ -94,9 +108,13 @@ class SyncChangeTracker {
     }
     _reconciling = true;
     try {
+      var align = alignShadowOnly;
       do {
         _rerunRequested = false;
-        await _reconcileOnce(alignShadowOnly: alignShadowOnly);
+        _rerunAlignShadowOnly = false;
+        await _reconcileOnce(alignShadowOnly: align);
+        // rerun 时继承本轮结束前收到的对齐意图。
+        align = _rerunAlignShadowOnly;
       } while (_rerunRequested && !remoteApplyActive);
     } finally {
       _reconciling = false;
