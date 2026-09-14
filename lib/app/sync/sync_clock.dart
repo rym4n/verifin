@@ -4,6 +4,7 @@ import '../../local_storage/local_storage.dart';
 import 'sync_models.dart';
 
 const String _deviceIdKey = 'sync_device_id';
+const String _nextSequenceKey = 'sync_device_next_sequence';
 
 /// Causal clock for generating versions and operation IDs.
 class SyncClock {
@@ -11,30 +12,48 @@ class SyncClock {
     required this.deviceId,
     required int nextSequence,
     required SyncVersionVector knownVector,
+    required LocalKeyValueStore store,
   }) : _nextSequence = nextSequence,
-       _knownVector = knownVector;
+       _knownVector = knownVector,
+       _store = store;
 
   final String deviceId;
   int _nextSequence;
   SyncVersionVector _knownVector;
+  final LocalKeyValueStore _store;
 
   /// Initialize or restore the clock from persistent storage.
+  ///
+  /// Restores [deviceId] and [_nextSequence] from [store] so sequence numbers
+  /// are never re-issued after an app restart. Later tasks may call
+  /// [restoreState] to overlay the full [SyncDeviceState] from the database.
   static Future<SyncClock> create(LocalKeyValueStore store) async {
     String? deviceId = store.read(_deviceIdKey);
     if (deviceId == null || deviceId.isEmpty) {
       deviceId = _generateDeviceId();
       await store.writeAndFlush(_deviceIdKey, deviceId);
     }
+
+    final sequenceStr = store.read(_nextSequenceKey);
+    final nextSequence = sequenceStr != null
+        ? (int.tryParse(sequenceStr) ?? 1)
+        : 1;
+
     return SyncClock._(
       deviceId: deviceId,
-      nextSequence: 1,
+      nextSequence: nextSequence,
       knownVector: const SyncVersionVector({}),
+      store: store,
     );
   }
 
   /// Generate next version, incrementing sequence and merging the new dot into known vector.
+  ///
+  /// Persists the new [_nextSequence] to the store so restarts never re-issue
+  /// sequence numbers.
   SyncVersion nextVersion({required SyncVersionVector known}) {
     final sequence = _nextSequence++;
+    _store.write(_nextSequenceKey, _nextSequence.toString());
     final dot = SyncDot(deviceId: deviceId, sequence: sequence);
     final logicalTime = DateTime.now().microsecondsSinceEpoch;
 

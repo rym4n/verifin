@@ -104,8 +104,11 @@ class SyncVersionVector {
       other is SyncVersionVector && _mapsEqual(values, other.values);
 
   @override
-  int get hashCode =>
-      Object.hashAll(values.entries.map((e) => Object.hash(e.key, e.value)));
+  int get hashCode {
+    final sorted = values.entries.toList()
+      ..sort((a, b) => a.key.compareTo(b.key));
+    return Object.hashAll(sorted.map((e) => Object.hash(e.key, e.value)));
+  }
 
   @override
   String toString() => 'SyncVersionVector($values)';
