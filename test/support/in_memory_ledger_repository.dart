@@ -297,13 +297,15 @@ class _InMemorySyncRepository implements SyncRepository {
         bucket.add(version);
       }
     }
+    // 已应用登记覆盖计划声称的每一个操作（可能不含实体版本），hash 取值与
+    // SQLite 路径共用 plan.payloadHashForOperation，避免两条路径结论相反。
     final nextApplied = <String, ({String batchId, String payloadHash})>{
       ..._applied,
       for (final operationId in plan.appliedOperationIds)
         if (!_applied.containsKey(operationId))
           operationId: (
             batchId: plan.batchId,
-            payloadHash: _payloadHashOf(plan, operationId),
+            payloadHash: plan.payloadHashForOperation(operationId),
           ),
     };
 
@@ -345,15 +347,5 @@ class _InMemorySyncRepository implements SyncRepository {
       version: latest.version,
       deleted: latest.deleted,
     );
-  }
-
-  /// 计划里某 operationId 的载荷 hash（登记已应用时用）。
-  static String _payloadHashOf(RemoteApplyPlan plan, String operationId) {
-    for (final version in plan.entityVersions) {
-      if (version.operationId == operationId) {
-        return version.payloadHash;
-      }
-    }
-    return '';
   }
 }

@@ -148,9 +148,7 @@ class SqliteSyncRepository implements SyncRepository {
   Future<void> applyRemoteBatch(RemoteApplyPlan plan) {
     return _enqueue(() async {
       await _database.transaction((txn) async {
-        final operationIds = plan.entityVersions
-            .map((version) => version.operationId)
-            .toSet();
+        final operationIds = plan.appliedOperationIds;
         final appliedHashes = await _loadAppliedHashes(txn, operationIds);
         final knownVersions = await _loadKnownVersions(
           txn,
@@ -220,6 +218,7 @@ class SqliteSyncRepository implements SyncRepository {
           appliedStatement.insert('sync_applied_ops', <String, Object?>{
             'operation_id': operationId,
             'batch_id': plan.batchId,
+            'payload_hash': plan.payloadHashForOperation(operationId),
             'applied_at': appliedAt,
           }, conflictAlgorithm: ConflictAlgorithm.ignore);
         }
@@ -238,9 +237,15 @@ class SqliteSyncRepository implements SyncRepository {
     return null;
   }
 
+  /// 读「已应用」hash。数据源必须是 sync_applied_ops——这是协议里「已应用」的
+  /// 唯一真相；sync_entity_versions 只保存实体版本历史，不含只写 KV / 决议这类
+  /// 没有实体行的操作，从那里查会漏判、让重复应用以不同 hash 悄悄通过。
+  ///
+  /// 查询范围取 [RemoteApplyPlan.appliedOperationIds]（而非本批的实体版本），
+  /// 因为「已应用」的判定必须覆盖计划声称的每一个操作。
   static Future<Map<String, String>> _loadAppliedHashes(
     Transaction txn,
-    Set<String> operationIds,
+    List<String> operationIds,
   ) async {
     if (operationIds.isEmpty) {
       return <String, String>{};
@@ -250,13 +255,13 @@ class SqliteSyncRepository implements SyncRepository {
       '?',
     ).join(',');
     final rows = await txn.rawQuery(
-      'SELECT operation_id, payload_hash FROM sync_entity_versions '
+      'SELECT operation_id, payload_hash FROM sync_applied_ops '
       'WHERE operation_id IN ($placeholders)',
       operationIds.toList(growable: false),
     );
     return <String, String>{
       for (final row in rows)
-        row['operation_id'] as String: row['payload_hash'] as String,
+        row['operation_id'] as String: (row['payload_hash'] as String?) ?? '',
     };
   }
 

@@ -587,10 +587,14 @@ class RemoteApplyPlan {
     required this.appliedOperationIds,
     required this.shadowHashes,
     required this.kvJournalValues,
+    this.appliedPayloadHashes = const <String, String>{},
   });
 
   final String batchId;
   final List<SyncEntityVersion> entityVersions;
+
+  /// 本批标记为「已应用」的 operationId。允许包含没有实体版本的操作
+  /// （只写 KV 的批次、决议事件等），因此它的 hash 不能靠 [entityVersions] 反查。
   final List<String> appliedOperationIds;
 
   /// 实体键 → 规范化 payload hash。键的编码为 `"scope|type|id"`（竖线分隔），
@@ -599,4 +603,29 @@ class RemoteApplyPlan {
   final Map<String, String> shadowHashes;
 
   final Map<String, String> kvJournalValues;
+
+  /// operationId → payload hash，供 `sync_applied_ops` 落库。
+  ///
+  /// 「已应用」判定的唯一依据是 `sync_applied_ops`，而 [appliedOperationIds] 可能
+  /// 含有不在 [entityVersions] 里的操作——那种操作没有任何实体版本行可以反查 hash。
+  /// 因此计划必须自带每个已应用操作的 hash，而不是让持久化层去猜。
+  /// 缺省为空表，此时按 [entityVersions] 里的 hash 兜底（见持久化实现）。
+  final Map<String, String> appliedPayloadHashes;
+
+  /// 某个已应用操作的 payload hash：优先取 [appliedPayloadHashes]，
+  /// 缺失时回落到 [entityVersions]；两者都没有则返回空串。
+  ///
+  /// 两个实现共用本方法，保证「同一批次在内存与 SQLite 得到同一结论」。
+  String payloadHashForOperation(String operationId) {
+    final explicit = appliedPayloadHashes[operationId];
+    if (explicit != null) {
+      return explicit;
+    }
+    for (final version in entityVersions) {
+      if (version.operationId == operationId) {
+        return version.payloadHash;
+      }
+    }
+    return '';
+  }
 }

@@ -116,11 +116,35 @@ class KnownSyncEntityVersion {
 /// SQLite 实现在事务内先验后写，两者行为一致。
 abstract final class SyncPlanValidator {
   /// 校验整个计划，失败即抛 [SyncConflictException]。无副作用。
+  ///
+  /// [appliedHashes] 必须覆盖计划声称的**每一个**
+  /// [RemoteApplyPlan.appliedOperationIds]，来源是 `sync_applied_ops`
+  /// （「已应用」的唯一真相），hash 取值统一走
+  /// [RemoteApplyPlan.payloadHashForOperation]。
   static void validate({
     required RemoteApplyPlan plan,
     required Map<String, String> appliedHashes,
     required Map<SyncEntityKey, KnownSyncEntityVersion> knownVersions,
   }) {
+    void checkNotAlreadyApplied(String operationId, String payloadHash) {
+      final applied = appliedHashes[operationId];
+      if (applied != null && applied != payloadHash) {
+        throw SyncConflictException(
+          '操作已应用且载荷 hash 不同：已应用 $applied，传入 $payloadHash',
+          operationId: operationId,
+        );
+      }
+    }
+
+    // 已应用判定独立于 entityVersions 单独走一遍：纯 KV 批次、决议事件等没有实体
+    // 版本行，只遍历 entityVersions 会漏掉它们，让「同 operationId 不同 hash」通过。
+    for (final operationId in plan.appliedOperationIds) {
+      checkNotAlreadyApplied(
+        operationId,
+        plan.payloadHashForOperation(operationId),
+      );
+    }
+
     final plannedHashes = <String, String>{};
     for (final version in plan.entityVersions) {
       final operationId = version.operationId;
@@ -134,13 +158,7 @@ abstract final class SyncPlanValidator {
       }
       plannedHashes[operationId] = version.payloadHash;
 
-      final applied = appliedHashes[operationId];
-      if (applied != null && applied != version.payloadHash) {
-        throw SyncConflictException(
-          '操作已应用且载荷 hash 不同：已应用 $applied，传入 ${version.payloadHash}',
-          operationId: operationId,
-        );
-      }
+      checkNotAlreadyApplied(operationId, version.payloadHash);
 
       final known = knownVersions[version.entity];
       if (known != null && known.operationId != operationId) {

@@ -314,17 +314,36 @@ void main() {
     await app.db.insert('sync_applied_ops', <String, Object?>{
       'operation_id': 'op-1',
       'batch_id': 'b1',
+      'payload_hash': 'h1',
       'applied_at': 1,
     });
     await expectLater(
       app.db.insert('sync_applied_ops', <String, Object?>{
         'operation_id': 'op-1',
         'batch_id': 'b2',
+        'payload_hash': 'h2',
         'applied_at': 2,
       }),
       throwsA(isA<DatabaseException>()),
       reason: 'sync_applied_ops.operation_id 为主键，重复应用必须被识别',
     );
+
+    // 「已应用」的 hash 是唯一真相，必须按 operation_id 存得住——
+    // 只写 KV 的批次没有 sync_entity_versions 行，hash 无处反查。
+    final appliedColumns = await app.db.rawQuery(
+      'PRAGMA table_info(sync_applied_ops)',
+    );
+    expect(
+      appliedColumns.map((row) => row['name']),
+      contains('payload_hash'),
+      reason: 'sync_applied_ops 必须持久化 payload_hash',
+    );
+    final appliedRow = (await app.db.query(
+      'sync_applied_ops',
+      where: 'operation_id = ?',
+      whereArgs: const <Object?>['op-1'],
+    )).single;
+    expect(appliedRow['payload_hash'], 'h1');
 
     await app.close();
   });

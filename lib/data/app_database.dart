@@ -579,10 +579,14 @@ class AppDatabase {
       'CREATE INDEX IF NOT EXISTS idx_sync_outbox_uploaded '
       'ON sync_outbox (uploaded, batch_id)';
 
+  /// 「已应用」去重的唯一依据表。`payload_hash` 是必需的：同 operationId 不同 hash
+  /// 表示设备序列/凭据碰撞或事件被改写，必须能判出来；而只写 KV 的批次没有任何
+  /// sync_entity_versions 行，hash 无处反查，只能存在这张表里。
   static const String _syncAppliedOpsTable = '''
     CREATE TABLE IF NOT EXISTS sync_applied_ops (
       operation_id TEXT PRIMARY KEY,
       batch_id TEXT NOT NULL,
+      payload_hash TEXT NOT NULL DEFAULT '',
       applied_at INTEGER NOT NULL
     )
     ''';

@@ -212,6 +212,79 @@ void main() {
         }
       });
 
+      test(
+        'applyRemoteBatch 拒绝纯操作批次（id 不在 entityVersions）的载荷 hash 变化',
+        () async {
+          // 批次的 appliedOperationIds 可以包含没有实体版本的操作（例如决议事件、
+          // 只改 KV 的批次）。这类操作的「已应用」判定只能靠 sync_applied_ops，
+          // 不能靠 sync_entity_versions——后者根本没有它的行。
+          final sync = open();
+          final plan = _plan(
+            batchId: 'b1',
+            versions: <SyncEntityVersion>[],
+            appliedOperationIds: const <String>['op-kv-only'],
+            appliedPayloadHashes: const <String, String>{
+              'op-kv-only': 'hash-a',
+            },
+          );
+          await sync.applyRemoteBatch(plan);
+
+          // 同一 operationId、不同 hash：必须被拒绝，两个实现结论一致。
+          final conflicting = _plan(
+            batchId: 'b2',
+            versions: <SyncEntityVersion>[],
+            appliedOperationIds: const <String>['op-kv-only'],
+            appliedPayloadHashes: const <String, String>{
+              'op-kv-only': 'hash-b',
+            },
+          );
+          await expectLater(
+            sync.applyRemoteBatch(conflicting),
+            throwsA(isA<SyncConflictException>()),
+          );
+
+          // 同 hash 重放仍应幂等通过。
+          await sync.applyRemoteBatch(plan);
+        },
+      );
+
+      test('applyRemoteBatch 的已应用判定与 entityVersions 无关', () async {
+        // 反向用例：先以「带实体版本」的形式应用，再用「纯操作」形式重放同一 hash，
+        // 两种形态必须落在同一张已应用表上，而不是各查各的。
+        final sync = open();
+        await sync.applyRemoteBatch(
+          _plan(
+            batchId: 'b1',
+            versions: <SyncEntityVersion>[
+              _version('op-1', 'entry', 'e1', hash: 'h1', payload: 'A'),
+            ],
+          ),
+        );
+
+        await sync.applyRemoteBatch(
+          _plan(
+            batchId: 'b2',
+            versions: <SyncEntityVersion>[],
+            appliedOperationIds: const <String>['op-1'],
+            appliedPayloadHashes: const <String, String>{'op-1': 'h1'},
+          ),
+        );
+
+        await expectLater(
+          sync.applyRemoteBatch(
+            _plan(
+              batchId: 'b3',
+              versions: <SyncEntityVersion>[],
+              appliedOperationIds: const <String>['op-1'],
+              appliedPayloadHashes: const <String, String>{
+                'op-1': 'h1-different',
+              },
+            ),
+          ),
+          throwsA(isA<SyncConflictException>()),
+        );
+      });
+
       test('applyRemoteBatch 写入实体版本并登记已应用操作', () async {
         final sync = open();
         final plan = _plan(
@@ -484,18 +557,29 @@ SyncEvent _event({required String operationId, required String batchId}) {
   );
 }
 
+/// 构造 [RemoteApplyPlan]。默认 appliedOperationIds 取自 entityVersions；
+/// 需要表达「有已应用操作、但没有对应实体版本」的批次时，用 [appliedOperationIds]
+/// 与 [appliedPayloadHashes] 显式覆盖。
 RemoteApplyPlan _plan({
   required String batchId,
   required List<SyncEntityVersion> versions,
+  List<String>? appliedOperationIds,
+  Map<String, String> appliedPayloadHashes = const <String, String>{},
   Map<String, String> kvJournalValues = const <String, String>{},
 }) {
   return RemoteApplyPlan(
     batchId: batchId,
     entityVersions: versions,
-    appliedOperationIds: versions.map((v) => v.operationId).toList(),
+    appliedOperationIds:
+        appliedOperationIds ?? versions.map((v) => v.operationId).toList(),
     shadowHashes: <String, String>{
       for (final version in versions)
         encodeSyncEntityKey(version.entity): version.payloadHash,
+    },
+    // 无实体版本的操作没有 shadow 行，其 hash 只存在于 appliedPayloadHashes。
+    appliedPayloadHashes: <String, String>{
+      for (final version in versions) version.operationId: version.payloadHash,
+      ...appliedPayloadHashes,
     },
     kvJournalValues: kvJournalValues,
   );
