@@ -255,6 +255,113 @@ void main() {
     await app.close();
   });
 
+  test('当前 schema 含同步元数据九张表，且约束能挡住重复 sequence/operationId', () async {
+    final app = await AppDatabase.open(
+      factory: databaseFactoryFfi,
+      path: inMemoryDatabasePath,
+    );
+    const syncTables = <String>[
+      'sync_device',
+      'sync_shadow',
+      'sync_entity_versions',
+      'sync_outbox',
+      'sync_applied_ops',
+      'sync_pending',
+      'sync_scan_state',
+      'sync_apply_journal',
+      'sync_conflicts',
+    ];
+    final tables = (await app.db.rawQuery(
+      "SELECT name FROM sqlite_master WHERE type='table'",
+    )).map((row) => row['name'] as String).toSet();
+    for (final table in syncTables) {
+      expect(tables, contains(table), reason: 'v17 应建出 $table');
+    }
+
+    // PK/唯一约束：重复写入同一主键必须被数据库拒绝（onConflict 默认 abort）。
+    await app.db.insert('sync_device', <String, Object?>{
+      'device_id': 'dev-1',
+      'next_sequence': 1,
+      'known_vector': '{}',
+    });
+    await expectLater(
+      app.db.insert('sync_device', <String, Object?>{
+        'device_id': 'dev-1',
+        'next_sequence': 2,
+        'known_vector': '{}',
+      }),
+      throwsA(isA<DatabaseException>()),
+      reason: 'sync_device.device_id 为主键，同一设备不能出现两行序列计数',
+    );
+
+    Future<void> insertVersion(String operationId) =>
+        app.db.insert('sync_entity_versions', <String, Object?>{
+          'operation_id': operationId,
+          'scope': 'default',
+          'type': 'entry',
+          'id': 'e1',
+          'version_json': '{}',
+          'payload_hash': 'h',
+          'deleted': 0,
+        });
+    await insertVersion('op-1');
+    await expectLater(
+      insertVersion('op-1'),
+      throwsA(isA<DatabaseException>()),
+      reason: 'sync_entity_versions.operation_id 为主键，去重依赖它',
+    );
+
+    await app.db.insert('sync_applied_ops', <String, Object?>{
+      'operation_id': 'op-1',
+      'batch_id': 'b1',
+      'applied_at': 1,
+    });
+    await expectLater(
+      app.db.insert('sync_applied_ops', <String, Object?>{
+        'operation_id': 'op-1',
+        'batch_id': 'b2',
+        'applied_at': 2,
+      }),
+      throwsA(isA<DatabaseException>()),
+      reason: 'sync_applied_ops.operation_id 为主键，重复应用必须被识别',
+    );
+
+    await app.close();
+  });
+
+  test('v16 起步升级到 v17 后同步表结构与全新库一致', () async {
+    final path = '${tempDir.path}/v16_to_v17.db';
+    final raw = await databaseFactoryFfi.openDatabase(path);
+    for (final statement in _schemaV1) {
+      await raw.execute(statement);
+    }
+    await _seedV1Data(raw);
+    for (var version = 2; version <= 16; version++) {
+      await AppDatabase.migrations[version]!(raw);
+    }
+    await raw.execute('PRAGMA user_version = 16');
+    await raw.close();
+
+    final app = await AppDatabase.open(factory: databaseFactoryFfi, path: path);
+    final described = await _describeSchema(app.db);
+    for (final table in const <String>[
+      'sync_device',
+      'sync_shadow',
+      'sync_entity_versions',
+      'sync_outbox',
+      'sync_applied_ops',
+      'sync_pending',
+      'sync_scan_state',
+      'sync_apply_journal',
+      'sync_conflicts',
+    ]) {
+      expect(described[table], freshSchema[table], reason: '$table 结构应与全新库一致');
+    }
+    // 老库升级不得丢数据。
+    expect(await SqliteLedgerRepository(app).loadEntries(), hasLength(4));
+    await app.close();
+  });
+
   test('v15 账户历史图标 code 升级后写回当前 SVG code', () async {
     final path = '${tempDir.path}/v15_account_icons.db';
     final app = await AppDatabase.open(factory: databaseFactoryFfi, path: path);

@@ -442,12 +442,17 @@ class SyncEvent {
 /// Entity version with payload.
 class SyncEntityVersion {
   const SyncEntityVersion({
+    required this.entity,
     required this.version,
     required this.payloadHash,
     required this.payload,
     required this.deleted,
     required this.operationId,
   });
+
+  /// 版本所属实体。持久化层按 (scope, type, id) 建行，缺失它就无法把版本
+  /// 写进 sync_entity_versions/sync_shadow。
+  final SyncEntityKey entity;
 
   final SyncVersion version;
   final String payloadHash;

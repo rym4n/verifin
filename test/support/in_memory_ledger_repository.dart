@@ -1,4 +1,6 @@
 import 'package:verifin/app/models.dart';
+import 'package:verifin/app/sync/sync_models.dart';
+import 'package:verifin/app/sync/sync_store.dart';
 import 'package:verifin/data/ledger_repository.dart';
 
 /// 纯内存仓储实现，供 widget / 控制器逻辑测试注入。
@@ -19,6 +21,9 @@ class InMemoryLedgerRepository implements LedgerRepository {
   Map<String, double> _monthlyBudgets = <String, double>{};
   Map<String, double> _categoryBudgets = <String, double>{};
   Map<String, double> _dailyBudgets = <String, double>{};
+
+  /// 同步元数据的内存镜像，与 [SqliteLedgerRepository.sync] 同契约。
+  late final SyncRepository sync = _InMemorySyncRepository();
 
   @override
   Future<List<LedgerEntry>> loadEntries() async =>
@@ -182,4 +187,170 @@ class InMemoryLedgerRepository implements LedgerRepository {
       _groups.isNotEmpty ||
       _categories.isNotEmpty ||
       _exchangeRates.isNotEmpty;
+}
+
+/// [SyncRepository] 的内存实现。与 SQLite 实现共用 [SyncPlanValidator]，
+/// 保证「测试放过的批次生产也放过、测试拒绝的生产也拒绝」。
+///
+/// [applyRemoteBatch] 先完成全部校验与全部新集合的构造，再一次性替换引用；
+/// 中途抛错时没有任何集合被改动，等价于 SQLite 的事务回滚。
+class _InMemorySyncRepository implements SyncRepository {
+  SyncDeviceState _deviceState = const SyncDeviceState(
+    deviceId: '',
+    nextSequence: 1,
+    knownVector: SyncVersionVector(<String, int>{}),
+  );
+  final List<SyncOutboxRecord> _outbox = <SyncOutboxRecord>[];
+  SyncScanState _scanState = const SyncScanState(
+    contiguousSequences: <String, int>{},
+    gaps: <String, List<int>>{},
+    lastSuccess: null,
+    lastErrorCode: null,
+    retryCount: 0,
+  );
+  final List<SyncConflictRecord> _conflicts = <SyncConflictRecord>[];
+
+  /// operationId → (batchId, payloadHash)：等价于 sync_applied_ops 与
+  /// sync_entity_versions 的合并视角。
+  final Map<String, ({String batchId, String payloadHash})> _applied =
+      <String, ({String batchId, String payloadHash})>{};
+
+  /// 已落库实体版本，按实体分桶（一个实体可有多版，冲突两侧都保留）。
+  final Map<SyncEntityKey, List<SyncEntityVersion>> _versions =
+      <SyncEntityKey, List<SyncEntityVersion>>{};
+
+  @override
+  Future<SyncDeviceState> loadDeviceState() async => _deviceState;
+
+  @override
+  Future<void> saveDeviceState(SyncDeviceState state) async {
+    _deviceState = state;
+  }
+
+  @override
+  Future<List<SyncOutboxRecord>> loadOutbox() async =>
+      List<SyncOutboxRecord>.of(_outbox);
+
+  @override
+  Future<void> enqueueBatch(SyncBatchRecord batch) async {
+    for (final event in batch.events) {
+      _outbox.removeWhere(
+        (record) =>
+            record.batchId == batch.batchId &&
+            record.operationId == event.operationId,
+      );
+      _outbox.add(
+        SyncOutboxRecord(
+          batchId: batch.batchId,
+          operationId: event.operationId,
+          relativePath:
+              'events/${event.version.dot.deviceId}/'
+              '${event.version.dot.sequence}-${event.operationId}.vfsync',
+          payloadHash: event.payloadHash,
+          retryCount: 0,
+        ),
+      );
+    }
+  }
+
+  @override
+  Future<void> markBatchUploaded(String batchId) async {
+    _outbox.removeWhere((record) => record.batchId == batchId);
+  }
+
+  @override
+  Future<void> applyRemoteBatch(RemoteApplyPlan plan) async {
+    // 1) 校验阶段：只读，不触碰任何状态。
+    final knownVersions = <SyncEntityKey, KnownSyncEntityVersion>{};
+    for (final key in plan.entityVersions.map((v) => v.entity).toSet()) {
+      final latest = _latestVersionFor(key);
+      if (latest != null) {
+        knownVersions[key] = latest;
+      }
+    }
+    SyncPlanValidator.validate(
+      plan: plan,
+      appliedHashes: <String, String>{
+        for (final entry in _applied.entries)
+          entry.key: entry.value.payloadHash,
+      },
+      knownVersions: knownVersions,
+    );
+
+    // 2) 构造阶段：全部新状态在本地算好，任何异常都不会留下半批数据。
+    final nextVersions = <SyncEntityKey, List<SyncEntityVersion>>{
+      for (final entry in _versions.entries)
+        entry.key: List<SyncEntityVersion>.of(entry.value),
+    };
+    for (final version in plan.entityVersions) {
+      final bucket = nextVersions.putIfAbsent(
+        version.entity,
+        () => <SyncEntityVersion>[],
+      );
+      // 同一 operationId 重放是幂等的：已存在的版本行原样保留。
+      if (bucket.every(
+        (existing) => existing.operationId != version.operationId,
+      )) {
+        bucket.add(version);
+      }
+    }
+    final nextApplied = <String, ({String batchId, String payloadHash})>{
+      ..._applied,
+      for (final operationId in plan.appliedOperationIds)
+        if (!_applied.containsKey(operationId))
+          operationId: (
+            batchId: plan.batchId,
+            payloadHash: _payloadHashOf(plan, operationId),
+          ),
+    };
+
+    // 3) 提交阶段：仅做引用替换。
+    _versions
+      ..clear()
+      ..addAll(nextVersions);
+    _applied
+      ..clear()
+      ..addAll(nextApplied);
+  }
+
+  @override
+  Future<SyncScanState> loadScanState() async => _scanState;
+
+  @override
+  Future<void> saveScanState(SyncScanState state) async {
+    _scanState = state;
+  }
+
+  @override
+  Future<List<SyncConflictRecord>> loadConflicts() async =>
+      List<SyncConflictRecord>.of(_conflicts);
+
+  KnownSyncEntityVersion? _latestVersionFor(SyncEntityKey key) {
+    final bucket = _versions[key];
+    if (bucket == null || bucket.isEmpty) {
+      return null;
+    }
+    var latest = bucket.first;
+    for (final version in bucket.skip(1)) {
+      if (version.version.logicalTime >= latest.version.logicalTime) {
+        latest = version;
+      }
+    }
+    return KnownSyncEntityVersion(
+      entity: key,
+      operationId: latest.operationId,
+      version: latest.version,
+      deleted: latest.deleted,
+    );
+  }
+
+  /// 计划里某 operationId 的载荷 hash（登记已应用时用）。
+  static String _payloadHashOf(RemoteApplyPlan plan, String operationId) {
+    for (final version in plan.entityVersions) {
+      if (version.operationId == operationId) {
+        return version.payloadHash;
+      }
+    }
+    return '';
+  }
 }

@@ -5,7 +5,9 @@ import 'package:sqflite_common/sqlite_api.dart';
 
 import '../app/account_icon_assets.dart';
 import '../app/models.dart';
+import '../app/sync/sync_store.dart';
 import 'app_database.dart';
+import 'sqlite_sync_store.dart';
 
 /// 账目类全量数据快照。用于「导入/恢复/重置/删账本」这类需要一次性原子替换
 /// 多张表的场景——见 [LedgerRepository.replaceAllLedgerData]。
@@ -120,6 +122,13 @@ class SqliteLedgerRepository implements LedgerRepository {
 
   final AppDatabase _database;
   Database get _db => _database.db;
+
+  /// 同步元数据仓储。与业务表共用同一连接和同一条写队列，使远端批次应用能
+  /// 与本地 saveX 互不插队；见 [SqliteSyncRepository] 的原子性说明。
+  late final SyncRepository sync = SqliteSyncRepository(
+    database: _db,
+    enqueue: _enqueueWrite,
+  );
 
   /// 串行化本仓储的全部写入。sqflite 会串行执行底层事务，但行级差分快照在
   /// 事务开始前就会读取；若两个 saveX 同时进入，后一个会基于旧快照计算差分，
