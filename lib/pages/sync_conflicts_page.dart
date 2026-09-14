@@ -418,6 +418,63 @@ class SyncConflictCard extends StatelessWidget {
     );
   }
 
+  /// 决议按钮的入口。破坏性/覆盖性决议先经确认框再提交。
+  ///
+  /// 三种「会丢弃另一侧数据」的决议（保留删除、保留本机、保留其他设备）都会
+  /// 永久覆盖掉一个版本，误触的代价是数据丢失，因此统一走
+  /// [showConfirmDialog]；`cancel` 与「保留修改」不丢数据，直接提交。
+  Future<void> _confirmAndResolve(
+    BuildContext context,
+    ConflictResolution resolution,
+  ) async {
+    final l10n = AppLocalizations.of(context);
+    final copy = _confirmationCopy(l10n, resolution);
+    if (copy != null) {
+      final confirmed = await showConfirmDialog(
+        context,
+        title: copy.title,
+        message: copy.message,
+        confirmLabel: copy.confirmLabel,
+        destructive: copy.destructive,
+      );
+      if (!confirmed || !context.mounted) {
+        return;
+      }
+    }
+    onResolve(resolution);
+  }
+
+  /// 每个决议的确认文案；不需要确认的决议返回 null。
+  static _ResolutionConfirmation? _confirmationCopy(
+    AppLocalizations l10n,
+    ConflictResolution resolution,
+  ) {
+    switch (resolution) {
+      case ConflictResolution.keepDelete:
+        return _ResolutionConfirmation(
+          title: l10n.syncConflictConfirmDeleteTitle,
+          message: l10n.syncConflictConfirmDeleteMessage,
+          confirmLabel: l10n.syncConflictKeepDelete,
+          destructive: true,
+        );
+      case ConflictResolution.keepLocal:
+        return _ResolutionConfirmation(
+          title: l10n.syncConflictConfirmLocalTitle,
+          message: l10n.syncConflictConfirmLocalMessage,
+          confirmLabel: l10n.syncConflictKeepLocal,
+        );
+      case ConflictResolution.keepRemote:
+        return _ResolutionConfirmation(
+          title: l10n.syncConflictConfirmRemoteTitle,
+          message: l10n.syncConflictConfirmRemoteMessage,
+          confirmLabel: l10n.syncConflictKeepRemote,
+        );
+      case ConflictResolution.keepEdit:
+      case ConflictResolution.cancel:
+        return null;
+    }
+  }
+
   Widget _buildActions(BuildContext context, AppLocalizations l10n) {
     final oneDeleted = conflict.localDeleted || conflict.remoteDeleted;
     return Wrap(
@@ -428,12 +485,16 @@ class SyncConflictCard extends StatelessWidget {
           _actionButton(
             context,
             label: l10n.syncConflictKeepLocal,
-            onPressed: () => onResolve(ConflictResolution.keepLocal),
+            onPressed: () => unawaited(
+              _confirmAndResolve(context, ConflictResolution.keepLocal),
+            ),
           ),
           _actionButton(
             context,
             label: l10n.syncConflictKeepRemote,
-            onPressed: () => onResolve(ConflictResolution.keepRemote),
+            onPressed: () => unawaited(
+              _confirmAndResolve(context, ConflictResolution.keepRemote),
+            ),
           ),
         ] else ...<Widget>[
           // 一侧已删除：真正的抉择是「保留删除」还是「保留另一侧的编辑」，
@@ -442,7 +503,9 @@ class SyncConflictCard extends StatelessWidget {
             context,
             label: l10n.syncConflictKeepDelete,
             destructive: true,
-            onPressed: () => onResolve(ConflictResolution.keepDelete),
+            onPressed: () => unawaited(
+              _confirmAndResolve(context, ConflictResolution.keepDelete),
+            ),
           ),
           _actionButton(
             context,
@@ -477,6 +540,21 @@ class SyncConflictCard extends StatelessWidget {
       child: Text(label),
     );
   }
+}
+
+/// 需要用户确认的决议的文案。不需要确认的决议没有这个对象。
+class _ResolutionConfirmation {
+  const _ResolutionConfirmation({
+    required this.title,
+    required this.message,
+    required this.confirmLabel,
+    this.destructive = false,
+  });
+
+  final String title;
+  final String message;
+  final String confirmLabel;
+  final bool destructive;
 }
 
 /// 一条差异行：字段名 + 两侧值（null 表示该侧无此字段）。
@@ -536,8 +614,12 @@ String formatSyncConflictScope(AppLocalizations l10n, SyncConflict conflict) {
   return l10n.syncConflictScopeLedger;
 }
 
-/// 逻辑时钟的展示：逻辑时钟是单调递增的本地时间戳，直接显示原始数字没有意义，
-/// 这里只在两侧可比较时给出「L / R」关系提示，其余回退为序号。
+/// 逻辑时钟的展示。
+///
+/// 逻辑时钟是「这次变更发生在因果序的哪一步」的单调计数。它不对应用户熟悉的
+/// 挂钟时间（值会随每次本地变更推进，但推进的步长不是固定时间），因此这里
+/// 如实显示原始数值并标明是逻辑时钟，而不是伪装成日期——把它渲染成时间会
+/// 让用户以为那是这次修改的钟点。两侧的数值大小只用于判断先后，不用于读秒。
 String formatSyncConflictLogicalTime(AppLocalizations l10n, int logicalTime) {
   return l10n.syncConflictLogicalTime('$logicalTime');
 }

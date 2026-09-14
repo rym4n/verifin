@@ -1,15 +1,70 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:verifin/app/app_theme.dart';
 import 'package:verifin/app/backup/backup_settings.dart';
 import 'package:verifin/app/backup/webdav_config.dart';
+import 'package:verifin/app/common_widgets.dart';
 import 'package:verifin/app/sync/sync_models.dart';
 import 'package:verifin/app/veri_fin_controller.dart';
 import 'package:verifin/app/veri_fin_scope.dart';
 import 'package:verifin/local_storage/local_storage.dart';
 import 'package:verifin/pages/data_management_page.dart';
+import 'package:verifin/pages/sync_conflicts_page.dart';
 
 import 'support/in_memory_ledger_repository.dart';
 import 'support/test_harness.dart';
+
+/// 一条「本机改了金额、远端改了备注」的交易冲突，供状态行测试预置使用。
+///
+/// 这里只关心「存在未决冲突」这一个事实，因此载荷用最小的可读字段，
+/// 不复制同步页测试里的完整对比矩阵。
+SyncConflictRecord conflictRecord({required String id}) {
+  const entity = SyncEntityKey(scope: 'ledger', type: 'entries', id: 'entry-1');
+  SyncEntityVersion version({
+    required String deviceId,
+    required int sequence,
+    required String note,
+    required double amount,
+  }) {
+    final payload = <String, Object?>{
+      'id': 'entry-1',
+      'type': 'expense',
+      'amount': amount,
+      'note': note,
+      'categoryId': '',
+      'accountId': '',
+    };
+    return SyncEntityVersion(
+      entity: entity,
+      version: SyncVersion(
+        dot: SyncDot(deviceId: deviceId, sequence: sequence),
+        context: SyncVersionVector(<String, int>{deviceId: sequence}),
+        logicalTime: sequence * 1000,
+      ),
+      payloadHash: computeSyncPayloadHash(payload),
+      payload: payload,
+      deleted: false,
+      operationId: '$deviceId-$sequence',
+    );
+  }
+
+  return SyncConflictRecord(
+    id: id,
+    entity: entity,
+    local: version(
+      deviceId: 'device-local',
+      sequence: 1,
+      note: '本机备注',
+      amount: 12.5,
+    ),
+    remote: version(
+      deviceId: 'device-remote',
+      sequence: 2,
+      note: '远端备注',
+      amount: 30,
+    ),
+  );
+}
 
 /// Task 6 Step 5：数据管理页的同步控件、互斥反馈、状态行与恢复守卫。
 void main() {
@@ -18,6 +73,9 @@ void main() {
   /// 打开数据管理页，返回控制器。默认预置一个已配置的 WebDAV 服务器，
   /// 否则同步控件区块整块不渲染（它跟手动上传/恢复一样只在已配置时出现）。
   ///
+  /// [repository] 用于需要先往同步元数据里预置数据的用例（如冲突记录）；
+  /// 传入时该仓储即绑定到 store，页面读到的就是预置内容。
+  ///
   /// [mode] 必须在页面首次构建**之前**就写进控制器：页面的模式草稿在
   /// `didChangeDependencies` 里一次性快照，之后控制器再变也不会刷新草稿
   /// （这正是「未保存的草稿不被外部状态覆盖」的预期行为）。
@@ -25,10 +83,13 @@ void main() {
     WidgetTester tester, {
     bool webdavConfigured = true,
     BackupTransportMode mode = BackupTransportMode.manual,
+    InMemoryLedgerRepository? repository,
   }) async {
     await tester.binding.setSurfaceSize(const Size(460, 2400));
     addTearDown(() => tester.binding.setSurfaceSize(null));
-    final controller = await makeController();
+    final controller = repository == null
+        ? await makeController()
+        : await makeController(null, true, repository);
     addTearDown(controller.dispose);
     if (webdavConfigured) {
       controller.setWebdavConfig(
@@ -285,6 +346,111 @@ void main() {
       await pumpPage(tester);
       expect(find.text('已连接'), findsOneWidget);
       expect(find.text('无待同步项'), findsNothing);
+    });
+
+    testWidgets('存在未决冲突时显示冲突计数、错误色与进入箭头', (tester) async {
+      final repo = InMemoryLedgerRepository();
+      await repo.sync.storeConflict(conflictRecord(id: 'conflict-1'));
+      final controller = await pumpPage(tester, repository: repo);
+
+      // 状态行本身还是「同步状态」，但右侧显示冲突计数而不是「已连接」。
+      expect(find.text('同步状态'), findsOneWidget);
+      expect(find.text('1 个冲突待处理'), findsOneWidget);
+      expect(find.text('已连接'), findsNothing);
+
+      // 有冲突时整行走错误色，并且给出进入箭头。
+      final row = tester.widget<SettingsRow>(
+        find.widgetWithText(SettingsRow, '同步状态'),
+      );
+      expect(row.contentColor, isNotNull);
+      expect(
+        row.contentColor,
+        veriSemantic(
+          tester.element(find.byType(DataManagementPage)),
+          veriExpense,
+        ),
+      );
+      expect(row.trailingIcon, Icons.chevron_right);
+
+      // 冲突计数来自控制器读取的仓储状态，两条口径必须一致。
+      final status = await controller.loadSyncPreferenceStatus();
+      expect(status.conflictCount, 1);
+    });
+
+    testWidgets('无冲突时状态行不显示进入箭头', (tester) async {
+      await pumpPage(tester);
+      final row = tester.widget<SettingsRow>(
+        find.widgetWithText(SettingsRow, '同步状态'),
+      );
+      // 没有冲突时点它只是刷新状态，不应伪装成可进入的页面。
+      expect(row.trailingIcon, isNull);
+    });
+
+    testWidgets('无冲突时点击状态行只刷新状态，不进入冲突页', (tester) async {
+      final repo = InMemoryLedgerRepository();
+      await pumpPage(tester, repository: repo);
+      expect(find.text('已连接'), findsOneWidget);
+
+      // 刷新前先在仓储里放一条冲突：如果这次点击读了状态，它就该显示出来。
+      await repo.sync.storeConflict(conflictRecord(id: 'conflict-late'));
+
+      await tester.tap(find.text('同步状态'));
+      await tester.pumpAndSettle();
+
+      expect(find.byType(SyncConflictsPage), findsNothing);
+      expect(find.text('1 个冲突待处理'), findsOneWidget);
+      expect(find.text('已连接'), findsNothing);
+    });
+
+    testWidgets('点击状态行进入冲突审阅页', (tester) async {
+      final repo = InMemoryLedgerRepository();
+      await repo.sync.storeConflict(conflictRecord(id: 'conflict-1'));
+      await pumpPage(tester, repository: repo);
+
+      await tester.tap(find.text('同步状态'));
+      await tester.pumpAndSettle();
+
+      // 进入了冲突页：标题与那条冲突都在。
+      expect(find.byType(SyncConflictsPage), findsOneWidget);
+      expect(find.text('同步冲突'), findsOneWidget);
+      expect(find.text('交易'), findsOneWidget);
+    });
+
+    testWidgets('从冲突页返回后重新读取同步状态，计数刷新', (tester) async {
+      final repo = InMemoryLedgerRepository();
+      await repo.sync.storeConflict(conflictRecord(id: 'conflict-1'));
+      await pumpPage(tester, repository: repo);
+      expect(find.text('1 个冲突待处理'), findsOneWidget);
+
+      await tester.tap(find.text('同步状态'));
+      await tester.pumpAndSettle();
+      expect(find.byType(SyncConflictsPage), findsOneWidget);
+
+      // 在冲突页里决议掉这条冲突（覆盖性决议需要确认）。
+      await tester.tap(find.text('保留本机'));
+      await tester.pumpAndSettle();
+      await tester.tap(
+        find.descendant(
+          of: find.byType(AlertDialog),
+          matching: find.byType(FilledButton),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(await repo.sync.loadConflicts(), isEmpty);
+
+      // 返回数据管理页：状态行必须重读一次，否则会停在旧的「1 个冲突待处理」。
+      // 页面用 VeriHeader 自己的返回箭头（不是 Material 的 BackButton），
+      // 所以不能走 `tester.pageBack()`。
+      await tester.tap(find.byTooltip('返回'));
+      await tester.pumpAndSettle();
+
+      expect(find.byType(SyncConflictsPage), findsNothing);
+      expect(find.text('1 个冲突待处理'), findsNothing);
+      expect(find.text('已连接'), findsOneWidget);
+      final row = tester.widget<SettingsRow>(
+        find.widgetWithText(SettingsRow, '同步状态'),
+      );
+      expect(row.trailingIcon, isNull);
     });
   });
 }

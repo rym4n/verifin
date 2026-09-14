@@ -2881,6 +2881,24 @@ class AppLocalizationsZh extends AppLocalizations {
   String get syncConflictKeepEdit => '保留修改';
 
   @override
+  String get syncConflictConfirmDeleteTitle => '保留删除？';
+
+  @override
+  String get syncConflictConfirmDeleteMessage => '另一侧对该条目的修改将被永久丢弃，此操作无法撤销。';
+
+  @override
+  String get syncConflictConfirmLocalTitle => '保留本机版本？';
+
+  @override
+  String get syncConflictConfirmLocalMessage => '其他设备上的修改将被覆盖，此操作无法撤销。';
+
+  @override
+  String get syncConflictConfirmRemoteTitle => '保留其他设备版本？';
+
+  @override
+  String get syncConflictConfirmRemoteMessage => '本机上的修改将被覆盖，此操作无法撤销。';
+
+  @override
   String get syncConflictAbsent => '—';
 
   @override

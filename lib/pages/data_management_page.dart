@@ -522,7 +522,11 @@ class _DataManagementPageState extends State<DataManagementPage> {
       // 无冲突时不显示箭头：点它只是刷新状态，不是一个可进入的页面。
       trailingIcon: hasConflicts ? Icons.chevron_right : null,
       contentColor: color,
-      onTap: () => unawaited(_openSyncConflicts(controller)),
+      onTap: () => unawaited(
+        hasConflicts
+            ? _openSyncConflicts(controller)
+            : _refreshSyncStatus(controller),
+      ),
     );
   }
 

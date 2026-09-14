@@ -1956,6 +1956,30 @@
   "@syncConflictKeepEdit": {
     "description": "冲突决议：保留未删除一侧的修改"
   },
+  "syncConflictConfirmDeleteTitle": "保留删除？",
+  "@syncConflictConfirmDeleteTitle": {
+    "description": "保留删除决议的确认框标题"
+  },
+  "syncConflictConfirmDeleteMessage": "另一侧对该条目的修改将被永久丢弃，此操作无法撤销。",
+  "@syncConflictConfirmDeleteMessage": {
+    "description": "保留删除决议的确认框正文"
+  },
+  "syncConflictConfirmLocalTitle": "保留本机版本？",
+  "@syncConflictConfirmLocalTitle": {
+    "description": "保留本机决议的确认框标题"
+  },
+  "syncConflictConfirmLocalMessage": "其他设备上的修改将被覆盖，此操作无法撤销。",
+  "@syncConflictConfirmLocalMessage": {
+    "description": "保留本机决议的确认框正文"
+  },
+  "syncConflictConfirmRemoteTitle": "保留其他设备版本？",
+  "@syncConflictConfirmRemoteTitle": {
+    "description": "保留其他设备决议的确认框标题"
+  },
+  "syncConflictConfirmRemoteMessage": "本机上的修改将被覆盖，此操作无法撤销。",
+  "@syncConflictConfirmRemoteMessage": {
+    "description": "保留其他设备决议的确认框正文"
+  },
   "syncConflictAbsent": "—",
   "@syncConflictAbsent": {
     "description": "冲突对比：某一侧没有该字段"

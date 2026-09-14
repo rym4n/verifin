@@ -5276,6 +5276,42 @@ abstract class AppLocalizations {
   /// **'保留修改'**
   String get syncConflictKeepEdit;
 
+  /// 保留删除决议的确认框标题
+  ///
+  /// In zh, this message translates to:
+  /// **'保留删除？'**
+  String get syncConflictConfirmDeleteTitle;
+
+  /// 保留删除决议的确认框正文
+  ///
+  /// In zh, this message translates to:
+  /// **'另一侧对该条目的修改将被永久丢弃，此操作无法撤销。'**
+  String get syncConflictConfirmDeleteMessage;
+
+  /// 保留本机决议的确认框标题
+  ///
+  /// In zh, this message translates to:
+  /// **'保留本机版本？'**
+  String get syncConflictConfirmLocalTitle;
+
+  /// 保留本机决议的确认框正文
+  ///
+  /// In zh, this message translates to:
+  /// **'其他设备上的修改将被覆盖，此操作无法撤销。'**
+  String get syncConflictConfirmLocalMessage;
+
+  /// 保留其他设备决议的确认框标题
+  ///
+  /// In zh, this message translates to:
+  /// **'保留其他设备版本？'**
+  String get syncConflictConfirmRemoteTitle;
+
+  /// 保留其他设备决议的确认框正文
+  ///
+  /// In zh, this message translates to:
+  /// **'本机上的修改将被覆盖，此操作无法撤销。'**
+  String get syncConflictConfirmRemoteMessage;
+
   /// 冲突对比：某一侧没有该字段
   ///
   /// In zh, this message translates to:

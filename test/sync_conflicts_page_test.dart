@@ -10,6 +10,22 @@ import 'package:verifin/pages/sync_conflicts_page.dart';
 import 'support/in_memory_ledger_repository.dart';
 import 'support/test_harness.dart';
 
+/// 点掉确认框里的确认按钮并等待关闭。
+///
+/// 不能按文案点：确认框的按钮文案与卡片上的决议按钮同名（都叫「保留本机」等），
+/// 按 Text 找会命中两个。确认框里的确认键是 [AlertDialog] 内的 [FilledButton]，
+/// 按类型限制在对话框内即可唯一。
+Future<void> tapConfirmDialog(WidgetTester tester) async {
+  expect(find.byType(AlertDialog), findsOneWidget);
+  await tester.tap(
+    find.descendant(
+      of: find.byType(AlertDialog),
+      matching: find.byType(FilledButton),
+    ),
+  );
+  await tester.pumpAndSettle();
+}
+
 /// 构造一条实体版本。逻辑时钟与序列号显式传参，便于断言界面上的时序信息。
 SyncEntityVersion _version({
   required SyncEntityKey entity,
@@ -203,11 +219,104 @@ void main() {
     expect(find.text('保留修改'), findsNothing);
   });
 
+  testWidgets('保留删除先确认，取消则冲突与两侧版本都不动', (tester) async {
+    final (_, repository) = await pumpPage(
+      tester,
+      conflicts: <SyncConflictRecord>[
+        entryConflict(localDeleted: true, localPayload: null),
+      ],
+    );
+
+    await tester.tap(find.text('保留删除'));
+    await tester.pumpAndSettle();
+
+    // 保留删除会永久丢弃另一侧的修改，必须先确认。
+    expect(find.text('保留删除？'), findsOneWidget);
+    expect(find.textContaining('永久丢弃'), findsOneWidget);
+    expect(find.text('继续'), findsNothing);
+
+    // 在确认框里点取消：决议不提交。
+    await tester.tap(
+      find.descendant(
+        of: find.byType(AlertDialog),
+        matching: find.widgetWithText(TextButton, '取消'),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.byType(AlertDialog), findsNothing);
+    expect(await repository.sync.loadConflicts(), hasLength(1));
+    expect(await repository.sync.loadOutbox(), isEmpty);
+    // 界面仍停留在冲突列表上，用户可以重来。
+    expect(find.text('保留删除'), findsOneWidget);
+  });
+
+  testWidgets('保留删除确认后清掉冲突并写入决议事件', (tester) async {
+    final (_, repository) = await pumpPage(
+      tester,
+      conflicts: <SyncConflictRecord>[
+        entryConflict(localDeleted: true, localPayload: null),
+      ],
+    );
+
+    await tester.tap(find.text('保留删除'));
+    await tester.pumpAndSettle();
+    await tapConfirmDialog(tester);
+
+    expect(find.text('没有待处理的冲突'), findsOneWidget);
+    expect(await repository.sync.loadConflicts(), isEmpty);
+    expect(await repository.sync.loadOutbox(), hasLength(1));
+  });
+
+  testWidgets('保留修改不需要确认（不丢数据）', (tester) async {
+    final (_, repository) = await pumpPage(
+      tester,
+      conflicts: <SyncConflictRecord>[
+        entryConflict(localDeleted: true, localPayload: null),
+      ],
+    );
+
+    await tester.tap(find.text('保留修改'));
+    await tester.pumpAndSettle();
+
+    expect(find.byType(AlertDialog), findsNothing);
+    expect(find.text('没有待处理的冲突'), findsOneWidget);
+    expect(await repository.sync.loadConflicts(), isEmpty);
+  });
+
+  testWidgets('取消覆盖性决议时不做任何改动', (tester) async {
+    final (_, repository) = await pumpPage(
+      tester,
+      conflicts: <SyncConflictRecord>[entryConflict()],
+    );
+
+    await tester.tap(find.text('保留本机'));
+    await tester.pumpAndSettle();
+    expect(find.text('保留本机版本？'), findsOneWidget);
+
+    await tester.tap(
+      find.descendant(
+        of: find.byType(AlertDialog),
+        matching: find.widgetWithText(TextButton, '取消'),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    // 确认框取消 == 什么都没发生：冲突还在，也没有决议事件。
+    expect(await repository.sync.loadConflicts(), hasLength(1));
+    expect(await repository.sync.loadOutbox(), isEmpty);
+    expect(find.text('保留本机'), findsOneWidget);
+  });
+
   testWidgets('保留本机后冲突消失、计数归零', (tester) async {
     await pumpPage(tester, conflicts: <SyncConflictRecord>[entryConflict()]);
 
     await tester.tap(find.text('保留本机'));
     await tester.pumpAndSettle();
+
+    // 覆盖性决议先弹确认框，确认后才真正提交。
+    expect(find.text('保留本机版本？'), findsOneWidget);
+    await tapConfirmDialog(tester);
 
     // 决议后页面刷新为空态，仓储里的未决冲突也应为零。
     expect(find.text('没有待处理的冲突'), findsOneWidget);
@@ -222,6 +331,7 @@ void main() {
 
     await tester.tap(find.text('保留其他设备'));
     await tester.pumpAndSettle();
+    await tapConfirmDialog(tester);
 
     expect(find.text('没有待处理的冲突'), findsOneWidget);
     final status = await VeriFinScope.of(
@@ -241,6 +351,8 @@ void main() {
     await tester.tap(find.text('取消'));
     await tester.pumpAndSettle();
 
+    // 取消是空操作，不该因为「空操作」就多问一次——直接提交，不弹确认框。
+    expect(find.byType(AlertDialog), findsNothing);
     // 冲突还在，且没有被写入任何决议事件。
     final after = await repository.sync.loadConflicts();
     expect(after.length, before.length);
@@ -263,6 +375,7 @@ void main() {
 
     await tester.tap(find.text('保留本机').first);
     await tester.pumpAndSettle();
+    await tapConfirmDialog(tester);
 
     // 只剩一条，列表没有整块消失。
     expect(find.text('保留本机'), findsOneWidget);
@@ -332,6 +445,7 @@ void main() {
     expect(await controller.loadSyncConflicts(), hasLength(1));
     await tester.tap(find.text('保留本机'));
     await tester.pumpAndSettle();
+    await tapConfirmDialog(tester);
 
     expect(await controller.loadSyncConflicts(), isEmpty);
     expect(await repository.sync.loadConflicts(), isEmpty);

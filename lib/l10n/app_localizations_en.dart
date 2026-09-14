@@ -2945,6 +2945,28 @@ class AppLocalizationsEn extends AppLocalizations {
   String get syncConflictKeepEdit => 'Keep edit';
 
   @override
+  String get syncConflictConfirmDeleteTitle => 'Keep the deletion?';
+
+  @override
+  String get syncConflictConfirmDeleteMessage =>
+      'The other device\'s edit to this item will be discarded permanently. This can\'t be undone.';
+
+  @override
+  String get syncConflictConfirmLocalTitle => 'Keep this device\'s version?';
+
+  @override
+  String get syncConflictConfirmLocalMessage =>
+      'The changes on the other device will be overwritten. This can\'t be undone.';
+
+  @override
+  String get syncConflictConfirmRemoteTitle =>
+      'Keep the other device\'s version?';
+
+  @override
+  String get syncConflictConfirmRemoteMessage =>
+      'The changes on this device will be overwritten. This can\'t be undone.';
+
+  @override
   String get syncConflictAbsent => '—';
 
   @override
