@@ -216,12 +216,20 @@ class InMemoryLedgerRepository
     // No async writes in memory implementation
   }
 
+  // VeriFinController stub methods for testing
+  Future<T> runRemoteApply<T>(Future<T> Function() apply) async {
+    // Simple pass-through for testing
+    // In real implementation, this would call markRemoteApply, run apply,
+    // clearRemoteApply, and reconcile(alignShadowOnly: true)
+    return await apply();
+  }
+
   // Test helper methods
   void setProfile(Map<String, Object?> profile) {
     _profile = Map<String, Object?>.from(profile);
   }
 
-  void addEntry(Map<String, Object?> entryData) {
+  void addTestEntry(Map<String, Object?> entryData) {
     final entry = LedgerEntry(
       id: entryData['id'] as String? ?? 'entry-${_entries.length + 1}',
       bookId: entryData['bookId'] as String? ?? 'default',

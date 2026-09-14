@@ -1,10 +1,17 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:verifin/app/backup/webdav_config.dart';
 import 'package:verifin/app/sync/sync_clock.dart';
 import 'package:verifin/app/sync/sync_engine.dart';
 import 'package:verifin/app/sync/sync_models.dart';
 import 'package:verifin/app/sync/webdav_sync_transport_stub.dart';
 
 import 'support/in_memory_ledger_repository.dart';
+
+const testConfig = WebdavConfig(
+  url: 'https://test.example.com/dav',
+  username: 'test',
+  password: 'test',
+);
 
 /// 基线初始化与首次加入测试。
 void main() {
@@ -16,11 +23,12 @@ void main() {
         repository: repo.sync,
         transport: transport,
         controller: repo,
+        config: testConfig,
       );
 
       // Populate local data.
       repo.setProfile({'name': 'LocalUser'});
-      repo.addEntry({'id': 'entry-1', 'amount': 100});
+      repo.addTestEntry({'id': 'entry-1', 'amount': 100});
 
       // Initialize from restored data with empty remote.
       await engine.initializeFromRestoredData();
@@ -42,6 +50,7 @@ void main() {
         repository: repo.sync,
         transport: transport,
         controller: repo,
+        config: testConfig,
       );
 
       // Remote device already has data.
@@ -82,6 +91,7 @@ void main() {
         repository: repo.sync,
         transport: transport,
         controller: repo,
+        config: testConfig,
       );
 
       // Remote device has data.
@@ -122,6 +132,7 @@ void main() {
         repository: repo.sync,
         transport: transport,
         controller: repo,
+        config: testConfig,
       );
 
       // Start with empty remote.
@@ -163,6 +174,7 @@ void main() {
         repository: repo.sync,
         transport: transport,
         controller: repo,
+        config: testConfig,
       );
 
       // Remote has events up to sequence 5.

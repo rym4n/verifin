@@ -17,6 +17,7 @@ void main() {
         repository: repo.sync,
         transport: transport,
         controller: repo,
+        config: testConfig,
       );
 
       final result = await engine.run(trigger: SyncTrigger.manual);
@@ -31,6 +32,7 @@ void main() {
         repository: repo.sync,
         transport: transport,
         controller: repo,
+        config: testConfig,
       );
 
       // Enqueue a batch.
@@ -81,6 +83,7 @@ void main() {
         repository: repo.sync,
         transport: transport,
         controller: repo,
+        config: testConfig,
       );
 
       final clock = SyncClock.createWithDeviceId('dev-1');
@@ -130,6 +133,7 @@ void main() {
         repository: repo.sync,
         transport: transport,
         controller: repo,
+        config: testConfig,
       );
 
       // Upload from remote device.
@@ -167,6 +171,7 @@ void main() {
         repository: repo.sync,
         transport: transport,
         controller: repo,
+        config: testConfig,
       );
 
       // Upload event and manifest, but no commit.

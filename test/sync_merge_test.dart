@@ -7,6 +7,12 @@ import 'package:verifin/app/sync/webdav_sync_transport_stub.dart';
 
 import 'support/in_memory_ledger_repository.dart';
 
+const testConfig = WebdavConfig(
+  url: 'https://test.example.com/dav',
+  username: 'test',
+  password: 'test',
+);
+
 /// 同步合并语义测试：因果关系、冲突检测、幂等性。
 void main() {
   group('SyncEngine · 合并语义', () {
@@ -17,6 +23,7 @@ void main() {
         repository: repo.sync,
         transport: transport,
         controller: repo,
+        config: testConfig,
       );
 
       // Device A adds entry-1.
@@ -75,6 +82,7 @@ void main() {
         repository: repo.sync,
         transport: transport,
         controller: repo,
+        config: testConfig,
       );
 
       final clock = SyncClock.createWithDeviceId('dev-a');
@@ -114,6 +122,7 @@ void main() {
         repository: repo.sync,
         transport: transport,
         controller: repo,
+        config: testConfig,
       );
 
       final clock = SyncClock.createWithDeviceId('dev-a');
@@ -170,6 +179,7 @@ void main() {
         repository: repo.sync,
         transport: transport,
         controller: repo,
+        config: testConfig,
       );
 
       // Device A and B both edit the same entity concurrently.
@@ -225,6 +235,7 @@ void main() {
         repository: repo.sync,
         transport: transport,
         controller: repo,
+        config: testConfig,
       );
 
       final clockA = SyncClock.createWithDeviceId('dev-a');
@@ -278,6 +289,7 @@ void main() {
         repository: repo.sync,
         transport: transport,
         controller: repo,
+        config: testConfig,
       );
 
       final clockA = SyncClock.createWithDeviceId('dev-a');
@@ -323,3 +335,9 @@ void main() {
     });
   });
 }
+
+const testConfig = WebdavConfig(
+  url: 'https://test.example.com/dav',
+  username: 'test',
+  password: 'test',
+);
