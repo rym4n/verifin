@@ -883,6 +883,32 @@ mixin _ControllerOps on ChangeNotifier, _ControllerState {
     );
   }
 
+  /// 未决冲突列表，供冲突审阅页展示。只读，不产生副作用。
+  Future<List<SyncConflict>> loadSyncConflicts() async {
+    final records = await _repository.sync.loadConflicts();
+    return records.map(SyncConflict.fromRecord).toList();
+  }
+
+  /// 对一条冲突应用用户决议。
+  ///
+  /// 决议本身是「写入一个 resolve 事件并让该冲突从列表消失」，只碰本地仓储，
+  /// 不需要 WebDAV 配置也不发起网络请求——因此这里用一个不带传输层的引擎，
+  /// 与正式同步流程共用同一套决议语义，而不是在 UI 里复制一份。
+  ///
+  /// [ConflictResolution.cancel] 是空操作：两侧版本都不动，冲突保持未决。
+  Future<void> resolveSyncConflict(
+    String conflictId,
+    ConflictResolution resolution,
+  ) async {
+    final engine = SyncEngine(
+      repository: _repository.sync,
+      controller: this as SyncProjectionSource,
+      config: _webdavConfig,
+      remoteApply: runRemoteApply,
+    );
+    await engine.resolveConflict(conflictId, resolution);
+  }
+
   /// 重放 `sync_apply_journal` 中未应用的 KV 偏好行：按 key 确定性顺序逐个
   /// `writeAndFlush` 到本地 KV，成功一条标记一条 applied。**必须在应用重启时、
   /// 投影对账（shadow 比较）之前调用**——否则本地 KV 还停留在旧值，投影会把

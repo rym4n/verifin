@@ -52,7 +52,7 @@ class SyncRunResult {
 class SyncEngine {
   SyncEngine({
     required SyncRepository repository,
-    required WebdavSyncTransport transport,
+    WebdavSyncTransport? transport,
     required SyncProjectionSource controller,
     WebdavConfig? config,
 
@@ -67,7 +67,11 @@ class SyncEngine {
        _remoteApply = remoteApply;
 
   final SyncRepository _repository;
-  final WebdavSyncTransport _transport;
+
+  /// 传输层可空：冲突决议（[resolveConflict]）只写本地 outbox，不碰网络。
+  /// 决议 UI 因此在没有 WebDAV 配置时也能构造一个仅用于决议的引擎，
+  /// 无需为一次纯本地写入先建一个 HTTP 客户端。
+  final WebdavSyncTransport? _transport;
   final SyncProjectionSource _controller;
   final Future<void> Function(Future<void> Function())? _remoteApply;
   WebdavConfig? _config;
@@ -97,7 +101,8 @@ class SyncEngine {
 
   /// Run a sync cycle: upload outbox, scan remote, download and merge.
   Future<SyncRunResult> run({required SyncTrigger trigger}) async {
-    if (_config == null) {
+    final transport = _transport;
+    if (_config == null || transport == null) {
       return const SyncRunResult(
         uploaded: 0,
         downloaded: 0,
@@ -112,7 +117,7 @@ class SyncEngine {
       await _ensureClock();
 
       // Ensure sync tree exists
-      await _transport.ensureSyncTree(_config!);
+      await transport.ensureSyncTree(_config!);
 
       // Upload phase
       final uploaded = await _uploadOutbox();
@@ -139,7 +144,8 @@ class SyncEngine {
 
   /// Initialize from restored data: baseline or join-conflict flow.
   Future<void> initializeFromRestoredData() async {
-    if (_config == null) {
+    final transport = _transport;
+    if (_config == null || transport == null) {
       return;
     }
 
@@ -147,10 +153,10 @@ class SyncEngine {
       await _ensureClock();
 
       // Ensure sync tree exists
-      await _transport.ensureSyncTree(_config!);
+      await transport.ensureSyncTree(_config!);
 
       // Scan remote to determine if empty or not
-      final remoteFiles = await _transport.listSyncFiles(_config!);
+      final remoteFiles = await transport.listSyncFiles(_config!);
       final remoteEvents = remoteFiles
           .where((f) => f.kind == WebdavSyncFileKind.event)
           .toList();
@@ -264,6 +270,10 @@ class SyncEngine {
       ),
     );
 
+    // 决议事件已入队：用户已经做出选择，这条冲突不再需要出现在审阅列表里。
+    // 必须在 enqueue 成功之后删除——先删后写会在写失败时把用户的选择丢掉。
+    await _repository.removeConflict(conflictId);
+
     // Apply locally through change tracker
     // This would require updating the controller state
     // For now, we'll rely on the next sync to propagate
@@ -328,7 +338,7 @@ class SyncEngine {
           final eventBytes = await _encodeEventForUpload(record, codec);
           if (eventBytes != null) {
             final hash = sha256.convert(eventBytes).toString();
-            await _transport.putImmutable(
+            await _transport!.putImmutable(
               _config!,
               record.relativePath,
               Stream.value(eventBytes),
@@ -404,7 +414,7 @@ class SyncEngine {
     final bytes = utf8.encode(jsonEncode(manifest));
     final hash = sha256.convert(bytes).toString();
     final stream = Stream.value(bytes);
-    await _transport.putImmutable(
+    await _transport!.putImmutable(
       _config!,
       _manifestPath(batchId),
       stream,
@@ -417,7 +427,7 @@ class SyncEngine {
     final bytes = utf8.encode('committed');
     final hash = sha256.convert(bytes).toString();
     final stream = Stream.value(bytes);
-    await _transport.putImmutable(
+    await _transport!.putImmutable(
       _config!,
       commitPath,
       stream,
@@ -427,7 +437,8 @@ class SyncEngine {
   }
 
   Future<(int, int, int)> _scanAndApply() async {
-    final remoteFiles = await _transport.listSyncFiles(_config!);
+    final transport = _transport!;
+    final remoteFiles = await transport.listSyncFiles(_config!);
 
     // Build scan state
     final scanState = await _buildScanState(remoteFiles);
@@ -449,7 +460,7 @@ class SyncEngine {
         // Download and decode events
         final events = <SyncEvent>[];
         for (final eventFile in batch.eventFiles) {
-          final bytes = await _transport.downloadSyncFile(
+          final bytes = await transport.downloadSyncFile(
             _config!,
             eventFile.relativePath,
             maxBytes: syncMaxDownloadBytes,
@@ -831,7 +842,7 @@ class SyncEngine {
       if (manifestFile == null) continue;
 
       try {
-        final bytes = await _transport.downloadSyncFile(
+        final bytes = await _transport!.downloadSyncFile(
           _config!,
           manifestFile.relativePath,
           maxBytes: syncMaxDownloadBytes,

@@ -2818,6 +2818,178 @@ class AppLocalizationsZh extends AppLocalizations {
   String get syncEnabledAutoUploadFeedback => '已开启自动上传，自动同步已关闭';
 
   @override
+  String get syncConflictsTitle => '同步冲突';
+
+  @override
+  String get syncConflictsSubtitle => '这些条目在多台设备上被同时修改，需要你决定保留哪一版';
+
+  @override
+  String get syncConflictsEmpty => '没有待处理的冲突';
+
+  @override
+  String get syncConflictsLoadFailed => '无法读取冲突列表，请重试';
+
+  @override
+  String get syncConflictsRetry => '重试';
+
+  @override
+  String get syncConflictResolved => '已应用你的选择';
+
+  @override
+  String get syncConflictResolveFailed => '决议未能保存，请重试';
+
+  @override
+  String get syncConflictLocalVersion => '本机版本';
+
+  @override
+  String get syncConflictRemoteVersion => '其他设备版本';
+
+  @override
+  String get syncConflictDeletedMarker => '（已删除）';
+
+  @override
+  String syncConflictSourceDevice(String deviceId) {
+    return '来源设备 $deviceId';
+  }
+
+  @override
+  String syncConflictSequence(int sequence) {
+    return '序号 $sequence';
+  }
+
+  @override
+  String syncConflictLogicalTime(String time) {
+    return '逻辑时钟 $time';
+  }
+
+  @override
+  String get syncConflictScopeGlobal => '全局设置';
+
+  @override
+  String get syncConflictScopeLedger => '账本数据';
+
+  @override
+  String get syncConflictKeepLocal => '保留本机';
+
+  @override
+  String get syncConflictKeepRemote => '保留其他设备';
+
+  @override
+  String get syncConflictKeepDelete => '保留删除';
+
+  @override
+  String get syncConflictKeepEdit => '保留修改';
+
+  @override
+  String get syncConflictAbsent => '—';
+
+  @override
+  String get syncConflictUnreadable => '无法解析的内容';
+
+  @override
+  String get syncConflictEmptyPayload => '无字段';
+
+  @override
+  String get syncConflictValueTrue => '是';
+
+  @override
+  String get syncConflictValueFalse => '否';
+
+  @override
+  String syncConflictListCount(int count) {
+    return '列表（$count 项）';
+  }
+
+  @override
+  String syncConflictMapEntryCount(int count) {
+    return '对象（$count 个字段）';
+  }
+
+  @override
+  String get syncConflictNoAccount => '无账户';
+
+  @override
+  String get syncConflictUnknownAccount => '未知账户';
+
+  @override
+  String get syncConflictUnknownCategory => '未知分类';
+
+  @override
+  String get syncConflictFieldSummary => '内容';
+
+  @override
+  String get syncConflictFieldName => '名称';
+
+  @override
+  String get syncConflictFieldType => '类型';
+
+  @override
+  String get syncConflictFieldAmount => '金额';
+
+  @override
+  String get syncConflictFieldInitialBalance => '初始余额';
+
+  @override
+  String get syncConflictFieldCurrency => '币种';
+
+  @override
+  String get syncConflictFieldRate => '汇率';
+
+  @override
+  String get syncConflictFieldAccount => '账户';
+
+  @override
+  String get syncConflictFieldCategory => '分类';
+
+  @override
+  String get syncConflictFieldNote => '备注';
+
+  @override
+  String get syncConflictFieldDate => '时间';
+
+  @override
+  String get syncEntityEntries => '交易';
+
+  @override
+  String get syncEntityAccounts => '账户';
+
+  @override
+  String get syncEntityAccountGroups => '账户分组';
+
+  @override
+  String get syncEntityCategories => '分类';
+
+  @override
+  String get syncEntityTags => '标签';
+
+  @override
+  String get syncEntityAttachments => '附件';
+
+  @override
+  String get syncEntityRecurringRules => '周期记账';
+
+  @override
+  String get syncEntityExchangeRates => '汇率';
+
+  @override
+  String get syncEntityLedgerBook => '账本';
+
+  @override
+  String get syncEntityBudgets => '预算';
+
+  @override
+  String get syncEntityProfile => '个人资料';
+
+  @override
+  String get syncEntityHomePanels => '首页布局';
+
+  @override
+  String get syncEntityReportPanels => '看板布局';
+
+  @override
+  String get syncEntityGeneric => '账目数据';
+
+  @override
   String get resetData => '初始化数据';
 
   @override

@@ -22,6 +22,7 @@ import '../app/veri_fin_scope.dart';
 import 'app_log_page.dart';
 import 'import_preview_page.dart';
 import 'sheets.dart';
+import 'sync_conflicts_page.dart';
 
 part 'data_management_dialogs.dart';
 
@@ -492,6 +493,9 @@ class _DataManagementPageState extends State<DataManagementPage> {
   /// 排序——冲突（需要用户决议）比待重放（系统自己会处理）更需要被看到，所以
   /// 有冲突时整行走错误色。状态数据还没读到时按「已连接」显示，避免首帧闪一下
   /// 错误色。
+  ///
+  /// 点按进入冲突审阅页（有未决冲突时）或就地刷新状态。未决冲突刻意不阻塞记账：
+  /// 用户完全可以先继续记账，回头再处理这些冲突。
   Widget _syncStatusRow(BuildContext context, VeriFinController controller) {
     final l10n = AppLocalizations.of(context);
     final status = _syncStatus;
@@ -510,13 +514,28 @@ class _DataManagementPageState extends State<DataManagementPage> {
       detail = l10n.syncStatusConnected;
       color = null;
     }
+    final hasConflicts = status != null && status.conflictCount > 0;
     return SettingsRow(
       icon: Icons.cloud_done_outlined,
       title: l10n.syncStatusLabel,
       trailing: detail,
+      // 无冲突时不显示箭头：点它只是刷新状态，不是一个可进入的页面。
+      trailingIcon: hasConflicts ? Icons.chevron_right : null,
       contentColor: color,
-      onTap: () => unawaited(_refreshSyncStatus(controller)),
+      onTap: () => unawaited(_openSyncConflicts(controller)),
     );
+  }
+
+  /// 打开冲突审阅页。返回后重新读取状态：用户可能刚在那边决议掉了若干冲突，
+  /// 不刷新的话这里的计数会停在旧值。
+  Future<void> _openSyncConflicts(VeriFinController controller) async {
+    await Navigator.of(context).push(
+      MaterialPageRoute<void>(builder: (context) => const SyncConflictsPage()),
+    );
+    if (!mounted) {
+      return;
+    }
+    await _refreshSyncStatus(controller);
   }
 
   /// 恢复守卫：两种自动模式同时开启（[VeriFinController.backupTransportModeConflict]）

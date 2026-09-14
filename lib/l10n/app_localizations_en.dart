@@ -2879,6 +2879,181 @@ class AppLocalizationsEn extends AppLocalizations {
       'Auto-upload enabled; auto-sync has been turned off.';
 
   @override
+  String get syncConflictsTitle => 'Sync conflicts';
+
+  @override
+  String get syncConflictsSubtitle =>
+      'These items were changed on more than one device — choose which version to keep.';
+
+  @override
+  String get syncConflictsEmpty => 'No conflicts to resolve';
+
+  @override
+  String get syncConflictsLoadFailed =>
+      'Couldn\'t load the conflict list. Please try again.';
+
+  @override
+  String get syncConflictsRetry => 'Retry';
+
+  @override
+  String get syncConflictResolved => 'Your choice has been applied';
+
+  @override
+  String get syncConflictResolveFailed =>
+      'Couldn\'t save your choice. Please try again.';
+
+  @override
+  String get syncConflictLocalVersion => 'This device';
+
+  @override
+  String get syncConflictRemoteVersion => 'Other device';
+
+  @override
+  String get syncConflictDeletedMarker => '(deleted)';
+
+  @override
+  String syncConflictSourceDevice(String deviceId) {
+    return 'From device $deviceId';
+  }
+
+  @override
+  String syncConflictSequence(int sequence) {
+    return 'seq $sequence';
+  }
+
+  @override
+  String syncConflictLogicalTime(String time) {
+    return 'logical time $time';
+  }
+
+  @override
+  String get syncConflictScopeGlobal => 'Global settings';
+
+  @override
+  String get syncConflictScopeLedger => 'Ledger data';
+
+  @override
+  String get syncConflictKeepLocal => 'Keep this device';
+
+  @override
+  String get syncConflictKeepRemote => 'Keep other device';
+
+  @override
+  String get syncConflictKeepDelete => 'Keep deletion';
+
+  @override
+  String get syncConflictKeepEdit => 'Keep edit';
+
+  @override
+  String get syncConflictAbsent => '—';
+
+  @override
+  String get syncConflictUnreadable => 'Unreadable content';
+
+  @override
+  String get syncConflictEmptyPayload => 'No fields';
+
+  @override
+  String get syncConflictValueTrue => 'Yes';
+
+  @override
+  String get syncConflictValueFalse => 'No';
+
+  @override
+  String syncConflictListCount(int count) {
+    return 'List ($count items)';
+  }
+
+  @override
+  String syncConflictMapEntryCount(int count) {
+    return 'Object ($count fields)';
+  }
+
+  @override
+  String get syncConflictNoAccount => 'No account';
+
+  @override
+  String get syncConflictUnknownAccount => 'Unknown account';
+
+  @override
+  String get syncConflictUnknownCategory => 'Unknown category';
+
+  @override
+  String get syncConflictFieldSummary => 'Content';
+
+  @override
+  String get syncConflictFieldName => 'Name';
+
+  @override
+  String get syncConflictFieldType => 'Type';
+
+  @override
+  String get syncConflictFieldAmount => 'Amount';
+
+  @override
+  String get syncConflictFieldInitialBalance => 'Initial balance';
+
+  @override
+  String get syncConflictFieldCurrency => 'Currency';
+
+  @override
+  String get syncConflictFieldRate => 'Rate';
+
+  @override
+  String get syncConflictFieldAccount => 'Account';
+
+  @override
+  String get syncConflictFieldCategory => 'Category';
+
+  @override
+  String get syncConflictFieldNote => 'Note';
+
+  @override
+  String get syncConflictFieldDate => 'Time';
+
+  @override
+  String get syncEntityEntries => 'Transactions';
+
+  @override
+  String get syncEntityAccounts => 'Accounts';
+
+  @override
+  String get syncEntityAccountGroups => 'Account groups';
+
+  @override
+  String get syncEntityCategories => 'Categories';
+
+  @override
+  String get syncEntityTags => 'Tags';
+
+  @override
+  String get syncEntityAttachments => 'Attachments';
+
+  @override
+  String get syncEntityRecurringRules => 'Recurring entries';
+
+  @override
+  String get syncEntityExchangeRates => 'Exchange rates';
+
+  @override
+  String get syncEntityLedgerBook => 'Ledger';
+
+  @override
+  String get syncEntityBudgets => 'Budgets';
+
+  @override
+  String get syncEntityProfile => 'Profile';
+
+  @override
+  String get syncEntityHomePanels => 'Home layout';
+
+  @override
+  String get syncEntityReportPanels => 'Reports layout';
+
+  @override
+  String get syncEntityGeneric => 'Ledger data';
+
+  @override
   String get resetData => 'Reset data';
 
   @override

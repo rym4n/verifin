@@ -485,6 +485,11 @@ class _InMemorySyncRepository implements SyncRepository {
   }
 
   @override
+  Future<void> removeConflict(String conflictId) async {
+    _conflicts.removeWhere((c) => c.id == conflictId);
+  }
+
+  @override
   Future<List<KvJournalEntry>> loadPendingKvJournal() async => <KvJournalEntry>[
     for (final entry in _kvJournal)
       if (!_kvJournalApplied.contains(entry.id)) entry,

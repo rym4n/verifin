@@ -568,6 +568,10 @@ class _DeferredSyncRepository implements SyncRepository {
       (await _ready).storeConflict(conflict);
 
   @override
+  Future<void> removeConflict(String conflictId) async =>
+      (await _ready).removeConflict(conflictId);
+
+  @override
   Future<List<SyncOutboxRecord>> loadOutbox() async =>
       (await _ready).loadOutbox();
 

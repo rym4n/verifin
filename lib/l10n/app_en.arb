@@ -1019,6 +1019,95 @@
   "syncRecoveryFailed": "Reset failed, please try again",
   "syncEnabledAutoSyncFeedback": "Auto-sync enabled; auto-upload has been turned off.",
   "syncEnabledAutoUploadFeedback": "Auto-upload enabled; auto-sync has been turned off.",
+  "syncConflictsTitle": "Sync conflicts",
+  "syncConflictsSubtitle": "These items were changed on more than one device — choose which version to keep.",
+  "syncConflictsEmpty": "No conflicts to resolve",
+  "syncConflictsLoadFailed": "Couldn't load the conflict list. Please try again.",
+  "syncConflictsRetry": "Retry",
+  "syncConflictResolved": "Your choice has been applied",
+  "syncConflictResolveFailed": "Couldn't save your choice. Please try again.",
+  "syncConflictLocalVersion": "This device",
+  "syncConflictRemoteVersion": "Other device",
+  "syncConflictDeletedMarker": "(deleted)",
+  "syncConflictSourceDevice": "From device {deviceId}",
+  "@syncConflictSourceDevice": {
+    "placeholders": {
+      "deviceId": {
+        "type": "String"
+      }
+    }
+  },
+  "syncConflictSequence": "seq {sequence}",
+  "@syncConflictSequence": {
+    "placeholders": {
+      "sequence": {
+        "type": "int"
+      }
+    }
+  },
+  "syncConflictLogicalTime": "logical time {time}",
+  "@syncConflictLogicalTime": {
+    "placeholders": {
+      "time": {
+        "type": "String"
+      }
+    }
+  },
+  "syncConflictScopeGlobal": "Global settings",
+  "syncConflictScopeLedger": "Ledger data",
+  "syncConflictKeepLocal": "Keep this device",
+  "syncConflictKeepRemote": "Keep other device",
+  "syncConflictKeepDelete": "Keep deletion",
+  "syncConflictKeepEdit": "Keep edit",
+  "syncConflictAbsent": "—",
+  "syncConflictUnreadable": "Unreadable content",
+  "syncConflictEmptyPayload": "No fields",
+  "syncConflictValueTrue": "Yes",
+  "syncConflictValueFalse": "No",
+  "syncConflictListCount": "List ({count} items)",
+  "@syncConflictListCount": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "syncConflictMapEntryCount": "Object ({count} fields)",
+  "@syncConflictMapEntryCount": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "syncConflictNoAccount": "No account",
+  "syncConflictUnknownAccount": "Unknown account",
+  "syncConflictUnknownCategory": "Unknown category",
+  "syncConflictFieldSummary": "Content",
+  "syncConflictFieldName": "Name",
+  "syncConflictFieldType": "Type",
+  "syncConflictFieldAmount": "Amount",
+  "syncConflictFieldInitialBalance": "Initial balance",
+  "syncConflictFieldCurrency": "Currency",
+  "syncConflictFieldRate": "Rate",
+  "syncConflictFieldAccount": "Account",
+  "syncConflictFieldCategory": "Category",
+  "syncConflictFieldNote": "Note",
+  "syncConflictFieldDate": "Time",
+  "syncEntityEntries": "Transactions",
+  "syncEntityAccounts": "Accounts",
+  "syncEntityAccountGroups": "Account groups",
+  "syncEntityCategories": "Categories",
+  "syncEntityTags": "Tags",
+  "syncEntityAttachments": "Attachments",
+  "syncEntityRecurringRules": "Recurring entries",
+  "syncEntityExchangeRates": "Exchange rates",
+  "syncEntityLedgerBook": "Ledger",
+  "syncEntityBudgets": "Budgets",
+  "syncEntityProfile": "Profile",
+  "syncEntityHomePanels": "Home layout",
+  "syncEntityReportPanels": "Reports layout",
+  "syncEntityGeneric": "Ledger data",
   "resetData": "Reset data",
   "deleteAllLocal": "Deletes all local data",
   "neverBackedUp": "Never backed up",

@@ -432,6 +432,17 @@ class SqliteSyncRepository implements SyncRepository {
   }
 
   @override
+  Future<void> removeConflict(String conflictId) {
+    return _enqueue(() async {
+      await _database.delete(
+        'sync_conflicts',
+        where: 'id = ?',
+        whereArgs: <Object?>[conflictId],
+      );
+    });
+  }
+
+  @override
   Future<List<SyncConflictRecord>> loadConflicts() async {
     final rows = await _database.query(
       'sync_conflicts',

@@ -123,6 +123,10 @@ class RecordingSyncRepository implements SyncRepository {
       _inner.storeConflict(conflict);
 
   @override
+  Future<void> removeConflict(String conflictId) =>
+      _inner.removeConflict(conflictId);
+
+  @override
   Future<Map<SyncEntityKey, String>> loadShadow() => _inner.loadShadow();
 
   @override

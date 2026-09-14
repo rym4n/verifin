@@ -1865,6 +1865,247 @@
   "@syncEnabledAutoUploadFeedback": {
     "description": "开启自动上传时的互斥反馈"
   },
+  "syncConflictsTitle": "同步冲突",
+  "@syncConflictsTitle": {
+    "description": "冲突审阅页标题"
+  },
+  "syncConflictsSubtitle": "这些条目在多台设备上被同时修改，需要你决定保留哪一版",
+  "@syncConflictsSubtitle": {
+    "description": "冲突审阅页副标题"
+  },
+  "syncConflictsEmpty": "没有待处理的冲突",
+  "@syncConflictsEmpty": {
+    "description": "冲突审阅页空态"
+  },
+  "syncConflictsLoadFailed": "无法读取冲突列表，请重试",
+  "@syncConflictsLoadFailed": {
+    "description": "冲突审阅页读取失败提示"
+  },
+  "syncConflictsRetry": "重试",
+  "@syncConflictsRetry": {
+    "description": "冲突审阅页读取失败后的重试按钮"
+  },
+  "syncConflictResolved": "已应用你的选择",
+  "@syncConflictResolved": {
+    "description": "冲突决议成功提示"
+  },
+  "syncConflictResolveFailed": "决议未能保存，请重试",
+  "@syncConflictResolveFailed": {
+    "description": "冲突决议失败提示"
+  },
+  "syncConflictLocalVersion": "本机版本",
+  "@syncConflictLocalVersion": {
+    "description": "冲突卡片：本机一侧的版本标签"
+  },
+  "syncConflictRemoteVersion": "其他设备版本",
+  "@syncConflictRemoteVersion": {
+    "description": "冲突卡片：远端一侧的版本标签"
+  },
+  "syncConflictDeletedMarker": "（已删除）",
+  "@syncConflictDeletedMarker": {
+    "description": "冲突卡片：该侧是删除操作时的标记"
+  },
+  "syncConflictSourceDevice": "来源设备 {deviceId}",
+  "@syncConflictSourceDevice": {
+    "description": "冲突卡片：版本来源设备",
+    "placeholders": {
+      "deviceId": {
+        "type": "String"
+      }
+    }
+  },
+  "syncConflictSequence": "序号 {sequence}",
+  "@syncConflictSequence": {
+    "description": "冲突卡片：版本的逻辑序号",
+    "placeholders": {
+      "sequence": {
+        "type": "int"
+      }
+    }
+  },
+  "syncConflictLogicalTime": "逻辑时钟 {time}",
+  "@syncConflictLogicalTime": {
+    "description": "冲突卡片：版本的逻辑时钟",
+    "placeholders": {
+      "time": {
+        "type": "String"
+      }
+    }
+  },
+  "syncConflictScopeGlobal": "全局设置",
+  "@syncConflictScopeGlobal": {
+    "description": "冲突卡片：全局作用域"
+  },
+  "syncConflictScopeLedger": "账本数据",
+  "@syncConflictScopeLedger": {
+    "description": "冲突卡片：账本作用域"
+  },
+  "syncConflictKeepLocal": "保留本机",
+  "@syncConflictKeepLocal": {
+    "description": "冲突决议：保留本机版本"
+  },
+  "syncConflictKeepRemote": "保留其他设备",
+  "@syncConflictKeepRemote": {
+    "description": "冲突决议：保留远端版本"
+  },
+  "syncConflictKeepDelete": "保留删除",
+  "@syncConflictKeepDelete": {
+    "description": "冲突决议：接受删除"
+  },
+  "syncConflictKeepEdit": "保留修改",
+  "@syncConflictKeepEdit": {
+    "description": "冲突决议：保留未删除一侧的修改"
+  },
+  "syncConflictAbsent": "—",
+  "@syncConflictAbsent": {
+    "description": "冲突对比：某一侧没有该字段"
+  },
+  "syncConflictUnreadable": "无法解析的内容",
+  "@syncConflictUnreadable": {
+    "description": "冲突对比：payload 结构不可识别时的占位（不展示原始内容）"
+  },
+  "syncConflictEmptyPayload": "无字段",
+  "@syncConflictEmptyPayload": {
+    "description": "冲突对比：payload 为空对象时的占位"
+  },
+  "syncConflictValueTrue": "是",
+  "@syncConflictValueTrue": {
+    "description": "冲突对比：布尔真值"
+  },
+  "syncConflictValueFalse": "否",
+  "@syncConflictValueFalse": {
+    "description": "冲突对比：布尔假值"
+  },
+  "syncConflictListCount": "列表（{count} 项）",
+  "@syncConflictListCount": {
+    "description": "冲突对比：列表值的摘要（不展开内容）",
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "syncConflictMapEntryCount": "对象（{count} 个字段）",
+  "@syncConflictMapEntryCount": {
+    "description": "冲突对比：嵌套对象的摘要（不展开内容）",
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "syncConflictNoAccount": "无账户",
+  "@syncConflictNoAccount": {
+    "description": "冲突对比：交易未关联账户"
+  },
+  "syncConflictUnknownAccount": "未知账户",
+  "@syncConflictUnknownAccount": {
+    "description": "冲突对比：账户 id 在本机找不到对应账户"
+  },
+  "syncConflictUnknownCategory": "未知分类",
+  "@syncConflictUnknownCategory": {
+    "description": "冲突对比：分类 id 在本机找不到对应分类"
+  },
+  "syncConflictFieldSummary": "内容",
+  "@syncConflictFieldSummary": {
+    "description": "冲突对比：无法逐字段摘要时的兜底字段名"
+  },
+  "syncConflictFieldName": "名称",
+  "@syncConflictFieldName": {
+    "description": "冲突对比字段：名称"
+  },
+  "syncConflictFieldType": "类型",
+  "@syncConflictFieldType": {
+    "description": "冲突对比字段：类型"
+  },
+  "syncConflictFieldAmount": "金额",
+  "@syncConflictFieldAmount": {
+    "description": "冲突对比字段：金额"
+  },
+  "syncConflictFieldInitialBalance": "初始余额",
+  "@syncConflictFieldInitialBalance": {
+    "description": "冲突对比字段：账户初始余额"
+  },
+  "syncConflictFieldCurrency": "币种",
+  "@syncConflictFieldCurrency": {
+    "description": "冲突对比字段：币种"
+  },
+  "syncConflictFieldRate": "汇率",
+  "@syncConflictFieldRate": {
+    "description": "冲突对比字段：汇率"
+  },
+  "syncConflictFieldAccount": "账户",
+  "@syncConflictFieldAccount": {
+    "description": "冲突对比字段：账户"
+  },
+  "syncConflictFieldCategory": "分类",
+  "@syncConflictFieldCategory": {
+    "description": "冲突对比字段：分类"
+  },
+  "syncConflictFieldNote": "备注",
+  "@syncConflictFieldNote": {
+    "description": "冲突对比字段：备注"
+  },
+  "syncConflictFieldDate": "时间",
+  "@syncConflictFieldDate": {
+    "description": "冲突对比字段：交易时间"
+  },
+  "syncEntityEntries": "交易",
+  "@syncEntityEntries": {
+    "description": "同步实体类型：交易"
+  },
+  "syncEntityAccounts": "账户",
+  "@syncEntityAccounts": {
+    "description": "同步实体类型：账户"
+  },
+  "syncEntityAccountGroups": "账户分组",
+  "@syncEntityAccountGroups": {
+    "description": "同步实体类型：账户分组"
+  },
+  "syncEntityCategories": "分类",
+  "@syncEntityCategories": {
+    "description": "同步实体类型：分类"
+  },
+  "syncEntityTags": "标签",
+  "@syncEntityTags": {
+    "description": "同步实体类型：标签"
+  },
+  "syncEntityAttachments": "附件",
+  "@syncEntityAttachments": {
+    "description": "同步实体类型：附件"
+  },
+  "syncEntityRecurringRules": "周期记账",
+  "@syncEntityRecurringRules": {
+    "description": "同步实体类型：周期规则"
+  },
+  "syncEntityExchangeRates": "汇率",
+  "@syncEntityExchangeRates": {
+    "description": "同步实体类型：汇率"
+  },
+  "syncEntityLedgerBook": "账本",
+  "@syncEntityLedgerBook": {
+    "description": "同步实体类型：账本"
+  },
+  "syncEntityBudgets": "预算",
+  "@syncEntityBudgets": {
+    "description": "同步实体类型：预算"
+  },
+  "syncEntityProfile": "个人资料",
+  "@syncEntityProfile": {
+    "description": "同步实体类型：个人资料"
+  },
+  "syncEntityHomePanels": "首页布局",
+  "@syncEntityHomePanels": {
+    "description": "同步实体类型：首页面板配置"
+  },
+  "syncEntityReportPanels": "看板布局",
+  "@syncEntityReportPanels": {
+    "description": "同步实体类型：看板面板配置"
+  },
+  "syncEntityGeneric": "账目数据",
+  "@syncEntityGeneric": {
+    "description": "同步实体类型：未知类型时的通用兜底"
+  },
   "resetData": "初始化数据",
   "deleteAllLocal": "删除所有本地数据",
   "neverBackedUp": "尚未备份",

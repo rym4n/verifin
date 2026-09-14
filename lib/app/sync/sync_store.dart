@@ -60,6 +60,12 @@ abstract interface class SyncRepository {
   /// 「标记为已应用」与「KV 已落地」同步，否则重启后会误判该行已重放而跳过它，
   /// 但本地 KV 其实还是旧值。
   Future<void> markKvJournalApplied(int id);
+
+  /// 从 `sync_conflicts` 中删除指定冲突记录。
+  ///
+  /// 由 [VeriFinController.resolveSyncConflict] 在用户确认决议后调用；
+  /// 取消决议（[ConflictResolution.cancel]）不调用本方法。
+  Future<void> removeConflict(String conflictId);
 }
 
 /// 一条待重放的 KV journal 行：`applyRemoteBatch` 在写 SQLite 元数据的同一事务内
