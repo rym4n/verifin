@@ -14,6 +14,10 @@ class InMemoryLedgerRepository
     implements LedgerRepository, SyncProjectionSource {
   Map<String, Object?> _profile = <String, Object?>{};
   List<LedgerEntry> _entries = <LedgerEntry>[];
+
+  /// Side map for remotely-applied entry payloads (no LedgerEntry needed).
+  final Map<String, Map<String, Object?>> _entryPayloads =
+      <String, Map<String, Object?>>{};
   List<LedgerBook> _books = <LedgerBook>[];
   List<Account> _accounts = <Account>[];
   List<AccountGroup> _groups = <AccountGroup>[];
@@ -27,7 +31,7 @@ class InMemoryLedgerRepository
   Map<String, double> _dailyBudgets = <String, double>{};
 
   /// 同步元数据的内存镜像，与 [SqliteLedgerRepository.sync] 同契约。
-  late final SyncRepository sync = _InMemorySyncRepository();
+  late final SyncRepository sync = _InMemorySyncRepository(this);
 
   @override
   Future<List<LedgerEntry>> loadEntries() async =>
@@ -195,19 +199,13 @@ class InMemoryLedgerRepository
   // SyncProjectionSource implementation for testing
   @override
   Map<String, Object?> exportDataForSync() {
+    final allEntries = [
+      ..._entries.map((e) => <String, Object?>{'id': e.id, 'amount': e.amount}),
+      ..._entryPayloads.values,
+    ];
     return {
       if (_profile.isNotEmpty) 'profile': _profile,
-      if (_entries.isNotEmpty)
-        'entries': _entries
-            .map(
-              (e) => {
-                'id': e.id,
-                'amount': e.amount,
-                // Add other fields as needed
-              },
-            )
-            .toList(),
-      // Add other entities as needed
+      if (allEntries.isNotEmpty) 'entries': allEntries,
     };
   }
 
@@ -254,6 +252,10 @@ class InMemoryLedgerRepository
 /// [applyRemoteBatch] 先完成全部校验与全部新集合的构造，再一次性替换引用；
 /// 中途抛错时没有任何集合被改动，等价于 SQLite 的事务回滚。
 class _InMemorySyncRepository implements SyncRepository {
+  _InMemorySyncRepository(this._outer);
+
+  final InMemoryLedgerRepository _outer;
+
   SyncDeviceState _deviceState = const SyncDeviceState(
     deviceId: '',
     nextSequence: 1,
@@ -375,6 +377,69 @@ class _InMemorySyncRepository implements SyncRepository {
     _applied
       ..clear()
       ..addAll(nextApplied);
+    // Persist conflicts from the plan.
+    for (final conflict in plan.conflicts) {
+      if (_conflicts.every((c) => c.id != conflict.id)) {
+        _conflicts.add(conflict);
+      }
+    }
+
+    // Update shadow from plan's shadowHashes so the next causality check
+    // within the same scan cycle sees the freshly applied state.
+    for (final entry in plan.shadowHashes.entries) {
+      try {
+        final key = decodeSyncEntityKey(entry.key);
+        _shadow[key] = entry.value;
+      } catch (_) {
+        // Ignore malformed keys — do not block the whole apply.
+      }
+    }
+
+    // Update knownVector with applied remote dot sequences.
+    for (final version in plan.entityVersions) {
+      final dot = version.version.dot;
+      final current = _deviceState.knownVector.values[dot.deviceId] ?? 0;
+      if (dot.sequence > current) {
+        final updated = Map<String, int>.from(_deviceState.knownVector.values)
+          ..[dot.deviceId] = dot.sequence;
+        _deviceState = SyncDeviceState(
+          deviceId: _deviceState.deviceId,
+          nextSequence: _deviceState.nextSequence,
+          knownVector: SyncVersionVector(updated),
+        );
+      }
+    }
+
+    // Apply entity versions to live data so exportDataForSync() reflects them.
+    for (final version in plan.entityVersions) {
+      if (version.deleted || version.payload == null) continue;
+      final payload = version.payload;
+      if (version.entity.type == 'profile' && payload is Map) {
+        _outer._profile = Map<String, Object?>.from(
+          payload.cast<String, Object?>(),
+        );
+      } else if (version.entity.type == 'entries' && payload is Map) {
+        final id = version.entity.id;
+        _outer._entryPayloads[id] = Map<String, Object?>.from(
+          payload.cast<String, Object?>(),
+        );
+      }
+    }
+
+    // Update knownVector with applied remote dot sequences.
+    for (final version in plan.entityVersions) {
+      final dot = version.version.dot;
+      final current = _deviceState.knownVector.values[dot.deviceId] ?? 0;
+      if (dot.sequence > current) {
+        final updated = Map<String, int>.from(_deviceState.knownVector.values)
+          ..[dot.deviceId] = dot.sequence;
+        _deviceState = SyncDeviceState(
+          deviceId: _deviceState.deviceId,
+          nextSequence: _deviceState.nextSequence,
+          knownVector: SyncVersionVector(updated),
+        );
+      }
+    }
   }
 
   @override
@@ -388,6 +453,13 @@ class _InMemorySyncRepository implements SyncRepository {
   @override
   Future<List<SyncConflictRecord>> loadConflicts() async =>
       List<SyncConflictRecord>.of(_conflicts);
+
+  @override
+  Future<void> storeConflict(SyncConflictRecord conflict) async {
+    if (_conflicts.every((c) => c.id != conflict.id)) {
+      _conflicts.add(conflict);
+    }
+  }
 
   /// shadow 的内存镜像。语义与 SQLite 实现一致：整体替换，不合并。
   final Map<SyncEntityKey, String> _shadow = <SyncEntityKey, String>{};

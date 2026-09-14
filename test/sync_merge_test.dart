@@ -335,9 +335,3 @@ void main() {
     });
   });
 }
-
-const testConfig = WebdavConfig(
-  url: 'https://test.example.com/dav',
-  username: 'test',
-  password: 'test',
-);

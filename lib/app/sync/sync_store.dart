@@ -25,6 +25,11 @@ abstract interface class SyncRepository {
 
   Future<List<SyncConflictRecord>> loadConflicts();
 
+  /// 写入单条冲突记录（不经过 [applyRemoteBatch] 的校验流程）。
+  /// 引擎在检测到并发版本时直接调用，避免把冲突记录用 entityVersions 带进
+  /// 已应用操作校验路径——冲突记录本身不是「已应用操作」。
+  Future<void> storeConflict(SyncConflictRecord conflict);
+
   /// 读取当前 `sync_shadow`：实体键 → 规范化 payload hash。
   ///
   /// shadow 是「上一次已知的投影」，`SyncChangeTracker.reconcile()` 用它做本地

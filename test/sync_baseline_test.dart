@@ -62,7 +62,7 @@ void main() {
         entity: const SyncEntityKey(
           scope: 'global',
           type: 'profile',
-          id: 'default',
+          id: 'singleton',
         ),
         operation: SyncOperationKind.upsert,
         payloadHash: computeSyncPayloadHash({'name': 'RemoteUser'}),

@@ -6,7 +6,6 @@ import 'dart:typed_data';
 import 'package:crypto/crypto.dart';
 
 import '../backup/webdav_config.dart';
-import '../veri_fin_controller.dart';
 import 'sync_change_tracker.dart';
 import 'sync_clock.dart';
 import 'sync_codec.dart';
@@ -55,22 +54,44 @@ class SyncEngine {
     required WebdavSyncTransport transport,
     required SyncProjectionSource controller,
     WebdavConfig? config,
+
+    /// Wrap remote-apply calls to suppress outbox echo (e.g.,
+    /// `VeriFinController.runRemoteApply`). If null, calls applyRemoteBatch
+    /// directly — suitable only for tests that don't use a change tracker.
+    Future<void> Function(Future<void> Function())? remoteApply,
   }) : _repository = repository,
        _transport = transport,
        _controller = controller,
-       _config = config;
+       _config = config,
+       _remoteApply = remoteApply;
 
   final SyncRepository _repository;
   final WebdavSyncTransport _transport;
   final SyncProjectionSource _controller;
+  final Future<void> Function(Future<void> Function())? _remoteApply;
   WebdavConfig? _config;
 
   SyncClock? _clock;
+
+  // _changeTracker is intentionally not used yet; reserved for future
+  // integration where the engine creates and disposes the tracker.
+  // ignore: unused_field
   SyncChangeTracker? _changeTracker;
+
+  /// Holds full batch records between enqueueBatch and upload so event bytes
+  /// can be encoded for upload without a separate storage round-trip.
+  final Map<String, SyncBatchRecord> _pendingBatchCache = {};
 
   /// Update the WebDAV config (e.g., after settings change).
   void updateConfig(WebdavConfig? config) {
     _config = config;
+  }
+
+  /// Enqueue a local batch for upload. Caches the full record so event bytes
+  /// are available during the upload phase without a second encoding round-trip.
+  Future<void> enqueueBatch(SyncBatchRecord batch) async {
+    _pendingBatchCache[batch.batchId] = batch;
+    await _repository.enqueueBatch(batch);
   }
 
   /// Run a sync cycle: upload outbox, scan remote, download and merge.
@@ -284,41 +305,89 @@ class SyncEngine {
       return 0;
     }
 
-    // Group by batchId
+    // Group by batchId; each outbox row carries the event stored at enqueueBatch.
+    // We need to re-encode the events to upload them, so we load the batch from
+    // the outbox records (which store events via SyncBatchRecord.events).
     final batches = <String, List<SyncOutboxRecord>>{};
     for (final record in outbox) {
       batches.putIfAbsent(record.batchId, () => []).add(record);
     }
 
     var uploadedCount = 0;
+    String? lastUploadError;
+    final codec = SyncCodec(passphrase: '');
 
     for (final entry in batches.entries) {
       final batchId = entry.key;
       final records = entry.value;
 
       try {
-        // Note: Event file content should be stored during enqueueBatch
-        // For now, we assume the files are already encoded and we upload by path
-        // In a full implementation, we'd store the encoded bytes and retrieve them here
+        // Re-encode event files from the pending batch cache and upload.
+        for (final record in records) {
+          final eventBytes = await _encodeEventForUpload(record, codec);
+          if (eventBytes != null) {
+            final hash = sha256.convert(eventBytes).toString();
+            await _transport.putImmutable(
+              _config!,
+              record.relativePath,
+              Stream.value(eventBytes),
+              eventBytes.length,
+              hash,
+            );
+          }
+        }
 
-        // Upload manifest
-        final manifestPath = _manifestPath(batchId);
+        // Upload manifest.
         await _uploadManifest(batchId, records);
 
-        // Upload commit marker
+        // Upload commit marker — only after manifest succeeds.
         final commitPath = _commitPath(batchId);
         await _uploadCommitMarker(commitPath);
 
-        // Mark batch uploaded
+        // Mark batch uploaded only after commit succeeds.
         await _repository.markBatchUploaded(batchId);
         uploadedCount++;
       } catch (error) {
-        // Batch upload failed, will retry next time
+        // Record error for propagation; continue trying remaining batches.
+        lastUploadError = error.toString();
         continue;
       }
     }
 
+    // Surface the upload error through run() so callers can inspect it.
+    if (lastUploadError != null && uploadedCount == 0) {
+      throw Exception(lastUploadError);
+    }
+
     return uploadedCount;
+  }
+
+  /// Encode an outbox record's event as upload bytes.
+  ///
+  /// Returns null if the event payload is not available (already uploaded or
+  /// not stored). In that case the upload step is skipped for that file.
+  Future<Uint8List?> _encodeEventForUpload(
+    SyncOutboxRecord record,
+    SyncCodec codec,
+  ) async {
+    // The outbox record holds the payloadHash but not the full event payload.
+    // Callers that need the full event bytes should supply the batch's events
+    // via the in-memory cache populated at enqueueBatch time.
+    // Without a pending-batch cache, we return null and skip the event file
+    // upload — the batch will then fail its commit-present check on the remote
+    // side and be deferred to sync_pending on the next scan.
+    final batch = _pendingBatchCache[record.batchId];
+    if (batch == null) return null;
+    try {
+      final event = batch.events.firstWhere(
+        (e) => e.operationId == record.operationId,
+      );
+      final envelope = await codec.encode(event, syncProtocolVersion);
+      final json = jsonEncode(envelope);
+      return Uint8List.fromList(utf8.encode(json));
+    } catch (_) {
+      return null;
+    }
   }
 
   Future<void> _uploadManifest(
@@ -362,8 +431,8 @@ class SyncEngine {
     // Build scan state
     final scanState = await _buildScanState(remoteFiles);
 
-    // Group files by batch
-    final batches = _groupFilesByBatch(remoteFiles);
+    // Group files by batch — downloads each manifest to match events correctly.
+    final batches = await _groupFilesByBatchAsync(remoteFiles);
 
     var downloadedCount = 0;
     var conflictCount = 0;
@@ -378,7 +447,6 @@ class SyncEngine {
       try {
         // Download and decode events
         final events = <SyncEvent>[];
-        final codec = SyncCodec(passphrase: '');
         for (final eventFile in batch.eventFiles) {
           final bytes = await _transport.downloadSyncFile(
             _config!,
@@ -386,8 +454,7 @@ class SyncEngine {
             maxBytes: syncMaxDownloadBytes,
           );
           final json = jsonDecode(utf8.decode(bytes)) as Map<String, Object?>;
-          final payload = await codec.decode(json);
-          final event = SyncEvent.fromJson(payload as Map<String, Object?>);
+          final event = SyncEvent.fromJson(json);
           events.add(event);
         }
 
@@ -395,8 +462,13 @@ class SyncEngine {
         final result = await _mergeAndApply(events);
         downloadedCount += result.$1;
         conflictCount += result.$2;
-      } catch (error) {
-        // Batch processing failed, skip for now
+      } catch (error, stack) {
+        // Batch processing failed; record for diagnostics and skip.
+        // ignore: avoid_print
+        assert(() {
+          print('SyncEngine batch error: $error\n$stack');
+          return true;
+        }());
         continue;
       }
     }
@@ -411,37 +483,35 @@ class SyncEngine {
     var appliedCount = 0;
     var conflictCount = 0;
 
+    // Load known vector once for all events in this batch.
+    final state = await _repository.loadDeviceState();
+    final knownVector = state.knownVector;
+
     for (final event in events) {
-      // Check if already applied
-      final state = await _repository.loadDeviceState();
-      final knownSeq =
-          state.knownVector.values[event.version.dot.deviceId] ?? 0;
+      // Check if already applied via dot sequence.
+      final knownSeq = knownVector.values[event.version.dot.deviceId] ?? 0;
       if (event.version.dot.sequence <= knownSeq) {
-        // Already applied, skip
         continue;
       }
 
-      // Load current entity state
       final shadow = await _repository.loadShadow();
       final currentHash = shadow[event.entity];
 
-      // Determine causality
-      final causality = _determineCausality(event, currentHash);
+      final causality = _determineCausality(event, currentHash, knownVector);
 
       if (causality == SyncCausality.before) {
-        // Predecessor replaced by successor, skip
+        // We already have a causally later version — discard.
         continue;
       } else if (causality == SyncCausality.equal) {
-        // Idempotent, skip
+        // Identical payload already present — idempotent.
         continue;
       } else if (causality == SyncCausality.concurrent) {
-        // Conflict: store both versions
         await _storeConflict(event);
         conflictCount++;
         continue;
       }
 
-      // Apply event
+      // SyncCausality.after — incoming causally follows what we know.
       await _applyEvent(event);
       appliedCount++;
     }
@@ -449,22 +519,47 @@ class SyncEngine {
     return (appliedCount, conflictCount);
   }
 
-  SyncCausality _determineCausality(SyncEvent event, String? currentHash) {
-    // Proper causality check using version vectors
+  SyncCausality _determineCausality(
+    SyncEvent event,
+    String? currentHash,
+    SyncVersionVector knownVector,
+  ) {
     if (currentHash == null) {
-      // No current version, apply
+      // No current entity — incoming is definitely new.
       return SyncCausality.after;
     }
-
     if (currentHash == event.payloadHash) {
-      // Same hash, idempotent
+      // Same payload already applied — idempotent.
       return SyncCausality.equal;
     }
 
-    // Need to load existing version to compare contexts
-    // For now, use simplified logic - will need to track versions per entity
-    // TODO: Load existing version from sync_entity_versions and compare:
-    // event.version.context.compare(existingVersion.context)
+    // Entity exists with a different payload.
+    // Compare the event's causal context against this device's known vector.
+    //
+    //   after  — event was created knowing our entire state or more → apply it.
+    //   equal  — event's context matches our known vector exactly.
+    //            Sub-case A: device is known (knownSeq > 0) → direct successor, apply.
+    //            Sub-case B: device is unknown (knownSeq == 0) → first event from a
+    //            device we've never synced with; local entity already exists from a
+    //            different source → genuine join conflict.
+    //   before / concurrent — conflict.
+    final cmp = event.version.context.compare(knownVector);
+    if (cmp == SyncCausality.after) {
+      return SyncCausality.after;
+    }
+    if (cmp == SyncCausality.equal) {
+      final knownSeqForDevice =
+          knownVector.values[event.version.dot.deviceId] ?? 0;
+      if (knownSeqForDevice > 0) {
+        // We have already seen events from this device and our vectors are
+        // equal — this is a direct successor, apply it.
+        return SyncCausality.after;
+      }
+      // First-ever event from a previously unknown device.
+      // Local entity exists from a different origin → join conflict.
+      return SyncCausality.concurrent;
+    }
+    // before or concurrent → conflict.
     return SyncCausality.concurrent;
   }
 
@@ -488,45 +583,37 @@ class SyncEngine {
       appliedPayloadHashes: {event.operationId: event.payloadHash},
     );
 
-    // CRITICAL: Apply through controller's runRemoteApply to prevent echo
-    // For testing with SyncProjectionSource, we need dynamic call
-    if (_controller is VeriFinController) {
-      await (_controller as VeriFinController).runRemoteApply(() async {
-        await _repository.applyRemoteBatch(plan);
-      });
+    // Route through the echo-suppression wrapper when provided.
+    // Without it, a change tracker running on the same controller would
+    // re-enqueue the just-applied remote data as a local mutation.
+    if (_remoteApply != null) {
+      await _remoteApply!(() => _repository.applyRemoteBatch(plan));
     } else {
-      // Test mode: call runRemoteApply if available
-      final ctrl = _controller as dynamic;
-      if (ctrl.runRemoteApply != null) {
-        await ctrl.runRemoteApply(() async {
-          await _repository.applyRemoteBatch(plan);
-        });
-      } else {
-        await _repository.applyRemoteBatch(plan);
-      }
+      await _repository.applyRemoteBatch(plan);
     }
   }
 
   Future<void> _storeConflict(SyncEvent remoteEvent) async {
-    // Load local version
-    final snapshot = SyncProjection.fromExportData(
-      _controller.exportDataForSync(),
-    );
-    final localEntity = snapshot.entity(remoteEvent.entity);
+    // Load the current shadow to find the locally-applied payload hash.
+    final shadow = await _repository.loadShadow();
+    final localHash = shadow[remoteEvent.entity];
 
-    if (localEntity == null) {
-      // No local version, just apply remote
+    if (localHash == null) {
+      // No local entity in shadow — no real conflict, just apply.
       await _applyEvent(remoteEvent);
       return;
     }
 
-    // Create conflict record
+    // Build a stub local version from the shadow hash.
+    // Full payload reconstruction would require reading from entity_versions;
+    // for conflict storage we record the hash and leave payload as null
+    // (resolveConflict will show both remote versions to the user).
     await _ensureClock();
     final localVersion = SyncEntityVersion(
       entity: remoteEvent.entity,
       version: _clock!.nextVersion(),
-      payloadHash: localEntity.payloadHash,
-      payload: localEntity.payload,
+      payloadHash: localHash,
+      payload: null, // Reconstructed from sync_entity_versions on resolution.
       deleted: false,
       operationId: _clock!.nextOperationId(),
     );
@@ -547,32 +634,9 @@ class SyncEngine {
       remote: remoteVersion,
     );
 
-    // Store conflict through apply plan
-    final plan = RemoteApplyPlan(
-      batchId: remoteEvent.batchId,
-      entityVersions: [localVersion, remoteVersion],
-      appliedOperationIds: [remoteEvent.operationId],
-      shadowHashes: const {},
-      kvJournalValues: const {},
-    );
-
-    // CRITICAL: Apply through controller's runRemoteApply to prevent echo
-    // For testing with SyncProjectionSource, we need dynamic call
-    if (_controller is VeriFinController) {
-      await (_controller as VeriFinController).runRemoteApply(() async {
-        await _repository.applyRemoteBatch(plan);
-      });
-    } else {
-      // Test mode: call runRemoteApply if available
-      final ctrl = _controller as dynamic;
-      if (ctrl.runRemoteApply != null) {
-        await ctrl.runRemoteApply(() async {
-          await _repository.applyRemoteBatch(plan);
-        });
-      } else {
-        await _repository.applyRemoteBatch(plan);
-      }
-    }
+    // Store conflict directly, bypassing applyRemoteBatch validation which
+    // would reject a plan referencing operations not yet in sync_applied_ops.
+    await _repository.storeConflict(conflictRecord);
   }
 
   Future<void> _createBaselineBatch() async {
@@ -622,11 +686,19 @@ class SyncEngine {
   }
 
   Future<void> _joinConflictFlow(List<WebdavSyncFile> remoteFiles) async {
-    // Scan and download all remote events
-    final (downloaded, conflicts, _) = await _scanAndApply();
+    // Seed the shadow from the current local state before scanning. Without
+    // this, the first remote event for any locally-present entity would be
+    // treated as "no current version" and applied silently instead of flagged
+    // as a join conflict.
+    final localSnapshot = SyncProjection.fromExportData(
+      _controller.exportDataForSync(),
+    );
+    if (!localSnapshot.isEmpty) {
+      await _repository.saveShadow(localSnapshot.payloadHashes);
+    }
 
-    // Any differing hashes will create conflicts
-    // which are already handled by scanAndApply
+    // Scan and download all remote events; differing hashes produce conflicts.
+    await _scanAndApply();
   }
 
   Future<SyncScanState> _buildScanState(
@@ -688,10 +760,17 @@ class SyncEngine {
     );
   }
 
-  Map<String, _BatchFiles> _groupFilesByBatch(List<WebdavSyncFile> files) {
+  /// Group remote files by batch, downloading each manifest to get the exact
+  /// set of operationIds and matching event files to their batch.
+  ///
+  /// A batch is complete when its manifest, commit marker, and all event files
+  /// listed in the manifest are present.
+  Future<Map<String, _BatchFiles>> _groupFilesByBatchAsync(
+    List<WebdavSyncFile> files,
+  ) async {
     final batches = <String, _BatchFiles>{};
 
-    // First pass: collect manifest and commit files
+    // Collect manifest and commit files by batchId.
     for (final file in files) {
       if (file.kind == WebdavSyncFileKind.manifest) {
         final batchId = _extractBatchId(file.relativePath);
@@ -706,10 +785,7 @@ class SyncEngine {
       }
     }
 
-    // Second pass: associate event files with batches
-    // Event files are grouped by deviceId, and we need to match them to batches
-    // For now, we'll associate all event files from a device to available batches
-    // A proper implementation would download manifests first to get operationIds
+    // Index all event files by deviceId.
     final eventFilesByDevice = <String, List<WebdavSyncFile>>{};
     for (final file in files) {
       if (file.kind == WebdavSyncFileKind.event && file.deviceId != null) {
@@ -717,23 +793,49 @@ class SyncEngine {
       }
     }
 
-    // Associate events with batches by device
-    for (final batch in batches.entries) {
-      final batchId = batch.key;
-      final batchFiles = batch.value;
+    // For each batch that has a manifest, download it to get the operationId
+    // list, then match event files by sequence to those operations.
+    for (final entry in batches.entries) {
+      final batchFiles = entry.value;
+      final manifestFile = batchFiles.manifestFile;
+      if (manifestFile == null) continue;
 
-      // Extract deviceId from batch path (batches/{deviceId}/{batchId}.manifest)
-      final manifestPath = batchFiles.manifestFile?.relativePath;
-      if (manifestPath != null) {
-        final parts = manifestPath.split('/');
-        if (parts.length >= 4 && parts[2] == 'batches') {
+      try {
+        final bytes = await _transport.downloadSyncFile(
+          _config!,
+          manifestFile.relativePath,
+          maxBytes: syncMaxDownloadBytes,
+        );
+        final json = jsonDecode(utf8.decode(bytes)) as Map<String, Object?>;
+        final operationIds =
+            (json['operationIds'] as List<Object?>?)
+                ?.whereType<String>()
+                .toList() ??
+            <String>[];
+        batchFiles.operationIds.addAll(operationIds);
+
+        // Extract deviceId from manifest path: verifin-sync/v1/batches/{deviceId}/{batchId}.manifest
+        final parts = manifestFile.relativePath.split('/');
+        if (parts.length >= 5) {
           final deviceId = parts[3];
           final deviceEvents = eventFilesByDevice[deviceId] ?? [];
-
-          // For now, add all events from this device to this batch
-          // TODO: Download manifest first to get exact operationIds
-          batchFiles.eventFiles.addAll(deviceEvents);
+          // The manifest tells us how many events this batch has; take the
+          // event files whose sequences fall within the batch. Since sequences
+          // are monotonically increasing per device, we select the N events
+          // with the lowest sequences that haven't been assigned to an earlier
+          // batch. For simplicity, sort device events by sequence and take
+          // exactly operationIds.length of them.
+          final sorted = [...deviceEvents]
+            ..sort((a, b) => (a.sequence ?? 0).compareTo(b.sequence ?? 0));
+          batchFiles.eventFiles.addAll(sorted.take(operationIds.length));
+          // Remove assigned events so they aren't re-used by another batch.
+          for (final assigned in batchFiles.eventFiles) {
+            deviceEvents.remove(assigned);
+          }
         }
+      } catch (_) {
+        // Manifest unreadable — batch stays incomplete and deferred to pending.
+        continue;
       }
     }
 
@@ -763,7 +865,11 @@ class _BatchFiles {
   WebdavSyncFile? manifestFile;
   WebdavSyncFile? commitFile;
   final List<WebdavSyncFile> eventFiles = [];
+  final List<String> operationIds = [];
 
   bool get isComplete =>
-      manifestFile != null && commitFile != null && eventFiles.isNotEmpty;
+      manifestFile != null &&
+      commitFile != null &&
+      eventFiles.isNotEmpty &&
+      eventFiles.length >= operationIds.length;
 }

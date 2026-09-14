@@ -399,6 +399,39 @@ class SqliteSyncRepository implements SyncRepository {
   // ---- 冲突 ----
 
   @override
+  Future<void> storeConflict(SyncConflictRecord conflict) {
+    return _enqueue(() async {
+      await _database.transaction((txn) async {
+        // Insert both version rows first (ignore if already present).
+        for (final version in [conflict.local, conflict.remote]) {
+          await txn.insert('sync_entity_versions', <String, Object?>{
+            'operation_id': version.operationId,
+            'scope': version.entity.scope,
+            'type': version.entity.type,
+            'id': version.entity.id,
+            'version_json': jsonEncode(version.version.toJson()),
+            'payload_hash': version.payloadHash,
+            'payload_envelope': version.payload == null
+                ? null
+                : jsonEncode(version.payload),
+            'deleted': version.deleted ? 1 : 0,
+          }, conflictAlgorithm: ConflictAlgorithm.ignore);
+        }
+        // Then insert the conflict record.
+        await txn.insert('sync_conflicts', <String, Object?>{
+          'id': conflict.id,
+          'scope': conflict.entity.scope,
+          'type': conflict.entity.type,
+          'entity_id': conflict.entity.id,
+          'local_operation_id': conflict.local.operationId,
+          'remote_operation_id': conflict.remote.operationId,
+          'created_at': DateTime.now().millisecondsSinceEpoch,
+        }, conflictAlgorithm: ConflictAlgorithm.ignore);
+      });
+    });
+  }
+
+  @override
   Future<List<SyncConflictRecord>> loadConflicts() async {
     final rows = await _database.query(
       'sync_conflicts',

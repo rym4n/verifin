@@ -52,7 +52,7 @@ void main() {
         batchId: 'batch-1',
         keyFingerprint: 'test-key',
       );
-      await repo.sync.enqueueBatch(
+      await engine.enqueueBatch(
         SyncBatchRecord(
           batchId: 'batch-1',
           events: [event],
@@ -102,7 +102,7 @@ void main() {
         batchId: 'batch-1',
         keyFingerprint: 'test-key',
       );
-      await repo.sync.enqueueBatch(
+      await engine.enqueueBatch(
         SyncBatchRecord(
           batchId: 'batch-1',
           events: [event],

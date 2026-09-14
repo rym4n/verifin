@@ -594,6 +594,7 @@ class RemoteApplyPlan {
     required this.shadowHashes,
     required this.kvJournalValues,
     this.appliedPayloadHashes = const <String, String>{},
+    this.conflicts = const <SyncConflictRecord>[],
   });
 
   final String batchId;
@@ -617,6 +618,9 @@ class RemoteApplyPlan {
   /// 因此计划必须自带每个已应用操作的 hash，而不是让持久化层去猜。
   /// 缺省为空表，此时按 [entityVersions] 里的 hash 兜底（见持久化实现）。
   final Map<String, String> appliedPayloadHashes;
+
+  /// 本批产生的冲突记录，落库到 sync_conflicts。
+  final List<SyncConflictRecord> conflicts;
 
   /// 某个已应用操作的 payload hash：优先取 [appliedPayloadHashes]，
   /// 缺失时回落到 [entityVersions]；两者都没有则返回空串。

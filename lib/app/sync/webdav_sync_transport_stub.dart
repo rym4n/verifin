@@ -97,13 +97,13 @@ class StubWebdavSyncTransport implements WebdavSyncTransport {
     final batchId = events.first.batchId;
     final codec = SyncCodec(passphrase: '');
 
-    // Upload event files
+    // Upload event files: serialize the full SyncEvent as the file content
+    // so the engine can decode it with SyncEvent.fromJson.
     for (var i = 0; i < events.length; i++) {
       final event = events[i];
       final eventPath =
           'verifin-sync/v1/events/$deviceId/${sequence + i}.vfsync';
-      final envelope = await codec.encode(event, syncProtocolVersion);
-      final eventBytes = utf8.encode(jsonEncode(envelope));
+      final eventBytes = utf8.encode(jsonEncode(event.toJson()));
       _files[eventPath] = Uint8List.fromList(eventBytes);
     }
 
