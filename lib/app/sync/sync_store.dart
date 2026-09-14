@@ -1,5 +1,3 @@
-import 'dart:convert';
-
 import 'sync_models.dart';
 
 /// 同步元数据仓储边界。生产实现挂在 [SqliteLedgerRepository]（`sqlite_sync_store.dart`），
@@ -44,27 +42,41 @@ class SyncConflictException implements Exception {
       : 'SyncConflictException($operationId): $message';
 }
 
-/// 实体键 → shadow map 键的规范编码。
+/// 实体键 → shadow map 键的规范编码：`"scope|type|id"`（竖线分隔）。
 ///
 /// [RemoteApplyPlan.shadowHashes] 是扁平 `Map<String, String>`，而 sync_shadow
 /// 以 (scope, type, id) 三列为主键，因此需要一个确定且可逆的字符串编码。
-/// 用 JSON 数组而非分隔符拼接：scope/type/id 都是自由文本，任何分隔符都可能
-/// 出现在真实 id 里，而 JSON 编码既无歧义又与三列一一对应。
+/// 编码格式属于协议约定（由 team lead 明确指定），计划构造方必须用本函数生成键，
+/// 不要各写各的拼接。
+///
+/// 约束：scope/type/id 的取值中不得出现 `|`。三者的取值域是内部固定的枚举式标识
+/// （`default`、`entry`、`account`、`themePreference` 之类的字段名或实体 id），
+/// 不含竖线；[decodeSyncEntityKey] 在遇到多于两段时抛 [FormatException] 而非
+/// 猜测切分点，使违约尽早暴露而不是把数据静默写到错误的实体上。
 String encodeSyncEntityKey(SyncEntityKey key) =>
-    jsonEncode(<String>[key.scope, key.type, key.id]);
+    '${key.scope}|${key.type}|${key.id}';
 
-/// [encodeSyncEntityKey] 的逆运算。编码不可解析时抛 [FormatException]，
-/// 不静默丢弃——静默丢弃会让 shadow 与实体版本对不上，后续误报本地变更。
+/// [encodeSyncEntityKey] 的逆运算。
+///
+/// 只按**前两个**竖线切分，因此 id 里若混入竖线仍能还原出正确 scope/type，
+/// 只是 id 会被整体保留（不会截断）。真正无法解析的是段数不足，或任一段为空——
+/// 这两种情况抛 [FormatException]，不静默丢弃：丢弃会让 shadow 与实体版本对不上，
+/// 后续把已应用的远端变更误报成本地新变更。
 SyncEntityKey decodeSyncEntityKey(String encoded) {
-  final decoded = jsonDecode(encoded);
-  if (decoded is! List || decoded.length != 3) {
+  final firstSeparator = encoded.indexOf('|');
+  final secondSeparator = firstSeparator < 0
+      ? -1
+      : encoded.indexOf('|', firstSeparator + 1);
+  if (firstSeparator <= 0 || secondSeparator <= firstSeparator + 1) {
     throw FormatException('Invalid sync entity key encoding: $encoded');
   }
-  return SyncEntityKey.fromJson(<String, Object?>{
-    'scope': decoded[0],
-    'type': decoded[1],
-    'id': decoded[2],
-  });
+  final scope = encoded.substring(0, firstSeparator);
+  final type = encoded.substring(firstSeparator + 1, secondSeparator);
+  final id = encoded.substring(secondSeparator + 1);
+  if (id.isEmpty) {
+    throw FormatException('Invalid sync entity key encoding: $encoded');
+  }
+  return SyncEntityKey(scope: scope, type: type, id: id);
 }
 
 /// 一条已应用的远端操作（去重与哈希校验所需的最少字段）。

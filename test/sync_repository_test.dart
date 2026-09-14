@@ -182,6 +182,36 @@ void main() {
         expect(await open().loadConflicts(), isEmpty);
       });
 
+      test('shadow 键编码为 "scope|type|id" 且可逆', () async {
+        // 编码格式是协议约定（Task 5 的计划构造方依赖它），因此固定断言字面量，
+        // 避免实现悄然换成别的格式而下游无从察觉。
+        const key = SyncEntityKey(scope: 'default', type: 'entry', id: 'e1');
+        expect(encodeSyncEntityKey(key), 'default|entry|e1');
+        expect(decodeSyncEntityKey('default|entry|e1'), key);
+
+        // type/id 中出现竖线时按前两个分隔符切分，id 原样保留、不被截断。
+        expect(
+          decodeSyncEntityKey('default|entry|a|b'),
+          const SyncEntityKey(scope: 'default', type: 'entry', id: 'a|b'),
+        );
+
+        // 段数不足或空段属于协议违约：抛错而不是静默还原出一个错误实体。
+        for (final malformed in const <String>[
+          '',
+          'default',
+          'default|entry',
+          '|entry|e1',
+          'default||e1',
+          'default|entry|',
+        ]) {
+          expect(
+            () => decodeSyncEntityKey(malformed),
+            throwsA(isA<FormatException>()),
+            reason: '应拒绝非法编码 "$malformed"',
+          );
+        }
+      });
+
       test('applyRemoteBatch 写入实体版本并登记已应用操作', () async {
         final sync = open();
         final plan = _plan(

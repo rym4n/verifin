@@ -592,6 +592,11 @@ class RemoteApplyPlan {
   final String batchId;
   final List<SyncEntityVersion> entityVersions;
   final List<String> appliedOperationIds;
+
+  /// 实体键 → 规范化 payload hash。键的编码为 `"scope|type|id"`（竖线分隔），
+  /// 生成与解析统一走 `sync_store.dart` 的 `encodeSyncEntityKey` /
+  /// `decodeSyncEntityKey`，调用方不要自行拼接。参与编码的三段取值不得含 `|`。
   final Map<String, String> shadowHashes;
+
   final Map<String, String> kvJournalValues;
 }
