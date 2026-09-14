@@ -1,5 +1,7 @@
 import 'package:verifin/app/models.dart';
+import 'package:verifin/app/sync/sync_change_tracker.dart';
 import 'package:verifin/app/sync/sync_models.dart';
+import 'package:verifin/app/sync/sync_projection.dart';
 import 'package:verifin/app/sync/sync_store.dart';
 import 'package:verifin/data/ledger_repository.dart';
 
@@ -8,7 +10,9 @@ import 'package:verifin/data/ledger_repository.dart';
 /// saveX 同步更新内部状态（返回已完成的 Future），因此不会引入真实异步 I/O，
 /// 避免与 testWidgets 的 fake-async 冲突；同一实例在多个控制器间共享即模拟重启后
 /// 从同一存储重新载入。
-class InMemoryLedgerRepository implements LedgerRepository {
+class InMemoryLedgerRepository
+    implements LedgerRepository, SyncProjectionSource {
+  Map<String, Object?> _profile = <String, Object?>{};
   List<LedgerEntry> _entries = <LedgerEntry>[];
   List<LedgerBook> _books = <LedgerBook>[];
   List<Account> _accounts = <Account>[];
@@ -187,6 +191,53 @@ class InMemoryLedgerRepository implements LedgerRepository {
       _groups.isNotEmpty ||
       _categories.isNotEmpty ||
       _exchangeRates.isNotEmpty;
+
+  // SyncProjectionSource implementation for testing
+  @override
+  Map<String, Object?> exportDataForSync() {
+    return {
+      if (_profile.isNotEmpty) 'profile': _profile,
+      if (_entries.isNotEmpty)
+        'entries': _entries
+            .map(
+              (e) => {
+                'id': e.id,
+                'amount': e.amount,
+                // Add other fields as needed
+              },
+            )
+            .toList(),
+      // Add other entities as needed
+    };
+  }
+
+  @override
+  Future<void> waitForPendingWrites() async {
+    // No async writes in memory implementation
+  }
+
+  // Test helper methods
+  void setProfile(Map<String, Object?> profile) {
+    _profile = Map<String, Object?>.from(profile);
+  }
+
+  void addEntry(Map<String, Object?> entryData) {
+    final entry = LedgerEntry(
+      id: entryData['id'] as String? ?? 'entry-${_entries.length + 1}',
+      bookId: entryData['bookId'] as String? ?? 'default',
+      type: EntryType.expense,
+      amount: (entryData['amount'] as num?)?.toDouble() ?? 0.0,
+      currencyCode: entryData['currencyCode'] as String? ?? 'CNY',
+      categoryId: entryData['categoryId'] as String? ?? '',
+      accountId: entryData['accountId'] as String? ?? '',
+      note: entryData['memo'] as String? ?? '',
+      occurredAt: entryData['occurredAt'] as DateTime? ?? DateTime.now(),
+      tagIds:
+          (entryData['tagIds'] as List<dynamic>?)?.cast<String>() ?? const [],
+      refundOf: entryData['refundedEntryId'] as String?,
+    );
+    _entries.add(entry);
+  }
 }
 
 /// [SyncRepository] 的内存实现。与 SQLite 实现共用 [SyncPlanValidator]，

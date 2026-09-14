@@ -5,11 +5,19 @@ import 'dart:typed_data';
 import 'package:crypto/crypto.dart';
 
 import '../backup/webdav_config.dart';
+import 'sync_codec.dart';
+import 'sync_models.dart';
 import 'webdav_sync_transport.dart';
 
+// Re-export for test convenience
+export 'webdav_sync_transport.dart' show WebdavSyncFileKind;
+
+/// Alias for test convenience
+typedef SyncFileKind = WebdavSyncFileKind;
+
 /// Stub WebDAV sync transport for testing (platform-independent).
-class WebdavSyncTransportStub implements WebdavSyncTransport {
-  WebdavSyncTransportStub({Map<String, Uint8List>? initialFiles})
+class StubWebdavSyncTransport implements WebdavSyncTransport {
+  StubWebdavSyncTransport({Map<String, Uint8List>? initialFiles})
     : _files = Map<String, Uint8List>.from(initialFiles ?? {});
 
   final Map<String, Uint8List> _files;
@@ -20,6 +28,9 @@ class WebdavSyncTransportStub implements WebdavSyncTransport {
 
   /// Get all files for testing (mutable for test setup).
   Map<String, Uint8List> get files => _files;
+
+  /// Test control: fail commit uploads.
+  bool failCommitUploads = false;
 
   @override
   Future<void> ensureSyncTree(WebdavConfig config) async {
@@ -40,6 +51,11 @@ class WebdavSyncTransportStub implements WebdavSyncTransport {
     int length,
     String expectedHash,
   ) async {
+    // Test control: fail commit uploads
+    if (failCommitUploads && relativePath.endsWith('.commit')) {
+      throw const WebdavException('Test: commit upload failure');
+    }
+
     // Check if file exists
     if (_files.containsKey(relativePath)) {
       final existing = _files[relativePath]!;
@@ -69,6 +85,44 @@ class WebdavSyncTransportStub implements WebdavSyncTransport {
 
     // Store file
     _files[relativePath] = fileBytes;
+  }
+
+  /// Simulate a remote batch upload for testing.
+  Future<void> simulateRemoteBatch(
+    String deviceId,
+    int sequence,
+    List<SyncEvent> events, {
+    bool includeCommit = true,
+  }) async {
+    final batchId = events.first.batchId;
+    final codec = SyncCodec(passphrase: '');
+
+    // Upload event files
+    for (var i = 0; i < events.length; i++) {
+      final event = events[i];
+      final eventPath =
+          'verifin-sync/v1/events/$deviceId/${sequence + i}.vfsync';
+      final envelope = await codec.encode(event, syncProtocolVersion);
+      final eventBytes = utf8.encode(jsonEncode(envelope));
+      _files[eventPath] = Uint8List.fromList(eventBytes);
+    }
+
+    // Upload manifest
+    final manifestPath = 'verifin-sync/v1/batches/$deviceId/$batchId.manifest';
+    final manifest = {
+      'batchId': batchId,
+      'operationIds': events.map((e) => e.operationId).toList(),
+      'blobHashes': <String>[],
+      'manifestHash': 'stub-manifest-hash',
+    };
+    final manifestBytes = utf8.encode(jsonEncode(manifest));
+    _files[manifestPath] = Uint8List.fromList(manifestBytes);
+
+    // Upload commit marker
+    if (includeCommit) {
+      final commitPath = 'verifin-sync/v1/batches/$deviceId/$batchId.commit';
+      _files[commitPath] = Uint8List.fromList(utf8.encode('committed'));
+    }
   }
 
   @override

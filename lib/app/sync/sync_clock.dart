@@ -51,7 +51,8 @@ class SyncClock {
   ///
   /// Persists the new [_nextSequence] to the store so restarts never re-issue
   /// sequence numbers.
-  SyncVersion nextVersion({required SyncVersionVector known}) {
+  SyncVersion nextVersion({SyncVersionVector? known}) {
+    final knownCtx = known ?? _knownVector;
     final sequence = _nextSequence++;
     _store.write(_nextSequenceKey, _nextSequence.toString());
     final dot = SyncDot(deviceId: deviceId, sequence: sequence);
@@ -59,9 +60,9 @@ class SyncClock {
 
     // Merge known vector with the new dot.
     final dotAsVector = SyncVersionVector({deviceId: sequence});
-    _knownVector = known.merged(dotAsVector);
+    _knownVector = knownCtx.merged(dotAsVector);
 
-    return SyncVersion(dot: dot, context: known, logicalTime: logicalTime);
+    return SyncVersion(dot: dot, context: knownCtx, logicalTime: logicalTime);
   }
 
   /// Generate a unique operation ID.
@@ -102,6 +103,30 @@ class SyncClock {
     return bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
   }
 
+  /// Create a clock with a specific device ID for testing (no persistence).
+  static SyncClock createWithDeviceId(String deviceId) {
+    return SyncClock._(
+      deviceId: deviceId,
+      nextSequence: 1,
+      knownVector: const SyncVersionVector({}),
+      store: _NoOpStore(),
+    );
+  }
+
+  /// Restore clock from device state (no persistence).
+  static SyncClock restore({
+    required String deviceId,
+    required int nextSequence,
+    required SyncVersionVector knownVector,
+  }) {
+    return SyncClock._(
+      deviceId: deviceId,
+      nextSequence: nextSequence,
+      knownVector: knownVector,
+      store: _NoOpStore(),
+    );
+  }
+
   /// Generate a UUID v4 equivalent (random 128-bit identifier).
   static String _generateUuid() {
     final random = Random.secure();
@@ -115,4 +140,28 @@ class SyncClock {
     final hex = bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
     return '${hex.substring(0, 8)}-${hex.substring(8, 12)}-${hex.substring(12, 16)}-${hex.substring(16, 20)}-${hex.substring(20, 32)}';
   }
+}
+
+/// No-op store for testing without persistence.
+class _NoOpStore implements LocalKeyValueStore {
+  @override
+  String? read(String key) => null;
+
+  @override
+  void write(String key, String value) {}
+
+  @override
+  Future<void> writeAndFlush(String key, String value) async {}
+
+  @override
+  void delete(String key) {}
+
+  @override
+  Future<void> deleteAndFlush(String key) async {}
+
+  @override
+  Future<void> clear() async {}
+
+  @override
+  Future<void> flush() async {}
 }
