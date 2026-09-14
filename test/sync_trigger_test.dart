@@ -80,7 +80,11 @@ void main() {
         // Wait for debounce
         async.elapse(const Duration(milliseconds: 500));
 
-        expect(runCount, 2, reason: 'Multiple mutations should collapse into one rerun');
+        expect(
+          runCount,
+          2,
+          reason: 'Multiple mutations should collapse into one rerun',
+        );
       });
     });
 
@@ -177,7 +181,11 @@ void main() {
         coordinator.onLocalMutation();
         async.elapse(const Duration(seconds: 2));
 
-        expect(runCount, 1, reason: 'No automatic runs after switching to manual');
+        expect(
+          runCount,
+          1,
+          reason: 'No automatic runs after switching to manual',
+        );
       });
     });
 

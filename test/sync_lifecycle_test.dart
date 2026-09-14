@@ -98,7 +98,11 @@ void main() {
         // Let debounce expire
         async.elapse(const Duration(milliseconds: 500));
 
-        expect(runCount, 1, reason: 'Four mutations should collapse into one run');
+        expect(
+          runCount,
+          1,
+          reason: 'Four mutations should collapse into one run',
+        );
       });
     });
 
@@ -189,7 +193,11 @@ void main() {
         coordinator.onLocalMutation();
         async.elapse(const Duration(seconds: 2));
 
-        expect(runCount, 0, reason: 'autoUpload mode should not invoke sync engine');
+        expect(
+          runCount,
+          0,
+          reason: 'autoUpload mode should not invoke sync engine',
+        );
       });
     });
 
@@ -215,7 +223,11 @@ void main() {
         coordinator.onLocalMutation();
         async.elapse(const Duration(seconds: 2));
 
-        expect(runCount, 0, reason: 'manual mode should not invoke sync engine');
+        expect(
+          runCount,
+          0,
+          reason: 'manual mode should not invoke sync engine',
+        );
       });
     });
 
@@ -239,7 +251,11 @@ void main() {
         final resultFuture = coordinator.runManual();
         async.flushMicrotasks();
 
-        expect(runCount, 1, reason: 'Manual sync should work even in manual mode');
+        expect(
+          runCount,
+          1,
+          reason: 'Manual sync should work even in manual mode',
+        );
 
         resultFuture.then((result) {
           expect(result.uploaded, 1);
