@@ -1,3 +1,4 @@
+// ignore_for_file: prefer_initializing_formals
 import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
@@ -60,11 +61,11 @@ class SyncEngine {
     /// `VeriFinController.runRemoteApply`). If null, calls applyRemoteBatch
     /// directly — suitable only for tests that don't use a change tracker.
     Future<void> Function(Future<void> Function())? remoteApply,
-  }) : _repository = repository, // ignore: prefer_initializing_formals
-       _transport = transport, // ignore: prefer_initializing_formals
-       _controller = controller, // ignore: prefer_initializing_formals
-       _config = config, // ignore: prefer_initializing_formals
-       _remoteApply = remoteApply; // ignore: prefer_initializing_formals
+  }) : _repository = repository,
+       _transport = transport,
+       _controller = controller,
+       _config = config,
+       _remoteApply = remoteApply;
 
   final SyncRepository _repository;
 

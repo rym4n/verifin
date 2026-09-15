@@ -1,3 +1,4 @@
+// ignore_for_file: prefer_initializing_formals
 import 'dart:async';
 
 import '../backup/backup_settings.dart';
@@ -15,14 +16,9 @@ class SyncCoordinator {
     required Future<SyncRunResult> Function(SyncTrigger trigger) runSync,
     Duration debounceDuration = const Duration(milliseconds: 500),
     void Function(Object error)? onError,
-    // 私有字段不能作具名初始化形参（与 sync_change_tracker.dart 同一处 ignore）。
-    // ignore: prefer_initializing_formals
   }) : _getTransportMode = getTransportMode,
-       // ignore: prefer_initializing_formals
        _runSync = runSync,
-       // ignore: prefer_initializing_formals
        _debounceDuration = debounceDuration,
-       // ignore: prefer_initializing_formals
        _onError = onError;
 
   final BackupTransportMode Function() _getTransportMode;

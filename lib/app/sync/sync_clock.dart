@@ -1,3 +1,4 @@
+// ignore_for_file: prefer_initializing_formals
 import 'dart:math';
 
 import '../../local_storage/local_storage.dart';
@@ -13,11 +14,8 @@ class SyncClock {
     required int nextSequence,
     required SyncVersionVector knownVector,
     required LocalKeyValueStore store,
-    // ignore: prefer_initializing_formals
   }) : _nextSequence = nextSequence,
-       // ignore: prefer_initializing_formals
        _knownVector = knownVector,
-       // ignore: prefer_initializing_formals
        _store = store;
 
   final String deviceId;
