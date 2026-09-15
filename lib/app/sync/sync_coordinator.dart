@@ -15,10 +15,12 @@ class SyncCoordinator {
     required Future<SyncRunResult> Function(SyncTrigger trigger) runSync,
     Duration debounceDuration = const Duration(milliseconds: 500),
     void Function(Object error)? onError,
-  }) : _getTransportMode = getTransportMode,
-       _runSync = runSync,
-       _debounceDuration = debounceDuration,
-       _onError = onError;
+  }) : _getTransportMode =
+           getTransportMode, // ignore: prefer_initializing_formals
+       _runSync = runSync, // ignore: prefer_initializing_formals
+       _debounceDuration =
+           debounceDuration, // ignore: prefer_initializing_formals
+       _onError = onError; // ignore: prefer_initializing_formals
 
   final BackupTransportMode Function() _getTransportMode;
   final Future<SyncRunResult> Function(SyncTrigger trigger) _runSync;

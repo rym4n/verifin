@@ -60,11 +60,11 @@ class SyncEngine {
     /// `VeriFinController.runRemoteApply`). If null, calls applyRemoteBatch
     /// directly — suitable only for tests that don't use a change tracker.
     Future<void> Function(Future<void> Function())? remoteApply,
-  }) : _repository = repository,
-       _transport = transport,
-       _controller = controller,
-       _config = config,
-       _remoteApply = remoteApply;
+  }) : _repository = repository, // ignore: prefer_initializing_formals
+       _transport = transport, // ignore: prefer_initializing_formals
+       _controller = controller, // ignore: prefer_initializing_formals
+       _config = config, // ignore: prefer_initializing_formals
+       _remoteApply = remoteApply; // ignore: prefer_initializing_formals
 
   final SyncRepository _repository;
 
@@ -476,8 +476,8 @@ class SyncEngine {
         conflictCount += result.$2;
       } catch (error, stack) {
         // Batch processing failed; record for diagnostics and skip.
-        // ignore: avoid_print
         assert(() {
+          // ignore: avoid_print
           print('SyncEngine batch error: $error\n$stack');
           return true;
         }());
@@ -599,7 +599,7 @@ class SyncEngine {
     // Without it, a change tracker running on the same controller would
     // re-enqueue the just-applied remote data as a local mutation.
     if (_remoteApply != null) {
-      await _remoteApply!(() => _repository.applyRemoteBatch(plan));
+      await _remoteApply(() => _repository.applyRemoteBatch(plan));
     } else {
       await _repository.applyRemoteBatch(plan);
     }

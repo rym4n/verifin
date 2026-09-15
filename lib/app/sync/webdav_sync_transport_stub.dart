@@ -5,7 +5,6 @@ import 'dart:typed_data';
 import 'package:crypto/crypto.dart';
 
 import '../backup/webdav_config.dart';
-import 'sync_codec.dart';
 import 'sync_models.dart';
 import 'webdav_sync_transport.dart';
 
@@ -95,7 +94,6 @@ class StubWebdavSyncTransport implements WebdavSyncTransport {
     bool includeCommit = true,
   }) async {
     final batchId = events.first.batchId;
-    final codec = SyncCodec(passphrase: '');
 
     // Upload event files: serialize the full SyncEvent as the file content
     // so the engine can decode it with SyncEvent.fromJson.

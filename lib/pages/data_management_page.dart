@@ -572,6 +572,7 @@ class _DataManagementPageState extends State<DataManagementPage> {
       await _refreshSyncStatus(controller);
 
       if (result.errorCode != null) {
+        if (!context.mounted) return;
         _notify(
           context,
           message: l10n.syncFailed,
@@ -580,6 +581,7 @@ class _DataManagementPageState extends State<DataManagementPage> {
           priority: VeriFeedbackPriority.high,
         );
       } else {
+        if (!context.mounted) return;
         _notify(
           context,
           message: l10n.syncSuccess,

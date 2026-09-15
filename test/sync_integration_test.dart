@@ -189,7 +189,10 @@ void main() {
         // Device B should have the entry
         final dataB = h.repoB.exportDataForSync();
         final entriesB = (dataB['entries'] as List?) ?? [];
-        expect(entriesB.any((e) => e['id'] == 'entry-1'), true);
+        expect(
+          entriesB.any((e) => (e as Map<String, Object?>)['id'] == 'entry-1'),
+          true,
+        );
       },
     );
 
@@ -342,7 +345,12 @@ void main() {
         // Should have exactly one entry
         final dataB = h.repoB.exportDataForSync();
         final entriesB = (dataB['entries'] as List?) ?? [];
-        expect(entriesB.where((e) => e['id'] == 'entry-1').length, 1);
+        expect(
+          entriesB
+              .where((e) => (e as Map<String, Object?>)['id'] == 'entry-1')
+              .length,
+          1,
+        );
       },
     );
 

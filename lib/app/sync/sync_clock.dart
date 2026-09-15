@@ -13,8 +13,11 @@ class SyncClock {
     required int nextSequence,
     required SyncVersionVector knownVector,
     required LocalKeyValueStore store,
+    // ignore: prefer_initializing_formals
   }) : _nextSequence = nextSequence,
+       // ignore: prefer_initializing_formals
        _knownVector = knownVector,
+       // ignore: prefer_initializing_formals
        _store = store;
 
   final String deviceId;
@@ -159,7 +162,6 @@ class _NoOpStore implements LocalKeyValueStore {
   @override
   Future<void> deleteAndFlush(String key) async {}
 
-  @override
   Future<void> clear() async {}
 
   @override

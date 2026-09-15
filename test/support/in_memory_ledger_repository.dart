@@ -1,7 +1,6 @@
 import 'package:verifin/app/models.dart';
 import 'package:verifin/app/sync/sync_change_tracker.dart';
 import 'package:verifin/app/sync/sync_models.dart';
-import 'package:verifin/app/sync/sync_projection.dart';
 import 'package:verifin/app/sync/sync_store.dart';
 import 'package:verifin/data/ledger_repository.dart';
 
@@ -220,7 +219,7 @@ class InMemoryLedgerRepository
     // Simple pass-through for testing
     // In real implementation, this would call markRemoteApply, run apply,
     // clearRemoteApply, and reconcile(alignShadowOnly: true)
-    return await apply();
+    return apply();
   }
 
   // Test helper methods

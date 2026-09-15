@@ -4,9 +4,7 @@ import 'package:verifin/app/sync/sync_clock.dart';
 import 'package:verifin/app/sync/sync_engine.dart';
 import 'package:verifin/app/sync/sync_kv_projection.dart';
 import 'package:verifin/app/sync/sync_models.dart';
-import 'package:verifin/app/sync/sync_store.dart';
 import 'package:verifin/app/sync/webdav_sync_transport_stub.dart';
-import 'package:verifin/app/veri_fin_controller.dart';
 import 'package:verifin/local_storage/local_storage.dart';
 
 import 'support/in_memory_ledger_repository.dart';

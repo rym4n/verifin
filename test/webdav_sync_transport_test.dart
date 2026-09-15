@@ -3,10 +3,9 @@ import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart';
 import 'package:flutter_test/flutter_test.dart';
-
-import '../lib/app/backup/webdav_config.dart';
-import '../lib/app/sync/webdav_sync_transport.dart';
-import '../lib/app/sync/webdav_sync_transport_stub.dart';
+import 'package:verifin/app/backup/webdav_config.dart';
+import 'package:verifin/app/sync/webdav_sync_transport.dart';
+import 'package:verifin/app/sync/webdav_sync_transport_stub.dart';
 
 void main() {
   group('WebdavSyncTransport', () {
@@ -14,7 +13,7 @@ void main() {
     late WebdavConfig config;
 
     setUp(() {
-      transport = WebdavSyncTransportStub();
+      transport = StubWebdavSyncTransport();
       config = const WebdavConfig(
         url: 'https://dav.example.com/verifin/',
         username: 'user',
@@ -25,7 +24,7 @@ void main() {
     test('ensureSyncTree creates directories level by level', () async {
       await transport.ensureSyncTree(config);
 
-      final stub = transport as WebdavSyncTransportStub;
+      final stub = transport as StubWebdavSyncTransport;
       expect(stub.createdDirectories, {
         'verifin-sync',
         'verifin-sync/v1',
@@ -48,7 +47,7 @@ void main() {
         hash,
       );
 
-      final stub = transport as WebdavSyncTransportStub;
+      final stub = transport as StubWebdavSyncTransport;
       expect(stub.files.containsKey('verifin-sync/v1/blobs/abc123.blob'), true);
       expect(stub.files['verifin-sync/v1/blobs/abc123.blob'], content);
     });
@@ -75,7 +74,7 @@ void main() {
         hash,
       );
 
-      final stub = transport as WebdavSyncTransportStub;
+      final stub = transport as StubWebdavSyncTransport;
       expect(stub.files.length, 1);
     });
 
@@ -110,7 +109,7 @@ void main() {
     );
 
     test('listSyncFiles discovers all sync file kinds', () async {
-      final stub = transport as WebdavSyncTransportStub;
+      final stub = transport as StubWebdavSyncTransport;
 
       // Add files with different extensions
       final eventContent = utf8.encode('event');
@@ -139,7 +138,7 @@ void main() {
     test(
       'listSyncFiles parses deviceId and sequence from event paths',
       () async {
-        final stub = transport as WebdavSyncTransportStub;
+        final stub = transport as StubWebdavSyncTransport;
         final content = utf8.encode('event');
 
         stub.files['verifin-sync/v1/events/abc123/456.vfsync'] = content;
@@ -154,7 +153,7 @@ void main() {
     );
 
     test('downloadSyncFile returns file content', () async {
-      final stub = transport as WebdavSyncTransportStub;
+      final stub = transport as StubWebdavSyncTransport;
       final content = utf8.encode('test content');
 
       stub.files['verifin-sync/v1/blobs/abc123.blob'] = content;
@@ -169,7 +168,7 @@ void main() {
     });
 
     test('downloadSyncFile throws when file exceeds maxBytes', () async {
-      final stub = transport as WebdavSyncTransportStub;
+      final stub = transport as StubWebdavSyncTransport;
       final content = Uint8List(1000);
 
       stub.files['verifin-sync/v1/blobs/abc123.blob'] = content;
@@ -205,7 +204,7 @@ void main() {
           hash,
         );
 
-        final stub = transport as WebdavSyncTransportStub;
+        final stub = transport as StubWebdavSyncTransport;
         expect(stub.files.containsKey(path), true);
         // Verify no percent-encoded slashes in the path segments
         expect(path.contains('%2F'), false);
@@ -228,7 +227,7 @@ void main() {
         hash,
       );
 
-      final stub = transport as WebdavSyncTransportStub;
+      final stub = transport as StubWebdavSyncTransport;
       // The stub stores by the logical path (before encoding)
       expect(stub.files.containsKey(path), true);
 
@@ -239,7 +238,7 @@ void main() {
     });
 
     test('listSyncFiles ignores non-sync files', () async {
-      final stub = transport as WebdavSyncTransportStub;
+      final stub = transport as StubWebdavSyncTransport;
 
       stub.files['verifin-sync/v1/blobs/test.blob'] = utf8.encode('blob');
       stub.files['verifin-sync/v1/blobs/test.json'] = utf8.encode('json');
