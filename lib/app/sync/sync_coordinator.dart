@@ -57,7 +57,7 @@ class SyncCoordinator {
     }
     _debounceTimer?.cancel();
     _debounceTimer = Timer(_debounceDuration, () {
-      _triggerRun(SyncTrigger.localMutation);
+      unawaited(_triggerRun(SyncTrigger.localMutation));
     });
   }
 
