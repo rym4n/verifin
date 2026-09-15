@@ -1001,6 +1001,123 @@
   "autoUploadWebdav": "Auto-upload to WebDAV",
   "clearWebdav": "Clear WebDAV config",
   "disconnectLabel": "Disconnect",
+  "syncModeLabel": "Sync mode",
+  "syncModeManual": "Manual",
+  "syncModeAutoUpload": "Auto-upload",
+  "syncModeAutoSync": "Auto-sync",
+  "syncStatusLabel": "Sync status",
+  "syncStatusConnected": "Connected",
+  "syncStatusPending": "Pending",
+  "syncStatusError": "Sync error",
+  "syncConflictCount": "{count, plural, =0{No conflicts} one{1 conflict pending} other{{count} conflicts pending}}",
+  "syncPendingCount": "{count, plural, =0{Nothing pending} one{1 item pending} other{{count} items pending}}",
+  "syncTransportModeConflict": "Auto-sync and auto-upload are both enabled — please reset the transport mode.",
+  "syncCollisionDetected": "A concurrent-edit collision was detected and needs manual resolution.",
+  "syncKeyMismatch": "Sync key mismatch — remote data can't be decrypted.",
+  "syncRecoveryReset": "Reset to auto-upload",
+  "syncRecoverySuccess": "Sync mode has been reset",
+  "syncRecoveryFailed": "Reset failed, please try again",
+  "syncEnabledAutoSyncFeedback": "Auto-sync enabled; auto-upload has been turned off.",
+  "syncEnabledAutoUploadFeedback": "Auto-upload enabled; auto-sync has been turned off.",
+  "syncConflictsTitle": "Sync conflicts",
+  "syncNow": "Sync now",
+  "syncNowHint": "Upload local changes and download remote updates",
+  "syncSuccess": "Sync complete",
+  "syncFailed": "Sync failed",
+  "syncConflictsSubtitle": "These items were changed on more than one device — choose which version to keep.",
+  "syncConflictsEmpty": "No conflicts to resolve",
+  "syncConflictsLoadFailed": "Couldn't load the conflict list. Please try again.",
+  "syncConflictsRetry": "Retry",
+  "syncConflictResolved": "Your choice has been applied",
+  "syncConflictResolveFailed": "Couldn't save your choice. Please try again.",
+  "syncConflictLocalVersion": "This device",
+  "syncConflictRemoteVersion": "Other device",
+  "syncConflictDeletedMarker": "(deleted)",
+  "syncConflictSourceDevice": "From device {deviceId}",
+  "@syncConflictSourceDevice": {
+    "placeholders": {
+      "deviceId": {
+        "type": "String"
+      }
+    }
+  },
+  "syncConflictSequence": "seq {sequence}",
+  "@syncConflictSequence": {
+    "placeholders": {
+      "sequence": {
+        "type": "int"
+      }
+    }
+  },
+  "syncConflictLogicalTime": "logical time {time}",
+  "@syncConflictLogicalTime": {
+    "placeholders": {
+      "time": {
+        "type": "String"
+      }
+    }
+  },
+  "syncConflictScopeGlobal": "Global settings",
+  "syncConflictScopeLedger": "Ledger data",
+  "syncConflictKeepLocal": "Keep this device",
+  "syncConflictKeepRemote": "Keep other device",
+  "syncConflictKeepDelete": "Keep deletion",
+  "syncConflictKeepEdit": "Keep edit",
+  "syncConflictConfirmDeleteTitle": "Keep the deletion?",
+  "syncConflictConfirmDeleteMessage": "The other device's edit to this item will be discarded permanently. This can't be undone.",
+  "syncConflictConfirmLocalTitle": "Keep this device's version?",
+  "syncConflictConfirmLocalMessage": "The changes on the other device will be overwritten. This can't be undone.",
+  "syncConflictConfirmRemoteTitle": "Keep the other device's version?",
+  "syncConflictConfirmRemoteMessage": "The changes on this device will be overwritten. This can't be undone.",
+  "syncConflictAbsent": "—",
+  "syncConflictUnreadable": "Unreadable content",
+  "syncConflictEmptyPayload": "No fields",
+  "syncConflictValueTrue": "Yes",
+  "syncConflictValueFalse": "No",
+  "syncConflictListCount": "List ({count} items)",
+  "@syncConflictListCount": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "syncConflictMapEntryCount": "Object ({count} fields)",
+  "@syncConflictMapEntryCount": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "syncConflictNoAccount": "No account",
+  "syncConflictUnknownAccount": "Unknown account",
+  "syncConflictUnknownCategory": "Unknown category",
+  "syncConflictFieldSummary": "Content",
+  "syncConflictFieldName": "Name",
+  "syncConflictFieldType": "Type",
+  "syncConflictFieldAmount": "Amount",
+  "syncConflictFieldInitialBalance": "Initial balance",
+  "syncConflictFieldCurrency": "Currency",
+  "syncConflictFieldRate": "Rate",
+  "syncConflictFieldAccount": "Account",
+  "syncConflictFieldCategory": "Category",
+  "syncConflictFieldNote": "Note",
+  "syncConflictFieldDate": "Time",
+  "syncEntityEntries": "Transactions",
+  "syncEntityAccounts": "Accounts",
+  "syncEntityAccountGroups": "Account groups",
+  "syncEntityCategories": "Categories",
+  "syncEntityTags": "Tags",
+  "syncEntityAttachments": "Attachments",
+  "syncEntityRecurringRules": "Recurring entries",
+  "syncEntityExchangeRates": "Exchange rates",
+  "syncEntityLedgerBook": "Ledger",
+  "syncEntityBudgets": "Budgets",
+  "syncEntityProfile": "Profile",
+  "syncEntityHomePanels": "Home layout",
+  "syncEntityReportPanels": "Reports layout",
+  "syncEntityGeneric": "Ledger data",
   "resetData": "Reset data",
   "deleteAllLocal": "Deletes all local data",
   "neverBackedUp": "Never backed up",

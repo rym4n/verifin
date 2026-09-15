@@ -1,5 +1,7 @@
 part of 'veri_fin_controller.dart';
 
+/// 控制器的「状态」层：字段持有与持久化，不含业务逻辑。
+
 /// 控制器的「状态与持久化」层：集中所有内存字段、KV/SQLite 载入与落库、
 /// 以及少量被载入流程调用的基础方法。领域操作在 [_ControllerOps]。
 mixin _ControllerState on ChangeNotifier {
@@ -15,6 +17,70 @@ mixin _ControllerState on ChangeNotifier {
   /// 任一 Controller 状态变化后通知根组件刷新桌面小组件投影。根组件负责去抖与
   /// 平台调用；Controller 不直接依赖 Android Bridge。
   VoidCallback? onWidgetProjectionInvalidated;
+
+  /// 任一**成功**的本地写入（账目或偏好）之后触发，供同步引擎捕获变更。
+  ///
+  /// 只在写入真的提交后触发：落库失败的写不能报告成功，否则会把「内存已改、库未写」
+  /// 的状态当成可上传的变更。由同步引擎注入 tracker 的 `markLocalMutation()`；
+  /// 未开启同步时保持为 null，本地写路径零开销。
+  VoidCallback? onSyncChanged;
+
+  /// 本地变更捕获器（`lib/app/sync/sync_change_tracker.dart`）。
+  ///
+  /// 可空是刻意的：同步未启用时它不存在，且启用/停用由同步引擎管理，控制器不负责
+  /// 构造。控制器只在本地写路径上回调 [onSyncChanged] 与 [notifyRemoteApply]，
+  /// 不感知同步状态机。
+  SyncChangeTracker? _syncChangeTracker;
+
+  /// 同步协调器：由应用根组件（`main.dart`）注入，协调启动/恢复/本地变更的
+  /// 自动同步触发与手动同步请求。可空：同步未配置时不存在。
+  SyncCoordinator? _syncCoordinator;
+
+  /// 绑定/解绑变更捕获器。绑定后本地写路径开始上报变更。
+  set syncChangeTracker(SyncChangeTracker? tracker) {
+    _syncChangeTracker = tracker;
+  }
+
+  SyncChangeTracker? get syncChangeTracker => _syncChangeTracker;
+
+  /// 绑定/解绑同步协调器。由应用根组件注入，供手动同步按钮调用。
+  set syncCoordinator(SyncCoordinator? coordinator) {
+    _syncCoordinator = coordinator;
+  }
+
+  /// 手动同步入口：绕过防抖直接运行一次同步，返回结果供 UI 反馈。
+  /// 未配置时返回 null。
+  Future<SyncRunResult?> runManualSync() async {
+    final coordinator = _syncCoordinator;
+    if (coordinator == null) {
+      return null;
+    }
+    return coordinator.runManual();
+  }
+
+  /// 成功写入后的统一上报入口：既调用外部回调，也（若已绑定）标记本地变更。
+  void _notifySyncChanged() {
+    onSyncChanged?.call();
+    _syncChangeTracker?.markLocalMutation();
+  }
+
+  /// 远端批次应用的统一入口：期间抑制 outbox 生成，结束后对齐 shadow。
+  ///
+  /// 引擎实现 `applyRemoteBatch` 时必须走这里——直接调仓储会让远端变更被
+  /// 下一轮比较重新识别成本地新变更并回传。
+  ///
+  /// 顺序很关键：**先 reconcile 对齐 shadow，再退出抑制窗口**。反过来会有一瞬间
+  /// 「窗口已关闭、shadow 还没对齐」，此间的任何本地比较都会把远端刚落地的值当成
+  /// 本地新变更上传。
+  Future<T> runRemoteApply<T>(Future<T> Function() apply) async {
+    _syncChangeTracker?.markRemoteApply();
+    try {
+      return await apply();
+    } finally {
+      await _syncChangeTracker?.reconcile(alignShadowOnly: true);
+      _syncChangeTracker?.clearRemoteApply();
+    }
+  }
 
   /// 应用锁开关变化时回调（由 main 挂钩，据此开关 Android FLAG_SECURE）。
   void Function(bool appLockEnabled)? onAppLockChanged;
@@ -121,6 +187,7 @@ mixin _ControllerState on ChangeNotifier {
   BackupSettings _backupSettings = const BackupSettings();
   String _backupPassphrase = '';
   WebdavConfig _webdavConfig = const WebdavConfig();
+  BackupTransportMode _backupTransportMode = BackupTransportMode.manual;
   ReminderSettings _reminderSettings = ReminderSettings.disabled;
   FabActionMode _fabActionMode = FabActionMode.manual;
   HomeTrendConfig _homeTrendConfig = HomeTrendConfig.defaults;
@@ -214,6 +281,7 @@ mixin _ControllerState on ChangeNotifier {
     _backupSettings = BackupSettings.decode(_store.read(_backupSettingsKey));
     _backupPassphrase = _store.read(_backupPassphraseKey) ?? '';
     _webdavConfig = WebdavConfig.decode(_store.read(_webdavKey));
+    _loadBackupTransportMode();
     _reminderSettings = ReminderSettings.decode(_store.read(_reminderKey));
     _fabActionMode = FabActionMode.fromStorage(_store.read(_fabActionKey));
     _numberPadLayout = NumberPadLayout.fromStorage(
@@ -243,6 +311,46 @@ mixin _ControllerState on ChangeNotifier {
     }
     _aiChatHistory = _decodeChatHistory(_store.read(_aiChatHistoryKey));
     _homeTrendConfig = HomeTrendConfig.decode(_store.read(_homeTrendKey));
+  }
+
+  /// 载入/迁移备份传输模式：优先信任规范键（版本+校验和），未写入或校验和不匹配
+  /// （视为写到一半被打断）时一律从旧字段重新推导，绝不使用半份/损坏值。
+  ///
+  /// 推导规则：`WebdavConfig.autoUpload` 为真，或旧 `BackupSettings.frequency`
+  /// 非手动，任一成立即推导为 [BackupTransportMode.autoUpload]（两者都成立视为
+  /// 冲突，同样默认到 autoUpload，不默认到更激进的 autoSync）；否则为 [manual]。
+  /// 推导后立即写规范键，并清掉旧 `WebdavConfig.autoUpload`（避免它继续被
+  /// [backup_coordinator] 读到而与新模式重复触发上传）——本地目录的
+  /// `BackupSettings.frequency` 保留，它是独立的本地备份计划，不受传输模式影响。
+  void _loadBackupTransportMode() {
+    final decoded = BackupTransportModeCodec.decode(
+      _store.read(_backupTransportModeKey),
+    );
+    if (decoded != null) {
+      _backupTransportMode = decoded;
+      return;
+    }
+    final legacyAutoActive =
+        _webdavConfig.autoUpload || _backupSettings.autoBackupEnabled;
+    _backupTransportMode = legacyAutoActive
+        ? BackupTransportMode.autoUpload
+        : BackupTransportMode.manual;
+    _persistBackupTransportMode();
+    if (_webdavConfig.autoUpload) {
+      _webdavConfig = _webdavConfig.copyWith(autoUpload: false);
+      if (_webdavConfig.isConfigured) {
+        _store.write(_webdavKey, _webdavConfig.encode());
+      } else {
+        _store.delete(_webdavKey);
+      }
+    }
+  }
+
+  void _persistBackupTransportMode() {
+    _store.write(
+      _backupTransportModeKey,
+      BackupTransportModeCodec.encode(_backupTransportMode),
+    );
   }
 
   /// 当前活动账本是否实际涉及多个币种。账户、历史交易、周期规则或已维护汇率中
@@ -356,7 +464,9 @@ mixin _ControllerState on ChangeNotifier {
     final categoryHealed = _healCategoryData();
     final refundHealed = _syncRefundData();
     if (categoryHealed || refundHealed) {
-      _persistAllLedgerData();
+      // 自愈发生在载入期：内存内容已被规范化，库要对齐，但这不是用户改动，
+      // 不上报同步变更（当时也还没绑定 tracker）。
+      _persistAllLedgerData(notifySync: false);
     }
     notifyListeners();
   }
@@ -744,7 +854,10 @@ mixin _ControllerState on ChangeNotifier {
       '${prefix}_${DateTime.now().microsecondsSinceEpoch}_${_idSeq++}';
 
   void _persistEntries() {
-    _trackWrite(_repository.saveEntries(List<LedgerEntry>.of(_entries)));
+    _trackWrite(
+      _repository.saveEntries(List<LedgerEntry>.of(_entries)),
+      onSuccess: _notifySyncChangedOnWrite,
+    );
   }
 
   // 记录最近一次 SQLite 写入，供测试等待其落库。写入按连接串行，等待最新即可。
@@ -752,13 +865,18 @@ mixin _ControllerState on ChangeNotifier {
   int _writeGeneration = 0;
   int _lastFailedWriteGeneration = -1;
 
-  void _trackWrite(Future<void> write) {
-    unawaited(_trackWriteResult(write));
+  void _trackWrite(Future<void> write, {VoidCallback? onSuccess}) {
+    unawaited(_trackWriteResult(write, onSuccess: onSuccess));
   }
 
   /// 记录并等待一次 SQLite 写入。显式命令用返回值决定是否提交内存状态；旧的
   /// fire-and-forget 路径仍经 [_trackWrite] 复用同一套日志、反馈和刷盘追踪。
-  Future<bool> _trackWriteResult(Future<void> write) async {
+  ///
+  /// [onSuccess] 只在写入真的成功时调用。
+  Future<bool> _trackWriteResult(
+    Future<void> write, {
+    VoidCallback? onSuccess,
+  }) async {
     // 挂 catchError：落库失败时记录日志并回调 UI 提示，避免「内存已改但库未写」
     // 的静默不一致——用户以为已保存、重启后却丢失。
     final generation = ++_writeGeneration;
@@ -770,12 +888,21 @@ mixin _ControllerState on ChangeNotifier {
     });
     _pendingWrite = tracked;
     await tracked;
+    if (succeeded) {
+      onSuccess?.call();
+    }
     return succeeded;
   }
 
-  Future<bool> _runTrackedWrite(Future<void> Function() operation) async {
+  Future<bool> _runTrackedWrite(
+    Future<void> Function() operation, {
+    VoidCallback? onSuccess,
+  }) async {
     try {
-      return await _trackWriteResult(operation());
+      return await _trackWriteResult(
+        operation(),
+        onSuccess: onSuccess ?? _notifySyncChangedOnWrite,
+      );
     } catch (error, stackTrace) {
       // 测试仓储或平台适配也可能在返回 Future 前同步抛错；与异步失败保持
       // 同一日志、用户反馈和“不提交内存状态”语义。
@@ -783,6 +910,14 @@ mixin _ControllerState on ChangeNotifier {
       return false;
     }
   }
+
+  /// 账目类写入的默认成功回调：上报同步变更。
+  ///
+  /// 账目类表（交易、账户、分类、标签、汇率、周期规则、账本、预算）里只要成功改了
+  /// 一处，导出内容就变了，同步层必须知道。挂在写入这一层而不是每个调用点旁边，
+  /// 是因为「写入成功」这个事实只有这里知道——逐个调用点重复判断迟早会漏掉某个
+  /// 写路径，而漏掉的后果是那次改动一直不上传。
+  void _notifySyncChangedOnWrite() => _notifySyncChanged();
 
   void _handlePersistError(Object error, StackTrace stackTrace) {
     _logger?.error('数据保存失败', source: 'persist', error: error);
@@ -816,58 +951,79 @@ mixin _ControllerState on ChangeNotifier {
   }
 
   void _persistLedgerBooks() {
-    _trackWrite(_repository.saveBooks(List<LedgerBook>.of(_ledgerBooks)));
+    _trackWrite(
+      _repository.saveBooks(List<LedgerBook>.of(_ledgerBooks)),
+      onSuccess: _notifySyncChanged,
+    );
   }
 
   void _persistAccounts() {
-    _trackWrite(_repository.saveAccounts(List<Account>.of(_accounts)));
+    _trackWrite(
+      _repository.saveAccounts(List<Account>.of(_accounts)),
+      onSuccess: _notifySyncChanged,
+    );
   }
 
   void _persistAccountGroups() {
     _trackWrite(
       _repository.saveAccountGroups(List<AccountGroup>.of(_accountGroups)),
+      onSuccess: _notifySyncChanged,
     );
   }
 
   void _persistCategories() {
-    _trackWrite(_repository.saveCategories(List<Category>.of(_categories)));
+    _trackWrite(
+      _repository.saveCategories(List<Category>.of(_categories)),
+      onSuccess: _notifySyncChanged,
+    );
   }
 
   void _persistTags() {
-    _trackWrite(_repository.saveTags(List<Tag>.of(_tags)));
+    _trackWrite(
+      _repository.saveTags(List<Tag>.of(_tags)),
+      onSuccess: _notifySyncChanged,
+    );
   }
 
   void _persistAttachments() {
-    _trackWrite(_repository.saveAttachments(List<Attachment>.of(_attachments)));
+    _trackWrite(
+      _repository.saveAttachments(List<Attachment>.of(_attachments)),
+      onSuccess: _notifySyncChanged,
+    );
   }
 
   void _persistRecurringRules() {
     _trackWrite(
       _repository.saveRecurringRules(List<RecurringRule>.of(_recurringRules)),
+      onSuccess: _notifySyncChanged,
     );
   }
 
   void _persistExchangeRates() {
     _trackWrite(
       _repository.saveExchangeRates(List<ExchangeRate>.of(_exchangeRates)),
+      onSuccess: _notifySyncChanged,
     );
   }
 
   void _persistBudgets() {
     _trackWrite(
       _repository.saveMonthlyBudgets(Map<String, double>.of(_monthlyBudgets)),
+      onSuccess: _notifySyncChanged,
     );
   }
 
   void _persistCategoryBudgets() {
     _trackWrite(
       _repository.saveCategoryBudgets(Map<String, double>.of(_categoryBudgets)),
+      onSuccess: _notifySyncChanged,
     );
   }
 
   void _persistDailyBudgets() {
     _trackWrite(
       _repository.saveDailyBudgets(Map<String, double>.of(_dailyBudgets)),
+      onSuccess: _notifySyncChanged,
     );
   }
 
@@ -905,8 +1061,15 @@ mixin _ControllerState on ChangeNotifier {
   /// 一次性原子替换全部账目类表（导入/恢复/重置/删账本用）。相比逐表 `_persistX`，
   /// 这些跨多表的整体操作若中途失败会整体回滚，不留孤儿引用（如 entries 已换但
   /// accounts 还是旧的）。KV 偏好类写入不在事务内，另行处理。
-  void _persistAllLedgerData() {
-    _trackWrite(_repository.replaceAllLedgerData(_ledgerDataSnapshot()));
+  ///
+  /// 默认上报同步变更（导入/恢复/重置都是真实的本地变更）；载入期的自愈重写用
+  /// [notifySync] = false——那次写入是「把库对齐到内存」而不是用户改动，虽然因为
+  /// 内存内容未变而不产生实际事件，但没必要触发一次全量比较。
+  void _persistAllLedgerData({bool notifySync = true}) {
+    _trackWrite(
+      _repository.replaceAllLedgerData(_ledgerDataSnapshot()),
+      onSuccess: notifySync ? _notifySyncChanged : null,
+    );
   }
 
   void _persistAssetSectionCollapsed() {

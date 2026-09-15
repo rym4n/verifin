@@ -2748,6 +2748,278 @@ class AppLocalizationsZh extends AppLocalizations {
   String get disconnectLabel => '断开连接';
 
   @override
+  String get syncModeLabel => '同步方式';
+
+  @override
+  String get syncModeManual => '手动';
+
+  @override
+  String get syncModeAutoUpload => '自动上传';
+
+  @override
+  String get syncModeAutoSync => '自动同步';
+
+  @override
+  String get syncStatusLabel => '同步状态';
+
+  @override
+  String get syncStatusConnected => '已连接';
+
+  @override
+  String get syncStatusPending => '待同步';
+
+  @override
+  String get syncStatusError => '同步出错';
+
+  @override
+  String syncConflictCount(int count) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: '$count 个冲突待处理',
+      zero: '无冲突',
+    );
+    return '$_temp0';
+  }
+
+  @override
+  String syncPendingCount(int count) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: '$count 项待同步',
+      zero: '无待同步项',
+    );
+    return '$_temp0';
+  }
+
+  @override
+  String get syncTransportModeConflict => '自动同步与自动上传同时处于开启状态，请重置传输模式';
+
+  @override
+  String get syncCollisionDetected => '存在并发修改冲突，需要手动决议';
+
+  @override
+  String get syncKeyMismatch => '同步密钥不匹配，无法解密远端数据';
+
+  @override
+  String get syncRecoveryReset => '重置为自动上传';
+
+  @override
+  String get syncRecoverySuccess => '已重置同步模式';
+
+  @override
+  String get syncRecoveryFailed => '重置失败，请重试';
+
+  @override
+  String get syncEnabledAutoSyncFeedback => '已开启自动同步，自动上传已关闭';
+
+  @override
+  String get syncEnabledAutoUploadFeedback => '已开启自动上传，自动同步已关闭';
+
+  @override
+  String get syncConflictsTitle => '同步冲突';
+
+  @override
+  String get syncNow => '立即同步';
+
+  @override
+  String get syncNowHint => '上传本地变更并下载远端更新';
+
+  @override
+  String get syncSuccess => '同步完成';
+
+  @override
+  String get syncFailed => '同步失败';
+
+  @override
+  String get syncConflictsSubtitle => '这些条目在多台设备上被同时修改，需要你决定保留哪一版';
+
+  @override
+  String get syncConflictsEmpty => '没有待处理的冲突';
+
+  @override
+  String get syncConflictsLoadFailed => '无法读取冲突列表，请重试';
+
+  @override
+  String get syncConflictsRetry => '重试';
+
+  @override
+  String get syncConflictResolved => '已应用你的选择';
+
+  @override
+  String get syncConflictResolveFailed => '决议未能保存，请重试';
+
+  @override
+  String get syncConflictLocalVersion => '本机版本';
+
+  @override
+  String get syncConflictRemoteVersion => '其他设备版本';
+
+  @override
+  String get syncConflictDeletedMarker => '（已删除）';
+
+  @override
+  String syncConflictSourceDevice(String deviceId) {
+    return '来源设备 $deviceId';
+  }
+
+  @override
+  String syncConflictSequence(int sequence) {
+    return '序号 $sequence';
+  }
+
+  @override
+  String syncConflictLogicalTime(String time) {
+    return '逻辑时钟 $time';
+  }
+
+  @override
+  String get syncConflictScopeGlobal => '全局设置';
+
+  @override
+  String get syncConflictScopeLedger => '账本数据';
+
+  @override
+  String get syncConflictKeepLocal => '保留本机';
+
+  @override
+  String get syncConflictKeepRemote => '保留其他设备';
+
+  @override
+  String get syncConflictKeepDelete => '保留删除';
+
+  @override
+  String get syncConflictKeepEdit => '保留修改';
+
+  @override
+  String get syncConflictConfirmDeleteTitle => '保留删除？';
+
+  @override
+  String get syncConflictConfirmDeleteMessage => '另一侧对该条目的修改将被永久丢弃，此操作无法撤销。';
+
+  @override
+  String get syncConflictConfirmLocalTitle => '保留本机版本？';
+
+  @override
+  String get syncConflictConfirmLocalMessage => '其他设备上的修改将被覆盖，此操作无法撤销。';
+
+  @override
+  String get syncConflictConfirmRemoteTitle => '保留其他设备版本？';
+
+  @override
+  String get syncConflictConfirmRemoteMessage => '本机上的修改将被覆盖，此操作无法撤销。';
+
+  @override
+  String get syncConflictAbsent => '—';
+
+  @override
+  String get syncConflictUnreadable => '无法解析的内容';
+
+  @override
+  String get syncConflictEmptyPayload => '无字段';
+
+  @override
+  String get syncConflictValueTrue => '是';
+
+  @override
+  String get syncConflictValueFalse => '否';
+
+  @override
+  String syncConflictListCount(int count) {
+    return '列表（$count 项）';
+  }
+
+  @override
+  String syncConflictMapEntryCount(int count) {
+    return '对象（$count 个字段）';
+  }
+
+  @override
+  String get syncConflictNoAccount => '无账户';
+
+  @override
+  String get syncConflictUnknownAccount => '未知账户';
+
+  @override
+  String get syncConflictUnknownCategory => '未知分类';
+
+  @override
+  String get syncConflictFieldSummary => '内容';
+
+  @override
+  String get syncConflictFieldName => '名称';
+
+  @override
+  String get syncConflictFieldType => '类型';
+
+  @override
+  String get syncConflictFieldAmount => '金额';
+
+  @override
+  String get syncConflictFieldInitialBalance => '初始余额';
+
+  @override
+  String get syncConflictFieldCurrency => '币种';
+
+  @override
+  String get syncConflictFieldRate => '汇率';
+
+  @override
+  String get syncConflictFieldAccount => '账户';
+
+  @override
+  String get syncConflictFieldCategory => '分类';
+
+  @override
+  String get syncConflictFieldNote => '备注';
+
+  @override
+  String get syncConflictFieldDate => '时间';
+
+  @override
+  String get syncEntityEntries => '交易';
+
+  @override
+  String get syncEntityAccounts => '账户';
+
+  @override
+  String get syncEntityAccountGroups => '账户分组';
+
+  @override
+  String get syncEntityCategories => '分类';
+
+  @override
+  String get syncEntityTags => '标签';
+
+  @override
+  String get syncEntityAttachments => '附件';
+
+  @override
+  String get syncEntityRecurringRules => '周期记账';
+
+  @override
+  String get syncEntityExchangeRates => '汇率';
+
+  @override
+  String get syncEntityLedgerBook => '账本';
+
+  @override
+  String get syncEntityBudgets => '预算';
+
+  @override
+  String get syncEntityProfile => '个人资料';
+
+  @override
+  String get syncEntityHomePanels => '首页布局';
+
+  @override
+  String get syncEntityReportPanels => '看板布局';
+
+  @override
+  String get syncEntityGeneric => '账目数据';
+
+  @override
   String get resetData => '初始化数据';
 
   @override

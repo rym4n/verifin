@@ -5054,6 +5054,498 @@ abstract class AppLocalizations {
   /// **'断开连接'**
   String get disconnectLabel;
 
+  /// 数据管理页:同步方式区块标题
+  ///
+  /// In zh, this message translates to:
+  /// **'同步方式'**
+  String get syncModeLabel;
+
+  /// 传输模式:仅手动
+  ///
+  /// In zh, this message translates to:
+  /// **'手动'**
+  String get syncModeManual;
+
+  /// 传输模式:自动上传(单向)
+  ///
+  /// In zh, this message translates to:
+  /// **'自动上传'**
+  String get syncModeAutoUpload;
+
+  /// 传输模式:自动双向同步
+  ///
+  /// In zh, this message translates to:
+  /// **'自动同步'**
+  String get syncModeAutoSync;
+
+  /// 数据管理页:同步状态行标题
+  ///
+  /// In zh, this message translates to:
+  /// **'同步状态'**
+  String get syncStatusLabel;
+
+  /// 同步状态:正常，无待处理项
+  ///
+  /// In zh, this message translates to:
+  /// **'已连接'**
+  String get syncStatusConnected;
+
+  /// 同步状态:有待重放的偏好变更
+  ///
+  /// In zh, this message translates to:
+  /// **'待同步'**
+  String get syncStatusPending;
+
+  /// 同步状态:存在冲突或写入失败
+  ///
+  /// In zh, this message translates to:
+  /// **'同步出错'**
+  String get syncStatusError;
+
+  /// 同步冲突计数
+  ///
+  /// In zh, this message translates to:
+  /// **'{count, plural, =0{无冲突} other{{count} 个冲突待处理}}'**
+  String syncConflictCount(int count);
+
+  /// 待重放的 KV 偏好 journal 计数
+  ///
+  /// In zh, this message translates to:
+  /// **'{count, plural, =0{无待同步项} other{{count} 项待同步}}'**
+  String syncPendingCount(int count);
+
+  /// 两种自动模式同时开启时的恢复提示
+  ///
+  /// In zh, this message translates to:
+  /// **'自动同步与自动上传同时处于开启状态，请重置传输模式'**
+  String get syncTransportModeConflict;
+
+  /// 同步冲突详情提示：并发修改碰撞
+  ///
+  /// In zh, this message translates to:
+  /// **'存在并发修改冲突，需要手动决议'**
+  String get syncCollisionDetected;
+
+  /// 同步冲突详情提示：密钥指纹不一致
+  ///
+  /// In zh, this message translates to:
+  /// **'同步密钥不匹配，无法解密远端数据'**
+  String get syncKeyMismatch;
+
+  /// 恢复守卫：把冲突的传输模式重置为自动上传
+  ///
+  /// In zh, this message translates to:
+  /// **'重置为自动上传'**
+  String get syncRecoveryReset;
+
+  /// 重置传输模式成功提示
+  ///
+  /// In zh, this message translates to:
+  /// **'已重置同步模式'**
+  String get syncRecoverySuccess;
+
+  /// 重置传输模式失败提示
+  ///
+  /// In zh, this message translates to:
+  /// **'重置失败，请重试'**
+  String get syncRecoveryFailed;
+
+  /// 开启自动同步时的互斥反馈
+  ///
+  /// In zh, this message translates to:
+  /// **'已开启自动同步，自动上传已关闭'**
+  String get syncEnabledAutoSyncFeedback;
+
+  /// 开启自动上传时的互斥反馈
+  ///
+  /// In zh, this message translates to:
+  /// **'已开启自动上传，自动同步已关闭'**
+  String get syncEnabledAutoUploadFeedback;
+
+  /// 冲突审阅页标题
+  ///
+  /// In zh, this message translates to:
+  /// **'同步冲突'**
+  String get syncConflictsTitle;
+
+  /// 数据管理页:手动同步按钮
+  ///
+  /// In zh, this message translates to:
+  /// **'立即同步'**
+  String get syncNow;
+
+  /// 数据管理页:手动同步按钮副标题
+  ///
+  /// In zh, this message translates to:
+  /// **'上传本地变更并下载远端更新'**
+  String get syncNowHint;
+
+  /// 手动同步成功反馈
+  ///
+  /// In zh, this message translates to:
+  /// **'同步完成'**
+  String get syncSuccess;
+
+  /// 手动同步失败反馈
+  ///
+  /// In zh, this message translates to:
+  /// **'同步失败'**
+  String get syncFailed;
+
+  /// 冲突审阅页副标题
+  ///
+  /// In zh, this message translates to:
+  /// **'这些条目在多台设备上被同时修改，需要你决定保留哪一版'**
+  String get syncConflictsSubtitle;
+
+  /// 冲突审阅页空态
+  ///
+  /// In zh, this message translates to:
+  /// **'没有待处理的冲突'**
+  String get syncConflictsEmpty;
+
+  /// 冲突审阅页读取失败提示
+  ///
+  /// In zh, this message translates to:
+  /// **'无法读取冲突列表，请重试'**
+  String get syncConflictsLoadFailed;
+
+  /// 冲突审阅页读取失败后的重试按钮
+  ///
+  /// In zh, this message translates to:
+  /// **'重试'**
+  String get syncConflictsRetry;
+
+  /// 冲突决议成功提示
+  ///
+  /// In zh, this message translates to:
+  /// **'已应用你的选择'**
+  String get syncConflictResolved;
+
+  /// 冲突决议失败提示
+  ///
+  /// In zh, this message translates to:
+  /// **'决议未能保存，请重试'**
+  String get syncConflictResolveFailed;
+
+  /// 冲突卡片：本机一侧的版本标签
+  ///
+  /// In zh, this message translates to:
+  /// **'本机版本'**
+  String get syncConflictLocalVersion;
+
+  /// 冲突卡片：远端一侧的版本标签
+  ///
+  /// In zh, this message translates to:
+  /// **'其他设备版本'**
+  String get syncConflictRemoteVersion;
+
+  /// 冲突卡片：该侧是删除操作时的标记
+  ///
+  /// In zh, this message translates to:
+  /// **'（已删除）'**
+  String get syncConflictDeletedMarker;
+
+  /// 冲突卡片：版本来源设备
+  ///
+  /// In zh, this message translates to:
+  /// **'来源设备 {deviceId}'**
+  String syncConflictSourceDevice(String deviceId);
+
+  /// 冲突卡片：版本的逻辑序号
+  ///
+  /// In zh, this message translates to:
+  /// **'序号 {sequence}'**
+  String syncConflictSequence(int sequence);
+
+  /// 冲突卡片：版本的逻辑时钟
+  ///
+  /// In zh, this message translates to:
+  /// **'逻辑时钟 {time}'**
+  String syncConflictLogicalTime(String time);
+
+  /// 冲突卡片：全局作用域
+  ///
+  /// In zh, this message translates to:
+  /// **'全局设置'**
+  String get syncConflictScopeGlobal;
+
+  /// 冲突卡片：账本作用域
+  ///
+  /// In zh, this message translates to:
+  /// **'账本数据'**
+  String get syncConflictScopeLedger;
+
+  /// 冲突决议：保留本机版本
+  ///
+  /// In zh, this message translates to:
+  /// **'保留本机'**
+  String get syncConflictKeepLocal;
+
+  /// 冲突决议：保留远端版本
+  ///
+  /// In zh, this message translates to:
+  /// **'保留其他设备'**
+  String get syncConflictKeepRemote;
+
+  /// 冲突决议：接受删除
+  ///
+  /// In zh, this message translates to:
+  /// **'保留删除'**
+  String get syncConflictKeepDelete;
+
+  /// 冲突决议：保留未删除一侧的修改
+  ///
+  /// In zh, this message translates to:
+  /// **'保留修改'**
+  String get syncConflictKeepEdit;
+
+  /// 保留删除决议的确认框标题
+  ///
+  /// In zh, this message translates to:
+  /// **'保留删除？'**
+  String get syncConflictConfirmDeleteTitle;
+
+  /// 保留删除决议的确认框正文
+  ///
+  /// In zh, this message translates to:
+  /// **'另一侧对该条目的修改将被永久丢弃，此操作无法撤销。'**
+  String get syncConflictConfirmDeleteMessage;
+
+  /// 保留本机决议的确认框标题
+  ///
+  /// In zh, this message translates to:
+  /// **'保留本机版本？'**
+  String get syncConflictConfirmLocalTitle;
+
+  /// 保留本机决议的确认框正文
+  ///
+  /// In zh, this message translates to:
+  /// **'其他设备上的修改将被覆盖，此操作无法撤销。'**
+  String get syncConflictConfirmLocalMessage;
+
+  /// 保留其他设备决议的确认框标题
+  ///
+  /// In zh, this message translates to:
+  /// **'保留其他设备版本？'**
+  String get syncConflictConfirmRemoteTitle;
+
+  /// 保留其他设备决议的确认框正文
+  ///
+  /// In zh, this message translates to:
+  /// **'本机上的修改将被覆盖，此操作无法撤销。'**
+  String get syncConflictConfirmRemoteMessage;
+
+  /// 冲突对比：某一侧没有该字段
+  ///
+  /// In zh, this message translates to:
+  /// **'—'**
+  String get syncConflictAbsent;
+
+  /// 冲突对比：payload 结构不可识别时的占位（不展示原始内容）
+  ///
+  /// In zh, this message translates to:
+  /// **'无法解析的内容'**
+  String get syncConflictUnreadable;
+
+  /// 冲突对比：payload 为空对象时的占位
+  ///
+  /// In zh, this message translates to:
+  /// **'无字段'**
+  String get syncConflictEmptyPayload;
+
+  /// 冲突对比：布尔真值
+  ///
+  /// In zh, this message translates to:
+  /// **'是'**
+  String get syncConflictValueTrue;
+
+  /// 冲突对比：布尔假值
+  ///
+  /// In zh, this message translates to:
+  /// **'否'**
+  String get syncConflictValueFalse;
+
+  /// 冲突对比：列表值的摘要（不展开内容）
+  ///
+  /// In zh, this message translates to:
+  /// **'列表（{count} 项）'**
+  String syncConflictListCount(int count);
+
+  /// 冲突对比：嵌套对象的摘要（不展开内容）
+  ///
+  /// In zh, this message translates to:
+  /// **'对象（{count} 个字段）'**
+  String syncConflictMapEntryCount(int count);
+
+  /// 冲突对比：交易未关联账户
+  ///
+  /// In zh, this message translates to:
+  /// **'无账户'**
+  String get syncConflictNoAccount;
+
+  /// 冲突对比：账户 id 在本机找不到对应账户
+  ///
+  /// In zh, this message translates to:
+  /// **'未知账户'**
+  String get syncConflictUnknownAccount;
+
+  /// 冲突对比：分类 id 在本机找不到对应分类
+  ///
+  /// In zh, this message translates to:
+  /// **'未知分类'**
+  String get syncConflictUnknownCategory;
+
+  /// 冲突对比：无法逐字段摘要时的兜底字段名
+  ///
+  /// In zh, this message translates to:
+  /// **'内容'**
+  String get syncConflictFieldSummary;
+
+  /// 冲突对比字段：名称
+  ///
+  /// In zh, this message translates to:
+  /// **'名称'**
+  String get syncConflictFieldName;
+
+  /// 冲突对比字段：类型
+  ///
+  /// In zh, this message translates to:
+  /// **'类型'**
+  String get syncConflictFieldType;
+
+  /// 冲突对比字段：金额
+  ///
+  /// In zh, this message translates to:
+  /// **'金额'**
+  String get syncConflictFieldAmount;
+
+  /// 冲突对比字段：账户初始余额
+  ///
+  /// In zh, this message translates to:
+  /// **'初始余额'**
+  String get syncConflictFieldInitialBalance;
+
+  /// 冲突对比字段：币种
+  ///
+  /// In zh, this message translates to:
+  /// **'币种'**
+  String get syncConflictFieldCurrency;
+
+  /// 冲突对比字段：汇率
+  ///
+  /// In zh, this message translates to:
+  /// **'汇率'**
+  String get syncConflictFieldRate;
+
+  /// 冲突对比字段：账户
+  ///
+  /// In zh, this message translates to:
+  /// **'账户'**
+  String get syncConflictFieldAccount;
+
+  /// 冲突对比字段：分类
+  ///
+  /// In zh, this message translates to:
+  /// **'分类'**
+  String get syncConflictFieldCategory;
+
+  /// 冲突对比字段：备注
+  ///
+  /// In zh, this message translates to:
+  /// **'备注'**
+  String get syncConflictFieldNote;
+
+  /// 冲突对比字段：交易时间
+  ///
+  /// In zh, this message translates to:
+  /// **'时间'**
+  String get syncConflictFieldDate;
+
+  /// 同步实体类型：交易
+  ///
+  /// In zh, this message translates to:
+  /// **'交易'**
+  String get syncEntityEntries;
+
+  /// 同步实体类型：账户
+  ///
+  /// In zh, this message translates to:
+  /// **'账户'**
+  String get syncEntityAccounts;
+
+  /// 同步实体类型：账户分组
+  ///
+  /// In zh, this message translates to:
+  /// **'账户分组'**
+  String get syncEntityAccountGroups;
+
+  /// 同步实体类型：分类
+  ///
+  /// In zh, this message translates to:
+  /// **'分类'**
+  String get syncEntityCategories;
+
+  /// 同步实体类型：标签
+  ///
+  /// In zh, this message translates to:
+  /// **'标签'**
+  String get syncEntityTags;
+
+  /// 同步实体类型：附件
+  ///
+  /// In zh, this message translates to:
+  /// **'附件'**
+  String get syncEntityAttachments;
+
+  /// 同步实体类型：周期规则
+  ///
+  /// In zh, this message translates to:
+  /// **'周期记账'**
+  String get syncEntityRecurringRules;
+
+  /// 同步实体类型：汇率
+  ///
+  /// In zh, this message translates to:
+  /// **'汇率'**
+  String get syncEntityExchangeRates;
+
+  /// 同步实体类型：账本
+  ///
+  /// In zh, this message translates to:
+  /// **'账本'**
+  String get syncEntityLedgerBook;
+
+  /// 同步实体类型：预算
+  ///
+  /// In zh, this message translates to:
+  /// **'预算'**
+  String get syncEntityBudgets;
+
+  /// 同步实体类型：个人资料
+  ///
+  /// In zh, this message translates to:
+  /// **'个人资料'**
+  String get syncEntityProfile;
+
+  /// 同步实体类型：首页面板配置
+  ///
+  /// In zh, this message translates to:
+  /// **'首页布局'**
+  String get syncEntityHomePanels;
+
+  /// 同步实体类型：看板面板配置
+  ///
+  /// In zh, this message translates to:
+  /// **'看板布局'**
+  String get syncEntityReportPanels;
+
+  /// 同步实体类型：未知类型时的通用兜底
+  ///
+  /// In zh, this message translates to:
+  /// **'账目数据'**
+  String get syncEntityGeneric;
+
   /// No description provided for @resetData.
   ///
   /// In zh, this message translates to:

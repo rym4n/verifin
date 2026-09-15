@@ -14,7 +14,7 @@ class AppDatabase {
   final Database db;
 
   static const String defaultDatabaseName = 'verifin.db';
-  static const int schemaVersion = 16;
+  static const int schemaVersion = 17;
 
   /// 打开（或创建）数据库。测试通过 [factory]/[path] 注入 ffi 与内存路径；
   /// 真实平台留空则由 [resolveDatabaseFactory]/[resolveDatabasePath] 决定。
@@ -69,6 +69,7 @@ class AppDatabase {
         14: _migrateToV14,
         15: _migrateToV15,
         16: _migrateToV16,
+        17: _migrateToV17,
       };
 
   /// 只读暴露迁移注册表，供迁移矩阵测试把库推进到任意中间版本。生产代码勿用。
@@ -329,6 +330,18 @@ class AppDatabase {
     ''');
   }
 
+  /// v16 → v17：WebDAV 双向同步的本地元数据。九张表全部为新增，不改动既有业务表，
+  /// 因此存量用户升级后账目数据零影响；同步关闭时这些表只是空壳、不参与任何读写。
+  ///
+  /// 建表语句与 [_schemaCurrent] 共用同一批常量，保证「全新库」与「升级库」结构一致
+  /// （迁移矩阵测试会逐表比对）。向量/上下文以 JSON 文本存（可读、便于排查），
+  /// 载荷信封可空（无口令时为明文信封、有口令时为加密信封），时间一律存毫秒整数。
+  static Future<void> _migrateToV17(Database db) async {
+    for (final statement in _schemaV17Sync) {
+      await db.execute(statement);
+    }
+  }
+
   static Future<bool> _tableExists(Database db, String name) async {
     final rows = await db.rawQuery(
       "SELECT name FROM sqlite_master WHERE type='table' AND name = ?",
@@ -485,6 +498,146 @@ class AppDatabase {
   static const String _accountGroupsBookIndex =
       'CREATE INDEX idx_account_groups_book ON account_groups (book_id)';
 
+  /// v17 同步元数据建表语句（onCreate 与 v16→v17 迁移共用，避免两处漂移）。
+  ///
+  /// 全部使用 `IF NOT EXISTS`：该「迁移」可能被重复执行——测试直接把已是最新结构
+  /// 的库的 `user_version` 回退后再打开（见 migration_matrix_test 的 v15 用例），
+  /// 那种情况下建表必须是空操作而不是报错。既有的历史迁移段没有这个习惯，
+  /// 但新增段按此写更稳，不影响老库升级。
+  ///
+  /// 唯一性与主键承载协议的关键去重语义：`sync_device.device_id` 保证单设备一行
+  /// 序列计数；`sync_entity_versions.operation_id` 保证同一操作不产生两份版本行；
+  /// `sync_applied_ops.operation_id` 是「已应用」判定的唯一依据；
+  /// `sync_outbox (batch_id, operation_id)` 保证同批同操作不重复入队。
+  static const List<String> _schemaV17Sync = <String>[
+    _syncDeviceTable,
+    _syncShadowTable,
+    _syncEntityVersionsTable,
+    _syncEntityVersionsEntityIndex,
+    _syncOutboxTable,
+    _syncOutboxUploadedIndex,
+    _syncAppliedOpsTable,
+    _syncPendingTable,
+    _syncScanStateTable,
+    _syncApplyJournalTable,
+    _syncApplyJournalPendingIndex,
+    _syncConflictsTable,
+  ];
+
+  static const String _syncDeviceTable = '''
+    CREATE TABLE IF NOT EXISTS sync_device (
+      device_id TEXT PRIMARY KEY,
+      next_sequence INTEGER NOT NULL DEFAULT 1,
+      known_vector TEXT NOT NULL DEFAULT '{}'
+    )
+    ''';
+
+  static const String _syncShadowTable = '''
+    CREATE TABLE IF NOT EXISTS sync_shadow (
+      scope TEXT NOT NULL,
+      type TEXT NOT NULL,
+      id TEXT NOT NULL,
+      payload_hash TEXT NOT NULL,
+      version_json TEXT NOT NULL,
+      PRIMARY KEY (scope, type, id)
+    )
+    ''';
+
+  static const String _syncEntityVersionsTable = '''
+    CREATE TABLE IF NOT EXISTS sync_entity_versions (
+      operation_id TEXT PRIMARY KEY,
+      scope TEXT NOT NULL,
+      type TEXT NOT NULL,
+      id TEXT NOT NULL,
+      version_json TEXT NOT NULL,
+      payload_hash TEXT NOT NULL,
+      payload_envelope TEXT,
+      deleted INTEGER NOT NULL DEFAULT 0,
+      UNIQUE (scope, type, id, operation_id)
+    )
+    ''';
+
+  /// 按实体查历史版本（冲突两侧、决议前的审计）走这条索引，而不是全表扫。
+  static const String _syncEntityVersionsEntityIndex =
+      'CREATE INDEX IF NOT EXISTS idx_sync_entity_versions_entity '
+      'ON sync_entity_versions (scope, type, id)';
+
+  static const String _syncOutboxTable = '''
+    CREATE TABLE IF NOT EXISTS sync_outbox (
+      batch_id TEXT NOT NULL,
+      operation_id TEXT NOT NULL,
+      relative_path TEXT NOT NULL,
+      payload_hash TEXT NOT NULL,
+      retry_count INTEGER NOT NULL DEFAULT 0,
+      uploaded INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (batch_id, operation_id)
+    )
+    ''';
+
+  /// 上传进度按批次标记，故批次列为高频过滤条件。
+  static const String _syncOutboxUploadedIndex =
+      'CREATE INDEX IF NOT EXISTS idx_sync_outbox_uploaded '
+      'ON sync_outbox (uploaded, batch_id)';
+
+  /// 「已应用」去重的唯一依据表。`payload_hash` 是必需的：同 operationId 不同 hash
+  /// 表示设备序列/凭据碰撞或事件被改写，必须能判出来；而只写 KV 的批次没有任何
+  /// sync_entity_versions 行，hash 无处反查，只能存在这张表里。
+  static const String _syncAppliedOpsTable = '''
+    CREATE TABLE IF NOT EXISTS sync_applied_ops (
+      operation_id TEXT PRIMARY KEY,
+      batch_id TEXT NOT NULL,
+      payload_hash TEXT NOT NULL DEFAULT '',
+      applied_at INTEGER NOT NULL
+    )
+    ''';
+
+  static const String _syncPendingTable = '''
+    CREATE TABLE IF NOT EXISTS sync_pending (
+      batch_id TEXT PRIMARY KEY,
+      events_json TEXT NOT NULL,
+      received_at INTEGER NOT NULL
+    )
+    ''';
+
+  static const String _syncScanStateTable = '''
+    CREATE TABLE IF NOT EXISTS sync_scan_state (
+      key TEXT PRIMARY KEY DEFAULT 'singleton',
+      contiguous_sequences_json TEXT NOT NULL DEFAULT '{}',
+      gaps_json TEXT NOT NULL DEFAULT '{}',
+      last_success_ms INTEGER,
+      last_error_code TEXT,
+      retry_count INTEGER NOT NULL DEFAULT 0
+    )
+    ''';
+
+  static const String _syncApplyJournalTable = '''
+    CREATE TABLE IF NOT EXISTS sync_apply_journal (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      batch_id TEXT NOT NULL,
+      kv_key TEXT NOT NULL,
+      kv_value TEXT NOT NULL,
+      target_hash TEXT NOT NULL,
+      applied INTEGER NOT NULL DEFAULT 0
+    )
+    ''';
+
+  /// 重放未完成 journal 时按批次取行，故批次列为过滤条件。
+  static const String _syncApplyJournalPendingIndex =
+      'CREATE INDEX IF NOT EXISTS idx_sync_apply_journal_pending '
+      'ON sync_apply_journal (applied, batch_id)';
+
+  static const String _syncConflictsTable = '''
+    CREATE TABLE IF NOT EXISTS sync_conflicts (
+      id TEXT PRIMARY KEY,
+      scope TEXT NOT NULL,
+      type TEXT NOT NULL,
+      entity_id TEXT NOT NULL,
+      local_operation_id TEXT NOT NULL REFERENCES sync_entity_versions(operation_id),
+      remote_operation_id TEXT NOT NULL REFERENCES sync_entity_versions(operation_id),
+      created_at INTEGER NOT NULL
+    )
+    ''';
+
   /// 当前完整建表语句（供全新数据库 onCreate 用）。字段命名用 snake_case；
   /// 布尔存 0/1；时间存毫秒时间戳。已含历次迁移引入的列/表（parent_id、tags 等）。
   static const List<String> _schemaCurrent = <String>[
@@ -593,5 +746,6 @@ class AppDatabase {
     _recurringRulesTableCurrent,
     _exchangeRatesTable,
     _exchangeRatesLookupIndex,
+    ..._schemaV17Sync,
   ];
 }
