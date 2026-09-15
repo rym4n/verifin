@@ -169,7 +169,7 @@ abstract final class SyncKvProjection {
   static Map<String, List<Object?>> _asOrderContainers(Object? value) {
     final result = <String, List<Object?>>{};
     if (value is Map) {
-      for (final entry in value.entries) {
+      for (final entry in value.cast<Object?, Object?>().entries) {
         if (entry.value is List) {
           result[entry.key.toString()] = List<Object?>.of(entry.value as List);
         }

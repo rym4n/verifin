@@ -280,13 +280,14 @@ String _canonicalJson(Object? value) {
   } else if (value is String) {
     return jsonEncode(value);
   } else if (value is List) {
-    final items = value.map(_canonicalJson).join(',');
+    final items = value.cast<Object?>().map(_canonicalJson).join(',');
     return '[$items]';
   } else if (value is Map) {
-    final keys = value.keys.cast<String>().toList()..sort();
+    final map = value.cast<Object?, Object?>();
+    final keys = map.keys.cast<String>().toList()..sort();
     final pairs = keys
         .map((k) {
-          final v = value[k];
+          final v = map[k];
           return '${jsonEncode(k)}:${_canonicalJson(v)}';
         })
         .join(',');
@@ -427,17 +428,21 @@ class SyncEvent {
     if (identical(a, b)) return true;
     if (a == null || b == null) return a == b;
     if (a is List && b is List) {
-      if (a.length != b.length) return false;
-      for (var i = 0; i < a.length; i++) {
-        if (!_payloadEquals(a[i], b[i])) return false;
+      final al = a.cast<Object?>();
+      final bl = b.cast<Object?>();
+      if (al.length != bl.length) return false;
+      for (var i = 0; i < al.length; i++) {
+        if (!_payloadEquals(al[i], bl[i])) return false;
       }
       return true;
     }
     if (a is Map && b is Map) {
-      if (a.length != b.length) return false;
-      for (final key in a.keys) {
-        if (!b.containsKey(key)) return false;
-        if (!_payloadEquals(a[key], b[key])) return false;
+      final am = a.cast<Object?, Object?>();
+      final bm = b.cast<Object?, Object?>();
+      if (am.length != bm.length) return false;
+      for (final key in am.keys) {
+        if (!bm.containsKey(key)) return false;
+        if (!_payloadEquals(am[key], bm[key])) return false;
       }
       return true;
     }
