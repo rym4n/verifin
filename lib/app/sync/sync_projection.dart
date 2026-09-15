@@ -307,9 +307,10 @@ class SyncProjection {
       return _normalizeNumber(value);
     }
     if (value is Map) {
-      final keys = value.keys.map((key) => key.toString()).toList()..sort();
+      final map = value.cast<Object?, Object?>();
+      final keys = map.keys.cast<String>().toList()..sort();
       return <String, Object?>{
-        for (final key in keys) key: normalizeValue(value[key]),
+        for (final key in keys) key: normalizeValue(map[key]),
       };
     }
     if (value is Iterable) {
@@ -361,7 +362,10 @@ class SyncProjection {
   /// 取数据段：完整导出用 `data`，否则认为传入的就是 data 内容。
   static Map<String, Object?> _dataSection(Map<String, Object?> root) {
     final data = root['data'];
-    if (data is Map && data.keys.any((key) => exportKeys.contains('$key'))) {
+    if (data is Map &&
+        data.cast<Object?, Object?>().keys.any(
+          (key) => exportKeys.contains('$key'),
+        )) {
       return Map<String, Object?>.from(data);
     }
     if (root.keys.any(exportKeys.contains)) {
