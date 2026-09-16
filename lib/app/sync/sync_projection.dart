@@ -38,6 +38,7 @@ class SyncProjection {
     'categoryBudgets',
     'dailyBudgets',
     'budgetCycleStartDays',
+    'budgetPeriodKinds',
     'profile',
     'themePreference',
     'assetCoverUrl',
@@ -88,6 +89,7 @@ class SyncProjection {
     'categoryBudgets',
     'dailyBudgets',
     'budgetCycleStartDays',
+    'budgetPeriodKinds',
     'defaultAccountIds',
   };
 

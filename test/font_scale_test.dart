@@ -98,6 +98,7 @@ void main() {
       defaultAccountId: controller.defaultAccountId,
       autoSuggestEnabled: controller.autoSuggestEnabled,
       showRunningBalance: controller.showRunningBalance,
+      numberPadLayout: controller.numberPadLayout,
     );
 
     expect(saved, isFalse);

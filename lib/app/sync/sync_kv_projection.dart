@@ -29,6 +29,7 @@ abstract final class SyncKvProjection {
     'assetAccountOrders': 'verifin.asset_account_order.v1',
     'assetSectionOrders': 'verifin.asset_section_order.v1',
     'defaultAccountIds': 'verifin.default_account.v1',
+    'budgetPeriodKinds': 'verifin.budget_period_kind.v1',
     'userWidgetDefinitions': 'verifin.widget_definitions.v1',
   };
 
@@ -41,7 +42,10 @@ abstract final class SyncKvProjection {
   };
 
   /// map-per-key 类型：整份值是 `Map<String, Object?>`，片段的 `entity.id` 是键。
-  static const Set<String> _mapPerKeyTypes = <String>{'defaultAccountIds'};
+  static const Set<String> _mapPerKeyTypes = <String>{
+    'defaultAccountIds',
+    'budgetPeriodKinds',
+  };
 
   /// 顺序类型：整份值是 `Map<containerKey, List<id>>`，片段的 `entity.id` 编码为
   /// `"container:position"`，payload 形如 `{'container':…, 'position':…, 'id':…}`
