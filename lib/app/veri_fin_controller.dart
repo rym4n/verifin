@@ -49,6 +49,7 @@ const Set<String> _knownBackupDataKeys = <String>{
   'monthlyBudgets',
   'categoryBudgets',
   'dailyBudgets',
+  'budgetPeriodKinds',
   'profile',
   'themePreference',
   'homePanels',
@@ -61,6 +62,7 @@ const Set<String> _knownBackupDataKeys = <String>{
 // 应用锁 `verifin.app_lock.v1` 的哈希格式在 app_lock.dart、键仍在下表。
 // 新增偏好键一律加进本表，并确认「初始化清除/备份豁免」清单是否需要覆盖它。
 const String _themeKey = 'verifin.theme.v1';
+const String _fontScaleKey = 'verifin.font_scale.v1';
 const String _localeKey = 'verifin.locale.v1';
 const String _profileKey = 'verifin.profile.v1';
 const String _activeBookKey = 'verifin.active_book.v1';
@@ -81,6 +83,7 @@ const String _reminderKey = 'verifin.reminder.v1';
 const String _fabActionKey = 'verifin.fab_action.v1';
 const String _defaultAccountKey = 'verifin.default_account.v1';
 const String _budgetCycleKey = 'verifin.budget_cycle.v1';
+const String _budgetPeriodKindKey = 'verifin.budget_period.v1';
 const String _amountFormatKey = 'verifin.amount_format.v1';
 const String _moneyUnitStyleKey = 'verifin.money_unit_style.v1';
 const String _hideSingleCurrencyUnitKey =
@@ -129,6 +132,7 @@ class VeriFinController extends ChangeNotifier
     themePreferenceListenable = ValueNotifier<ThemePreference>(
       _themePreference,
     );
+    fontScaleListenable = ValueNotifier<AppFontScale>(_fontScale);
     localePreferenceListenable = ValueNotifier<LocalePreference>(
       _localePreference,
     );
@@ -171,6 +175,7 @@ class VeriFinController extends ChangeNotifier
   @override
   void dispose() {
     themePreferenceListenable.dispose();
+    fontScaleListenable.dispose();
     localePreferenceListenable.dispose();
     aiCapabilityListenable.dispose();
     super.dispose();
@@ -343,6 +348,14 @@ String _defaultMonthlyBudgetKey(String bookId) =>
 
 String _defaultCategoryBudgetKey(String bookId, String categoryId) =>
     '$bookId:$_budgetDefaultMonthSegment:$categoryId';
+
+const String _budgetAnnualSegment = 'annual';
+
+String _annualBudgetKey(String bookId, int year) =>
+    '$bookId:$_budgetAnnualSegment:$year';
+
+String _annualCategoryBudgetKey(String bookId, int year, String categoryId) =>
+    '$bookId:$_budgetAnnualSegment:$year:$categoryId';
 
 /// 预算键按账本隔离,格式为 `bookId:yyyy-MM[:categoryId]`。
 /// 旧版本数据没有 bookId 前缀,加载/导入时归入默认账本。

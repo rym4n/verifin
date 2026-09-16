@@ -24,6 +24,29 @@ import 'pages/privacy_consent_gate.dart';
 import 'pages/onboarding_page.dart';
 import 'pages/shell.dart';
 
+@immutable
+class _MultipliedTextScaler extends TextScaler {
+  const _MultipliedTextScaler(this.systemScaler, this.appScale);
+
+  final TextScaler systemScaler;
+  final double appScale;
+
+  @override
+  double scale(double fontSize) => systemScaler.scale(fontSize) * appScale;
+
+  @override
+  double get textScaleFactor => systemScaler.scale(1) * appScale;
+
+  @override
+  bool operator ==(Object other) =>
+      other is _MultipliedTextScaler &&
+      other.systemScaler == systemScaler &&
+      other.appScale == appScale;
+
+  @override
+  int get hashCode => Object.hash(systemScaler, appScale);
+}
+
 Future<void> main() async {
   // 应用运行的顶层 zone，故意不 await（fire-and-forget）；未捕获错误交给下方 onError。
   unawaited(
@@ -302,28 +325,46 @@ class _VeriFinAppState extends State<VeriFinApp> with WidgetsBindingObserver {
           return ValueListenableBuilder<LocalePreference>(
             valueListenable: _controller.localePreferenceListenable,
             builder: (context, localePreference, _) {
-              return MaterialApp(
-                onGenerateTitle: (context) =>
-                    AppLocalizations.of(context).appTitle,
-                debugShowCheckedModeBanner: false,
-                // null 表示跟随系统语言（按 supportedLocales 解析，找不到回落中文）。
-                locale: localePreference.locale,
-                supportedLocales: AppLocalizations.supportedLocales,
-                localizationsDelegates: AppLocalizations.localizationsDelegates,
-                themeMode: themePreference.themeMode,
-                theme: buildVeriFinTheme(Brightness.light),
-                darkTheme: buildVeriFinTheme(Brightness.dark),
-                builder: (context, child) => PrivacyConsentGate(
-                  child: AppLockGate(
-                    child: OnboardingGate(
-                      child: VeriFeedbackHost(
-                        controller: _feedbackController,
-                        child: child ?? const SizedBox.shrink(),
-                      ),
-                    ),
-                  ),
-                ),
-                home: const VeriFinShell(),
+              return ValueListenableBuilder<AppFontScale>(
+                valueListenable: _controller.fontScaleListenable,
+                builder: (context, fontScale, _) {
+                  return MaterialApp(
+                    onGenerateTitle: (context) =>
+                        AppLocalizations.of(context).appTitle,
+                    debugShowCheckedModeBanner: false,
+                    // null 表示跟随系统语言（按 supportedLocales 解析，找不到回落中文）。
+                    locale: localePreference.locale,
+                    supportedLocales: AppLocalizations.supportedLocales,
+                    localizationsDelegates:
+                        AppLocalizations.localizationsDelegates,
+                    themeMode: themePreference.themeMode,
+                    theme: buildVeriFinTheme(Brightness.light),
+                    darkTheme: buildVeriFinTheme(Brightness.dark),
+                    builder: (context, child) {
+                      final mediaQuery = MediaQuery.of(context);
+                      return MediaQuery(
+                        key: const Key('app_font_scale_media_query'),
+                        data: mediaQuery.copyWith(
+                          textScaler: _MultipliedTextScaler(
+                            mediaQuery.textScaler,
+                            fontScale.scaleFactor,
+                          ),
+                        ),
+                        child: PrivacyConsentGate(
+                          child: AppLockGate(
+                            child: OnboardingGate(
+                              child: VeriFeedbackHost(
+                                controller: _feedbackController,
+                                child: child ?? const SizedBox.shrink(),
+                              ),
+                            ),
+                          ),
+                        ),
+                      );
+                    },
+                    home: const VeriFinShell(),
+                  );
+                },
               );
             },
           );

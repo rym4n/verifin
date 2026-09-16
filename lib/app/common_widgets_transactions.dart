@@ -115,12 +115,6 @@ class TransactionTile extends StatelessWidget {
       ?accountAmountText,
       ?baseAmountText,
     ].join(' · ');
-    // 分类层级：父级链（由近及远反转成「祖 · 父」）作淡色前缀，末级加粗单独渲染。
-    // 无父（顶级 / 转账 / 悬空占位）时 ancestors 为空、不加前缀。
-    final parentPrefix = ancestorIds(
-      categories,
-      entry.categoryId,
-    ).reversed.map((id) => categoryById(id, categories).label).join(' · ');
     // 副行时间：平铺列表（showDate）按今天/今年/往年智能展示，否则只给时分。
     final stamp = showDate
         ? formatEntryStamp(entry.occurredAt)
@@ -174,166 +168,153 @@ class TransactionTile extends StatelessWidget {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: <Widget>[
                     Row(
+                      crossAxisAlignment: CrossAxisAlignment.center,
                       children: <Widget>[
-                        if (parentPrefix.isNotEmpty) ...<Widget>[
-                          Flexible(
-                            flex: 3,
-                            child: Text(
-                              parentPrefix,
-                              maxLines: 1,
-                              softWrap: false,
-                              overflow: TextOverflow.ellipsis,
-                              style: Theme.of(context).textTheme.titleLarge
-                                  ?.copyWith(
-                                    fontSize: 13,
-                                    fontWeight: FontWeight.w700,
-                                  ),
-                            ),
-                          ),
-                          Text(
-                            ' · ',
-                            style: Theme.of(context).textTheme.titleLarge
-                                ?.copyWith(
-                                  fontSize: 13,
-                                  fontWeight: FontWeight.w700,
+                        Expanded(
+                          child: Row(
+                            children: <Widget>[
+                              Flexible(
+                                child: Text(
+                                  category.label,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: Theme.of(context).textTheme.titleLarge
+                                      ?.copyWith(
+                                        fontSize: 13,
+                                        fontWeight: FontWeight.w700,
+                                      ),
                                 ),
+                              ),
+                              if (entry.note.isNotEmpty) ...<Widget>[
+                                const SizedBox(width: 7),
+                                Flexible(
+                                  child: Text(
+                                    entry.note,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: subStyle,
+                                  ),
+                                ),
+                              ],
+                              // 与交易列表的报销筛选同一口径、互斥：还等着钱回来的显示
+                              // 「待报销」，钱已经到账的显示「已到账」。
+                              if (entry.reimbursable &&
+                                  !isZeroCurrencyAmount(
+                                    entry.netBaseAmount,
+                                    baseCurrencyCode ?? entry.currencyCode,
+                                  ))
+                                _EntryBadge(
+                                  text: AppLocalizations.of(
+                                    context,
+                                  ).badgeReimbursable,
+                                  color: veriRoyal,
+                                )
+                              else if (entry.refundedAmount > 0)
+                                _EntryBadge(
+                                  text: AppLocalizations.of(
+                                    context,
+                                  ).badgeRefunded,
+                                  color: veriSemantic(context, veriIncome),
+                                ),
+                            ],
                           ),
-                        ],
+                        ),
+                        const SizedBox(width: 12),
+                        Text(
+                          amountText,
+                          style: Theme.of(context).textTheme.titleLarge
+                              ?.copyWith(
+                                color: amountColor,
+                                fontSize: 14,
+                                fontWeight: FontWeight.w800,
+                              ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 3),
+                    Row(
+                      crossAxisAlignment: CrossAxisAlignment.center,
+                      children: <Widget>[
+                        Expanded(
+                          child: Row(
+                            children: <Widget>[
+                              Flexible(
+                                child: Text(
+                                  stamp,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: subStyle,
+                                ),
+                              ),
+                              if (tagLabels.isNotEmpty)
+                                Flexible(
+                                  child: Padding(
+                                    padding: const EdgeInsets.only(left: 7),
+                                    child: Text(
+                                      _tagSuffix(tagLabels),
+                                      maxLines: 1,
+                                      softWrap: false,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: subStyle?.copyWith(
+                                        color: veriRoyal.withValues(alpha: 0.7),
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              if (runningBalanceText != null)
+                                Flexible(
+                                  child: Padding(
+                                    padding: const EdgeInsets.only(left: 7),
+                                    child: Text(
+                                      runningBalanceText,
+                                      maxLines: 1,
+                                      softWrap: false,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: subStyle?.copyWith(
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(width: 12),
                         Flexible(
-                          flex: 7,
                           child: Text(
-                            category.label,
+                            accountLabel,
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
-                            style: Theme.of(context).textTheme.titleLarge
+                            textAlign: TextAlign.end,
+                            style: Theme.of(context).textTheme.labelSmall
                                 ?.copyWith(
-                                  fontSize: 13,
-                                  fontWeight: FontWeight.w700,
+                                  color: Theme.of(context).colorScheme.onSurface
+                                      .withValues(alpha: 0.46),
                                 ),
                           ),
                         ),
-                        // 与交易列表的报销筛选同一口径、互斥：还等着钱回来的显示
-                        // 「待报销」，钱已经到账的显示「已到账」。
-                        if (entry.reimbursable &&
-                            !isZeroCurrencyAmount(
-                              entry.netBaseAmount,
-                              baseCurrencyCode ?? entry.currencyCode,
-                            ))
-                          _EntryBadge(
-                            text: AppLocalizations.of(
-                              context,
-                            ).badgeReimbursable,
-                            color: veriRoyal,
-                          )
-                        else if (entry.refundedAmount > 0)
-                          _EntryBadge(
-                            text: AppLocalizations.of(context).badgeRefunded,
-                            color: veriSemantic(context, veriIncome),
-                          ),
                       ],
                     ),
-                    const SizedBox(height: 2),
-                    Row(
-                      children: <Widget>[
-                        Text(stamp, style: subStyle),
-                        if (entry.note.isNotEmpty) ...<Widget>[
-                          Text(' · ', style: subStyle),
-                          Flexible(
-                            child: Text(
-                              entry.note,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: subStyle,
-                            ),
-                          ),
-                        ],
-                        if (runningBalanceText != null)
-                          Flexible(
-                            child: Padding(
-                              padding: const EdgeInsets.only(left: 6),
-                              child: Text(
-                                runningBalanceText,
-                                maxLines: 1,
-                                softWrap: false,
-                                overflow: TextOverflow.ellipsis,
-                                style: subStyle?.copyWith(
-                                  fontWeight: FontWeight.w600,
-                                ),
+                    if (conversionText.isNotEmpty) ...<Widget>[
+                      const SizedBox(height: 3),
+                      Align(
+                        alignment: Alignment.centerRight,
+                        child: Text(
+                          conversionText,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: Theme.of(context).textTheme.labelSmall
+                              ?.copyWith(
+                                color: Theme.of(
+                                  context,
+                                ).colorScheme.onSurface.withValues(alpha: 0.42),
                               ),
-                            ),
-                          ),
-                        if (tagLabels.isNotEmpty)
-                          Flexible(
-                            child: Padding(
-                              padding: const EdgeInsets.only(left: 6),
-                              child: Text(
-                                _tagSuffix(tagLabels),
-                                maxLines: 1,
-                                softWrap: false,
-                                overflow: TextOverflow.ellipsis,
-                                style: subStyle?.copyWith(
-                                  color: veriRoyal.withValues(alpha: 0.7),
-                                  fontWeight: FontWeight.w600,
-                                ),
-                              ),
-                            ),
-                          ),
-                      ],
-                    ),
+                        ),
+                      ),
+                    ],
                   ],
                 ),
-              ),
-              const SizedBox(width: 12),
-              Column(
-                crossAxisAlignment: CrossAxisAlignment.end,
-                children: <Widget>[
-                  Text(
-                    amountText,
-                    style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                      color: amountColor,
-                      fontSize: 14,
-                      fontWeight: FontWeight.w800,
-                    ),
-                  ),
-                  const SizedBox(height: 3),
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 7,
-                      vertical: 1,
-                    ),
-                    decoration: BoxDecoration(
-                      border: Border.all(
-                        color: Theme.of(
-                          context,
-                        ).colorScheme.onSurface.withValues(alpha: 0.14),
-                      ),
-                      borderRadius: BorderRadius.circular(999),
-                    ),
-                    child: Text(
-                      accountLabel,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                        color: Theme.of(
-                          context,
-                        ).colorScheme.onSurface.withValues(alpha: 0.46),
-                      ),
-                    ),
-                  ),
-                  if (conversionText.isNotEmpty) ...<Widget>[
-                    const SizedBox(height: 3),
-                    Text(
-                      conversionText,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                        color: Theme.of(
-                          context,
-                        ).colorScheme.onSurface.withValues(alpha: 0.42),
-                      ),
-                    ),
-                  ],
-                ],
               ),
             ],
           ),

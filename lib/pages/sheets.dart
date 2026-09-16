@@ -602,7 +602,9 @@ Future<void> showMonthlyBudgetOverrideSheet({
     month: month,
     subject: AppLocalizations.of(context).budgetTitle,
     isOverride: controller.monthlyBudgetIsOverride(month),
-    defaultBudget: controller.defaultMonthlyBudget,
+    defaultBudget: controller.budgetPeriodKind == BudgetPeriodKind.year
+        ? controller.annualBudget(month) / 12
+        : controller.defaultMonthlyBudget,
     currentBudget: controller.monthlyBudget(month),
     setOverride: (amount) => controller.setMonthlyBudget(month, amount),
     clearOverride: () => controller.clearMonthlyBudgetOverride(month),

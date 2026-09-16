@@ -236,7 +236,9 @@ class _ProfileInfoPageState extends State<ProfileInfoPage> {
   UserProfile _draftProfile({required bool useNicknameFallback}) {
     final nickname = _nicknameController.text.trim();
     return UserProfile(
-      nickname: useNicknameFallback && nickname.isEmpty ? 'Veri Fin' : nickname,
+      nickname: useNicknameFallback && nickname.isEmpty
+          ? AppLocalizations.of(context).appTitle
+          : nickname,
       bio: _bioController.text.trim(),
       avatarDataUrl: _avatarDataUrl,
       gender: _gender,

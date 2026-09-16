@@ -641,6 +641,7 @@ class _CategoryBudgetRow extends StatelessWidget {
     this.collapsed = false,
     this.onToggle,
     this.onActions,
+    this.previousPeriodKind = BudgetPeriodKind.month,
   });
 
   final CategoryBudgetSnapshot snapshot;
@@ -662,6 +663,9 @@ class _CategoryBudgetRow extends StatelessWidget {
   /// 打开当前分类预算的操作菜单；无菜单时为 null。
   final VoidCallback? onActions;
 
+  /// 决定对比副文案使用“上月”还是“上年”。
+  final BudgetPeriodKind previousPeriodKind;
+
   @override
   Widget build(BuildContext context) {
     final color = snapshot.budget <= 0
@@ -681,9 +685,16 @@ class _CategoryBudgetRow extends StatelessWidget {
             formatAmount(snapshot.remaining.abs()),
             (snapshot.ratio * 100).toStringAsFixed(0),
           );
-    final previousText = snapshot.previousSpent <= 0
-        ? l10n.lastMonthNone
-        : l10n.lastMonthAmount(formatAmount(snapshot.previousSpent));
+    final previousText = switch (previousPeriodKind) {
+      BudgetPeriodKind.month =>
+        snapshot.previousSpent <= 0
+            ? l10n.lastMonthNone
+            : l10n.lastMonthAmount(formatAmount(snapshot.previousSpent)),
+      BudgetPeriodKind.year =>
+        snapshot.previousSpent <= 0
+            ? l10n.lastYearNone
+            : l10n.lastYearAmount(formatAmount(snapshot.previousSpent)),
+    };
 
     return Material(
       color: Colors.transparent,

@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:verifin/app/chart_painters.dart';
@@ -25,6 +27,101 @@ void main() {
 
     expect(controller.defaultMonthlyBudget, 1.235);
     expect(controller.dailyBudget(), 0.001);
+  });
+
+  test('年度预算按账本保存总预算与分类预算，并与月预算隔离', () async {
+    final store = LocalKeyValueStore();
+    final controller = await makeController(store);
+    controller
+      ..setBudgetPeriodKind(BudgetPeriodKind.year)
+      ..setAnnualBudget(DateTime(2026), 12000)
+      ..setAnnualCategoryBudget(DateTime(2026), 'dining', 2400);
+
+    expect(controller.budgetPeriodKind, BudgetPeriodKind.year);
+    expect(controller.annualBudget(DateTime(2026, 7)), 12000);
+    expect(controller.annualCategoryBudget(DateTime(2026), 'dining'), 2400);
+    expect(controller.defaultMonthlyBudget, 0);
+
+    final restarted = await makeController(store);
+    expect(restarted.budgetPeriodKind, BudgetPeriodKind.year);
+    expect(restarted.annualBudget(DateTime(2026)), 12000);
+    expect(restarted.annualCategoryBudget(DateTime(2026), 'dining'), 2400);
+    controller.addLedgerBook('旅行账本');
+    expect(controller.budgetPeriodKind, BudgetPeriodKind.month);
+    expect(controller.annualBudget(DateTime(2026)), 0);
+    expect(controller.annualCategoryBudget(DateTime(2026), 'dining'), 0);
+    controller.switchLedgerBook('default');
+    expect(controller.budgetPeriodKind, BudgetPeriodKind.year);
+    controller.dispose();
+    restarted.dispose();
+  });
+
+  test('年度模式按十二个月分摊，显式单月覆盖优先', () async {
+    final controller = await makeController();
+    final july = DateTime(2026, 7);
+    controller
+      ..setDefaultMonthlyBudget(3000)
+      ..setDefaultCategoryBudget('dining', 600)
+      ..setAnnualBudget(july, 12000)
+      ..setAnnualCategoryBudget(july, 'dining', 2400);
+
+    expect(controller.monthlyBudget(july), 3000);
+    expect(controller.categoryBudget(july, 'dining'), 600);
+
+    controller.setBudgetPeriodKind(BudgetPeriodKind.year);
+    expect(controller.monthlyBudget(july), 1000);
+    expect(controller.categoryBudget(july, 'dining'), 200);
+
+    controller
+      ..setMonthlyBudget(july, 1800)
+      ..setCategoryBudget(july, 'dining', 350);
+    expect(controller.monthlyBudget(july), 1800);
+    expect(controller.categoryBudget(july, 'dining'), 350);
+    expect(controller.monthlyBudget(DateTime(2026, 8)), 1000);
+    expect(controller.categoryBudget(DateTime(2026, 8), 'dining'), 200);
+    expect(controller.monthlyBudget(DateTime(2027, 1)), 0);
+    controller.dispose();
+  });
+
+  test('年度预算模式和金额随备份还原', () async {
+    final source = await makeController();
+    source
+      ..setBudgetPeriodKind(BudgetPeriodKind.year)
+      ..setAnnualBudget(DateTime(2026), 12000)
+      ..setAnnualCategoryBudget(DateTime(2026), 'dining', 2400);
+    final backup = source.exportDataJson();
+
+    final target = await makeController();
+    target.importDataJson(backup);
+    expect(target.budgetPeriodKind, BudgetPeriodKind.year);
+    expect(target.annualBudget(DateTime(2026)), 12000);
+    expect(target.annualCategoryBudget(DateTime(2026), 'dining'), 2400);
+    source.dispose();
+    target.dispose();
+  });
+
+  test('删除账本会清除其年度预算和预算模式', () async {
+    final controller = await makeController();
+    controller.addLedgerBook('旅行账本');
+    final travelBookId = controller.activeBook.id;
+    controller
+      ..setBudgetPeriodKind(BudgetPeriodKind.year)
+      ..setAnnualBudget(DateTime(2026), 12000)
+      ..setAnnualCategoryBudget(DateTime(2026), 'dining', 2400);
+
+    expect(controller.deleteLedgerBook(travelBookId), isTrue);
+    final data = Map<String, Object?>.from(
+      (jsonDecode(controller.exportDataJson()) as Map)['data'] as Map,
+    );
+    final monthly = Map<String, Object?>.from(data['monthlyBudgets'] as Map);
+    final categories = Map<String, Object?>.from(
+      data['categoryBudgets'] as Map,
+    );
+    final periods = Map<String, Object?>.from(data['budgetPeriodKinds'] as Map);
+    expect(monthly.keys, isNot(contains(startsWith('$travelBookId:'))));
+    expect(categories.keys, isNot(contains(startsWith('$travelBookId:'))));
+    expect(periods, isNot(contains(travelBookId)));
+    controller.dispose();
   });
 
   testWidgets('home trend chart tap shows data instead of navigating', (
@@ -110,6 +207,102 @@ void main() {
 
     expect(find.byType(BudgetPanel), findsOneWidget);
     expect(find.text('预算 2400'), findsOneWidget);
+  });
+
+  testWidgets('预算设置切换按年后保存当前自然年的年度总预算', (tester) async {
+    final controller = await pumpApp(tester);
+
+    await tester.scrollUntilVisible(
+      find.byType(BudgetPanel),
+      300,
+      scrollable: firstVerticalScrollable(),
+    );
+    await tester.tap(find.byType(BudgetPanel));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byIcon(Icons.tune));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('按年').last);
+    await tester.pumpAndSettle();
+    expect(find.text('年度总预算'), findsOneWidget);
+    await tester.tap(find.text('年度总预算'));
+    await tester.pumpAndSettle();
+    for (final key in <String>['1', '2', '0', '0', '0']) {
+      await tester.tap(find.byKey(Key('number_key_$key')));
+    }
+    await tester.tap(find.byKey(const Key('number_pad_ok')));
+    await tester.pumpAndSettle();
+
+    expect(controller.budgetPeriodKind, BudgetPeriodKind.month);
+    expect(controller.annualBudget(DateTime.now()), 0);
+    await tester.fling(firstVerticalScrollable(), const Offset(0, 1600), 1000);
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('保存'));
+    await tester.pumpAndSettle();
+    expect(controller.budgetPeriodKind, BudgetPeriodKind.year);
+    expect(controller.annualBudget(DateTime.now()), 12000);
+  });
+
+  testWidgets('年度分类预算用全年累计支出和上年支出比较', (tester) async {
+    final controller = await makeController();
+    final now = DateTime.now();
+    controller
+      ..setBudgetPeriodKind(BudgetPeriodKind.year)
+      ..setAnnualCategoryBudget(now, 'dining', 12000)
+      ..addEntry(
+        LedgerEntry(
+          id: 'annual-dining-current-month',
+          bookId: controller.activeBook.id,
+          type: EntryType.expense,
+          amount: 500,
+          categoryId: 'dining',
+          accountId: '',
+          note: '',
+          occurredAt: DateTime(now.year, now.month, 1),
+        ),
+      )
+      ..addEntry(
+        LedgerEntry(
+          id: 'annual-dining-earlier',
+          bookId: controller.activeBook.id,
+          type: EntryType.expense,
+          amount: 1500,
+          categoryId: 'dining',
+          accountId: '',
+          note: '',
+          occurredAt: DateTime(now.year, 1, 1),
+        ),
+      )
+      ..addEntry(
+        LedgerEntry(
+          id: 'annual-dining-last-year',
+          bookId: controller.activeBook.id,
+          type: EntryType.expense,
+          amount: 1000,
+          categoryId: 'dining',
+          accountId: '',
+          note: '',
+          occurredAt: DateTime(now.year - 1, 6, 1),
+        ),
+      );
+
+    await tester.pumpWidget(
+      VeriFinScope(
+        controller: controller,
+        child: zhMaterialApp(home: const BudgetSettingsPage()),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.scrollUntilVisible(
+      find.text('餐饮'),
+      200,
+      scrollable: firstVerticalScrollable(),
+    );
+
+    expect(find.text('剩余 10000 · 已用 17%'), findsOneWidget);
+    expect(find.text('上年 1000'), findsOneWidget);
+    expect(find.text('上月 1000'), findsNothing);
+    controller.dispose();
   });
 
   testWidgets('category budget list renders as a collapsible tree', (

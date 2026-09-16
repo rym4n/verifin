@@ -9,7 +9,7 @@ class AppLocalizationsZh extends AppLocalizations {
   AppLocalizationsZh([String locale = 'zh']) : super(locale);
 
   @override
-  String get appTitle => 'Veri Fin';
+  String get appTitle => '不白记';
 
   @override
   String get statRangeLabel => '统计区间';
@@ -199,6 +199,24 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get themeDark => '深色';
+
+  @override
+  String get fontScaleLabel => '字体大小';
+
+  @override
+  String get fontScalePickerTitle => '选择字体大小';
+
+  @override
+  String get fontScaleSmall => '小';
+
+  @override
+  String get fontScaleStandard => '标准';
+
+  @override
+  String get fontScaleLarge => '大';
+
+  @override
+  String get fontScaleExtraLarge => '特大';
 
   @override
   String get accountTypeOnlinePayment => '网络支付';
@@ -1544,6 +1562,32 @@ class AppLocalizationsZh extends AppLocalizations {
   String get budgetSettingsTitle => '预算设置';
 
   @override
+  String get budgetPeriodLabel => '预算设置方式';
+
+  @override
+  String get budgetPeriodMonth => '按月';
+
+  @override
+  String get budgetPeriodYear => '按年';
+
+  @override
+  String get annualBudgetTitle => '年度总预算';
+
+  @override
+  String get setAnnualBudgetTitle => '设置年度总预算';
+
+  @override
+  String get annualCategoryBudgetTitle => '年度分类预算';
+
+  @override
+  String get annualCategoryBudgetDesc => '设置当前自然年的分类总额，月度执行额度按十二个月平均分摊';
+
+  @override
+  String setAnnualCategoryBudgetTitle(String category) {
+    return '设置“$category”年度预算';
+  }
+
+  @override
   String yearMonth(DateTime month) {
     final intl.DateFormat monthDateFormat = intl.DateFormat('y年M月', localeName);
     final String monthString = monthDateFormat.format(month);
@@ -1793,6 +1837,14 @@ class AppLocalizationsZh extends AppLocalizations {
   @override
   String lastMonthAmount(String amount) {
     return '上月 $amount';
+  }
+
+  @override
+  String get lastYearNone => '上年无支出';
+
+  @override
+  String lastYearAmount(String amount) {
+    return '上年 $amount';
   }
 
   @override
@@ -2090,7 +2142,7 @@ class AppLocalizationsZh extends AppLocalizations {
   String get nextStep => '下一步';
 
   @override
-  String get onboardWelcomeTitle => '欢迎使用 Veri Fin';
+  String get onboardWelcomeTitle => '欢迎使用不白记';
 
   @override
   String get onboardWelcomeDesc =>
@@ -2392,7 +2444,7 @@ class AppLocalizationsZh extends AppLocalizations {
   String get nicknameEmptyTitle => '未设置昵称';
 
   @override
-  String get nicknameEmptyMessage => '未设置昵称，将使用默认昵称「Veri Fin」。是否继续保存？';
+  String get nicknameEmptyMessage => '未设置昵称，将使用默认昵称「不白记」。是否继续保存？';
 
   @override
   String get bioLabel => '简介';
@@ -3596,7 +3648,7 @@ class AppLocalizationsZh extends AppLocalizations {
   }
 
   @override
-  String get bioUnlockReason => '验证生物识别以解锁 Veri Fin';
+  String get bioUnlockReason => '验证生物识别以解锁不白记';
 
   @override
   String get verifyFailedRetry => '验证失败，请重试';
@@ -3750,8 +3802,7 @@ class AppLocalizationsZh extends AppLocalizations {
   String get widgetHowToAddTitle => '如何手动添加';
 
   @override
-  String get widgetHowToAddDesc =>
-      '长按桌面空白处 → 选择「小组件」→ 找到 Veri Fin → 拖动想要的小组件到桌面。';
+  String get widgetHowToAddDesc => '长按桌面空白处 → 选择「小组件」→ 找到不白记 → 拖动想要的小组件到桌面。';
 
   @override
   String get widgetQuickEntryName => '今日支出 + 记一笔';

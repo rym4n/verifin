@@ -101,7 +101,7 @@ abstract class AppLocalizations {
   /// 应用名称
   ///
   /// In zh, this message translates to:
-  /// **'Veri Fin'**
+  /// **'不白记'**
   String get appTitle;
 
   /// No description provided for @statRangeLabel.
@@ -469,6 +469,42 @@ abstract class AppLocalizations {
   /// In zh, this message translates to:
   /// **'深色'**
   String get themeDark;
+
+  /// No description provided for @fontScaleLabel.
+  ///
+  /// In zh, this message translates to:
+  /// **'字体大小'**
+  String get fontScaleLabel;
+
+  /// No description provided for @fontScalePickerTitle.
+  ///
+  /// In zh, this message translates to:
+  /// **'选择字体大小'**
+  String get fontScalePickerTitle;
+
+  /// No description provided for @fontScaleSmall.
+  ///
+  /// In zh, this message translates to:
+  /// **'小'**
+  String get fontScaleSmall;
+
+  /// No description provided for @fontScaleStandard.
+  ///
+  /// In zh, this message translates to:
+  /// **'标准'**
+  String get fontScaleStandard;
+
+  /// No description provided for @fontScaleLarge.
+  ///
+  /// In zh, this message translates to:
+  /// **'大'**
+  String get fontScaleLarge;
+
+  /// No description provided for @fontScaleExtraLarge.
+  ///
+  /// In zh, this message translates to:
+  /// **'特大'**
+  String get fontScaleExtraLarge;
 
   /// No description provided for @accountTypeOnlinePayment.
   ///
@@ -2954,6 +2990,54 @@ abstract class AppLocalizations {
   /// **'预算设置'**
   String get budgetSettingsTitle;
 
+  /// No description provided for @budgetPeriodLabel.
+  ///
+  /// In zh, this message translates to:
+  /// **'预算设置方式'**
+  String get budgetPeriodLabel;
+
+  /// No description provided for @budgetPeriodMonth.
+  ///
+  /// In zh, this message translates to:
+  /// **'按月'**
+  String get budgetPeriodMonth;
+
+  /// No description provided for @budgetPeriodYear.
+  ///
+  /// In zh, this message translates to:
+  /// **'按年'**
+  String get budgetPeriodYear;
+
+  /// No description provided for @annualBudgetTitle.
+  ///
+  /// In zh, this message translates to:
+  /// **'年度总预算'**
+  String get annualBudgetTitle;
+
+  /// No description provided for @setAnnualBudgetTitle.
+  ///
+  /// In zh, this message translates to:
+  /// **'设置年度总预算'**
+  String get setAnnualBudgetTitle;
+
+  /// No description provided for @annualCategoryBudgetTitle.
+  ///
+  /// In zh, this message translates to:
+  /// **'年度分类预算'**
+  String get annualCategoryBudgetTitle;
+
+  /// No description provided for @annualCategoryBudgetDesc.
+  ///
+  /// In zh, this message translates to:
+  /// **'设置当前自然年的分类总额，月度执行额度按十二个月平均分摊'**
+  String get annualCategoryBudgetDesc;
+
+  /// No description provided for @setAnnualCategoryBudgetTitle.
+  ///
+  /// In zh, this message translates to:
+  /// **'设置“{category}”年度预算'**
+  String setAnnualCategoryBudgetTitle(String category);
+
   /// 年月标签(如 2026年7月)
   ///
   /// In zh, this message translates to:
@@ -3349,6 +3433,18 @@ abstract class AppLocalizations {
   /// In zh, this message translates to:
   /// **'上月 {amount}'**
   String lastMonthAmount(String amount);
+
+  /// No description provided for @lastYearNone.
+  ///
+  /// In zh, this message translates to:
+  /// **'上年无支出'**
+  String get lastYearNone;
+
+  /// No description provided for @lastYearAmount.
+  ///
+  /// In zh, this message translates to:
+  /// **'上年 {amount}'**
+  String lastYearAmount(String amount);
 
   /// No description provided for @setLabel.
   ///
@@ -3857,7 +3953,7 @@ abstract class AppLocalizations {
   /// No description provided for @onboardWelcomeTitle.
   ///
   /// In zh, this message translates to:
-  /// **'欢迎使用 Veri Fin'**
+  /// **'欢迎使用不白记'**
   String get onboardWelcomeTitle;
 
   /// No description provided for @onboardWelcomeDesc.
@@ -4385,7 +4481,7 @@ abstract class AppLocalizations {
   /// No description provided for @nicknameEmptyMessage.
   ///
   /// In zh, this message translates to:
-  /// **'未设置昵称，将使用默认昵称「Veri Fin」。是否继续保存？'**
+  /// **'未设置昵称，将使用默认昵称「不白记」。是否继续保存？'**
   String get nicknameEmptyMessage;
 
   /// No description provided for @bioLabel.
@@ -6581,7 +6677,7 @@ abstract class AppLocalizations {
   /// No description provided for @bioUnlockReason.
   ///
   /// In zh, this message translates to:
-  /// **'验证生物识别以解锁 Veri Fin'**
+  /// **'验证生物识别以解锁不白记'**
   String get bioUnlockReason;
 
   /// No description provided for @verifyFailedRetry.
@@ -6887,7 +6983,7 @@ abstract class AppLocalizations {
   /// No description provided for @widgetHowToAddDesc.
   ///
   /// In zh, this message translates to:
-  /// **'长按桌面空白处 → 选择「小组件」→ 找到 Veri Fin → 拖动想要的小组件到桌面。'**
+  /// **'长按桌面空白处 → 选择「小组件」→ 找到不白记 → 拖动想要的小组件到桌面。'**
   String get widgetHowToAddDesc;
 
   /// No description provided for @widgetQuickEntryName.

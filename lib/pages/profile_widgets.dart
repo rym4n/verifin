@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../app/app_theme.dart';
 import '../app/image_sources.dart';
 import '../app/models.dart';
+import '../l10n/app_localizations.dart';
 
 /// 用户头像：有自定义图则渲染，否则用昵称首字母的字母头像。
 /// 我的页、个人资料页共用。
@@ -24,7 +25,9 @@ class ProfileAvatar extends StatelessWidget {
       radius: radius,
       backgroundColor: veriRoyal,
       child: Text(
-        profile.nickname.isEmpty ? 'VF' : profile.nickname.characters.first,
+        profile.nickname.isEmpty
+            ? AppLocalizations.of(context).appTitle.characters.first
+            : profile.nickname.characters.first,
         style: const TextStyle(
           color: Colors.white,
           fontWeight: FontWeight.w800,

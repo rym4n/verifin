@@ -40,7 +40,7 @@ void main() {
 
     await _pumpOnboarding(tester, controller);
 
-    expect(find.text('欢迎使用 Veri Fin'), findsOneWidget);
+    expect(find.text('欢迎使用不白记'), findsOneWidget);
 
     // 第 1 步 → 账户步骤。
     await tester.tap(find.byKey(const Key('onboarding_next')));
@@ -90,6 +90,7 @@ void main() {
     final controller = await makeController(LocalKeyValueStore(), false);
 
     await _pumpOnboarding(tester, controller, locale: const Locale('en'));
+    expect(find.text('Welcome to 不白记'), findsOneWidget);
     await tester.tap(find.byKey(const Key('onboarding_next')));
     await tester.pumpAndSettle();
 

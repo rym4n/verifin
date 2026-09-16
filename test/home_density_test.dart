@@ -39,6 +39,10 @@ void main() {
     await tester.pumpWidget(VeriFinApp(controller: controller));
     await tester.pumpAndSettle();
     expect(tester.takeException(), isNull);
+    final primaryValue = tester.widget<Text>(
+      find.byKey(const Key('home_primary_metric_value')),
+    );
+    expect(primaryValue.style?.fontSize, 14);
     final overview = tester.getRect(find.byType(HomeTrendPanel));
     expect(overview.height, lessThanOrEqualTo(280));
     for (var i = 1; i <= 3; i++) {

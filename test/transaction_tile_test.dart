@@ -91,9 +91,9 @@ void main() {
     );
   }
 
-  testWidgets('标题展示分类层级：父级与末级都在', (tester) async {
+  testWidgets('标题只展示末级分类，父级层级不重复展示', (tester) async {
     await pumpTile(tester, entry());
-    expect(find.text('食品餐饮'), findsOneWidget);
+    expect(find.text('食品餐饮'), findsNothing);
     expect(find.text('午餐'), findsOneWidget);
   });
 
@@ -108,6 +108,67 @@ void main() {
     expect(find.text('打车回家'), findsOneWidget);
     // 有备注就不显示账户名兜底，账户名仍只在右侧标签出现一次。
     expect(find.text('招商银行'), findsOneWidget);
+  });
+
+  testWidgets('首行是分类备注金额，次行是时间标签账户', (tester) async {
+    await pumpTile(tester, entry(note: '打车回家', tagIds: <String>['t1']));
+
+    final category = tester.getCenter(find.text('午餐'));
+    final note = tester.getCenter(find.text('打车回家'));
+    final amount = tester.getCenter(find.text('-30'));
+    final time = tester.getCenter(find.text('09:00'));
+    final tag = tester.getCenter(find.text('#出差'));
+    final accountName = tester.getCenter(find.text('招商银行'));
+
+    expect((category.dy - note.dy).abs(), lessThan(3));
+    expect((category.dy - amount.dy).abs(), lessThan(3));
+    expect(category.dx, lessThan(note.dx));
+    expect(note.dx, lessThan(amount.dx));
+    expect((time.dy - tag.dy).abs(), lessThan(3));
+    expect((time.dy - accountName.dy).abs(), lessThan(3));
+    expect(time.dx, lessThan(tag.dx));
+    expect(tag.dx, lessThan(accountName.dx));
+    expect(time.dy, greaterThan(category.dy));
+  });
+
+  testWidgets('转账次行右侧展示转出和转入账户名称', (tester) async {
+    const to = Account(
+      id: 'acc2',
+      bookId: 'b1',
+      name: '现金',
+      type: AccountType.cash,
+      groupId: null,
+      initialBalance: 0,
+      iconCode: 'cash',
+      note: '',
+      includeInAssets: true,
+      hidden: false,
+    );
+    await pumpTile(
+      tester,
+      LedgerEntry(
+        id: 'transfer',
+        bookId: 'b1',
+        type: EntryType.transfer,
+        amount: 100,
+        categoryId: 'lunch',
+        accountId: account.id,
+        toAccountId: to.id,
+        note: '',
+        occurredAt: DateTime(2026, 8, 1, 9),
+      ),
+      tileAccounts: <Account>[account, to],
+    );
+
+    expect(find.text('招商银行 → 现金'), findsOneWidget);
+  });
+
+  testWidgets('窄屏长备注和账户名不产生布局异常', (tester) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(300, 240);
+    addTearDown(tester.view.resetPhysicalSize);
+    await pumpTile(tester, entry(note: '这是一段很长的备注文本用于验证交易行截断布局'));
+    expect(tester.takeException(), isNull);
   });
 
   testWidgets('副行展示标签，最多两个、更多收成 +N', (tester) async {

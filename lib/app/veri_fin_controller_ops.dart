@@ -3,6 +3,19 @@ part of 'veri_fin_controller.dart';
 /// 控制器的「领域操作」层：交易/账户/分组/账本/分类/标签/预算/偏好/备份/
 /// 导入导出等所有对外方法。字段与持久化在 [_ControllerState]。
 mixin _ControllerOps on ChangeNotifier, _ControllerState {
+  BudgetPeriodKind _budgetPeriodKindForBook(String bookId) =>
+      _budgetPeriodKinds[bookId] ?? BudgetPeriodKind.month;
+
+  double _monthlyBudgetForBook(String bookId, DateTime month) {
+    final overrideKey = '$bookId:${_monthKey(month)}';
+    if (_monthlyBudgets.containsKey(overrideKey)) {
+      return _monthlyBudgets[overrideKey]!;
+    }
+    return _budgetPeriodKindForBook(bookId) == BudgetPeriodKind.year
+        ? (_monthlyBudgets[_annualBudgetKey(bookId, month.year)] ?? 0) / 12
+        : _monthlyBudgets[_defaultMonthlyBudgetKey(bookId)] ?? 0;
+  }
+
   /// 读取桌面小组件实例配置（设备偏好，不属于账本备份）。
   List<WidgetInstanceConfig> get widgetInstanceConfigs =>
       WidgetConfigStore.load(_store);
@@ -50,10 +63,7 @@ mixin _ControllerOps on ChangeNotifier, _ControllerState {
         _exchangeRates.where((item) => item.bookId == id),
       ),
       budgetWindow: budgetCycleOfKeyMonth(keyMonth, startDay),
-      budget:
-          _monthlyBudgets['$id:${_monthKey(keyMonth)}'] ??
-          _monthlyBudgets[_defaultMonthlyBudgetKey(id)] ??
-          0,
+      budget: _monthlyBudgetForBook(id, keyMonth),
     );
   }
 
@@ -866,6 +876,37 @@ mixin _ControllerOps on ChangeNotifier, _ControllerState {
   double get defaultMonthlyBudget =>
       _monthlyBudgets[_defaultMonthlyBudgetKey(_activeBookId)] ?? 0;
 
+  BudgetPeriodKind get budgetPeriodKind =>
+      _budgetPeriodKindForBook(_activeBookId);
+
+  void setBudgetPeriodKind(BudgetPeriodKind kind) {
+    if (kind == budgetPeriodKind) {
+      return;
+    }
+    if (kind == BudgetPeriodKind.month) {
+      _budgetPeriodKinds.remove(_activeBookId);
+    } else {
+      _budgetPeriodKinds[_activeBookId] = kind;
+    }
+    _persistBudgetPeriodKinds();
+    notifyListeners();
+  }
+
+  double annualBudget(DateTime date) =>
+      _monthlyBudgets[_annualBudgetKey(_activeBookId, date.year)] ?? 0;
+
+  void setAnnualBudget(DateTime date, double amount) {
+    final normalized = _normalizeActiveBaseAmount(amount);
+    final key = _annualBudgetKey(_activeBookId, date.year);
+    if (normalized <= 0) {
+      _monthlyBudgets.remove(key);
+    } else {
+      _monthlyBudgets[key] = normalized;
+    }
+    _persistBudgets();
+    notifyListeners();
+  }
+
   double _normalizeActiveBaseAmount(double amount) =>
       normalizeCurrencyAmount(amount, activeBook.baseCurrencyCode);
 
@@ -883,8 +924,7 @@ mixin _ControllerOps on ChangeNotifier, _ControllerState {
 
   /// 某键月的实际月预算：单月覆盖优先，否则沿用默认月预算，都没有则 0。
   double monthlyBudget(DateTime month) =>
-      _monthlyBudgets['$_activeBookId:${_monthKey(month)}'] ??
-      defaultMonthlyBudget;
+      _monthlyBudgetForBook(_activeBookId, month);
 
   /// 该键月是否设了单独的覆盖值（用于区分「沿用默认」与「本月单独」）。
   bool monthlyBudgetIsOverride(DateTime month) =>
@@ -914,6 +954,30 @@ mixin _ControllerOps on ChangeNotifier, _ControllerState {
       _categoryBudgets[_defaultCategoryBudgetKey(_activeBookId, categoryId)] ??
       0;
 
+  double annualCategoryBudget(DateTime date, String categoryId) =>
+      _categoryBudgets[_annualCategoryBudgetKey(
+        _activeBookId,
+        date.year,
+        categoryId,
+      )] ??
+      0;
+
+  void setAnnualCategoryBudget(
+    DateTime date,
+    String categoryId,
+    double amount,
+  ) {
+    final normalized = _normalizeActiveBaseAmount(amount);
+    final key = _annualCategoryBudgetKey(_activeBookId, date.year, categoryId);
+    if (normalized <= 0) {
+      _categoryBudgets.remove(key);
+    } else {
+      _categoryBudgets[key] = normalized;
+    }
+    _persistCategoryBudgets();
+    notifyListeners();
+  }
+
   void setDefaultCategoryBudget(String categoryId, double amount) {
     final normalized = _normalizeActiveBaseAmount(amount);
     final key = _defaultCategoryBudgetKey(_activeBookId, categoryId);
@@ -927,9 +991,15 @@ mixin _ControllerOps on ChangeNotifier, _ControllerState {
   }
 
   /// 某键月某分类的实际预算：单月覆盖优先，否则沿用分类默认，都没有则 0。
-  double categoryBudget(DateTime month, String categoryId) =>
-      _categoryBudgets[_categoryBudgetKey(_activeBookId, month, categoryId)] ??
-      defaultCategoryBudget(categoryId);
+  double categoryBudget(DateTime month, String categoryId) {
+    final overrideKey = _categoryBudgetKey(_activeBookId, month, categoryId);
+    if (_categoryBudgets.containsKey(overrideKey)) {
+      return _categoryBudgets[overrideKey]!;
+    }
+    return budgetPeriodKind == BudgetPeriodKind.year
+        ? annualCategoryBudget(month, categoryId) / 12
+        : defaultCategoryBudget(categoryId);
+  }
 
   /// 该键月的分类是否设置了单独覆盖值。只检查当前账本的单期键，不把默认预算
   /// 视为覆盖，供总览页区分「本期单独」与「沿用默认」。
@@ -984,6 +1054,17 @@ mixin _ControllerOps on ChangeNotifier, _ControllerState {
     themePreferenceListenable.value = preference;
     _store.write(_themeKey, preference.name);
     notifyListeners();
+  }
+
+  AppFontScale get fontScale => _fontScale;
+
+  void setFontScale(AppFontScale scale) {
+    if (_fontScale == scale) {
+      return;
+    }
+    _fontScale = scale;
+    fontScaleListenable.value = scale;
+    _store.write(_fontScaleKey, scale.name);
   }
 
   LocalePreference get localePreference => _localePreference;
@@ -1067,7 +1148,12 @@ mixin _ControllerOps on ChangeNotifier, _ControllerState {
     required double dailyBudget,
     required int cycleStartDay,
     required Map<String, double> defaultCategoryBudgets,
+    BudgetPeriodKind? periodKind,
+    DateTime? annualDate,
+    double? annualBudget,
+    Map<String, double>? annualCategoryBudgets,
   }) async {
+    final selectedPeriod = periodKind ?? budgetPeriodKind;
     final normalizedMonthly = _normalizeActiveBaseAmount(defaultMonthlyBudget);
     final normalizedDaily = _normalizeActiveBaseAmount(dailyBudget);
     final nextMonthly = Map<String, double>.of(_monthlyBudgets);
@@ -1076,6 +1162,17 @@ mixin _ControllerOps on ChangeNotifier, _ControllerState {
       nextMonthly.remove(monthlyKey);
     } else {
       nextMonthly[monthlyKey] = normalizedMonthly;
+    }
+    if (selectedPeriod == BudgetPeriodKind.year &&
+        annualDate != null &&
+        annualBudget != null) {
+      final annualKey = _annualBudgetKey(_activeBookId, annualDate.year);
+      final normalizedAnnual = _normalizeActiveBaseAmount(annualBudget);
+      if (normalizedAnnual <= 0) {
+        nextMonthly.remove(annualKey);
+      } else {
+        nextMonthly[annualKey] = normalizedAnnual;
+      }
     }
 
     final nextCategories = Map<String, double>.of(_categoryBudgets)
@@ -1088,6 +1185,24 @@ mixin _ControllerOps on ChangeNotifier, _ControllerState {
       if (normalized > 0) {
         nextCategories[_defaultCategoryBudgetKey(_activeBookId, entry.key)] =
             normalized;
+      }
+    }
+    if (selectedPeriod == BudgetPeriodKind.year &&
+        annualDate != null &&
+        annualCategoryBudgets != null) {
+      final annualPrefix =
+          '$_activeBookId:$_budgetAnnualSegment:${annualDate.year}:';
+      nextCategories.removeWhere((key, _) => key.startsWith(annualPrefix));
+      for (final entry in annualCategoryBudgets.entries) {
+        final normalized = _normalizeActiveBaseAmount(entry.value);
+        if (normalized > 0) {
+          nextCategories[_annualCategoryBudgetKey(
+                _activeBookId,
+                annualDate.year,
+                entry.key,
+              )] =
+              normalized;
+        }
       }
     }
 
@@ -1106,8 +1221,23 @@ mixin _ControllerOps on ChangeNotifier, _ControllerState {
       nextCycleDays[_activeBookId] = clampedStartDay;
     }
     final previousCycleJson = jsonEncode(_budgetCycleStartDays);
+    final nextPeriodKinds = Map<String, BudgetPeriodKind>.of(
+      _budgetPeriodKinds,
+    );
+    if (selectedPeriod == BudgetPeriodKind.month) {
+      nextPeriodKinds.remove(_activeBookId);
+    } else {
+      nextPeriodKinds[_activeBookId] = selectedPeriod;
+    }
+    String encodePeriodKinds(Map<String, BudgetPeriodKind> values) =>
+        jsonEncode(values.map((key, value) => MapEntry(key, value.name)));
+    final previousPeriodJson = encodePeriodKinds(_budgetPeriodKinds);
     try {
       await _store.writeAndFlush(_budgetCycleKey, jsonEncode(nextCycleDays));
+      await _store.writeAndFlush(
+        _budgetPeriodKindKey,
+        encodePeriodKinds(nextPeriodKinds),
+      );
       await _repository.saveBudgetSettings(
         monthlyBudgets: nextMonthly,
         categoryBudgets: nextCategories,
@@ -1116,6 +1246,7 @@ mixin _ControllerOps on ChangeNotifier, _ControllerState {
     } catch (error, stackTrace) {
       try {
         await _store.writeAndFlush(_budgetCycleKey, previousCycleJson);
+        await _store.writeAndFlush(_budgetPeriodKindKey, previousPeriodJson);
       } catch (_) {
         // 原错误已上报；回滚偏好也失败时保留同一条用户提示，避免重复噪音。
       }
@@ -1135,6 +1266,9 @@ mixin _ControllerOps on ChangeNotifier, _ControllerState {
     _budgetCycleStartDays
       ..clear()
       ..addAll(nextCycleDays);
+    _budgetPeriodKinds
+      ..clear()
+      ..addAll(nextPeriodKinds);
     notifyListeners();
     return true;
   }
@@ -1257,6 +1391,7 @@ mixin _ControllerOps on ChangeNotifier, _ControllerState {
   Future<bool> saveAppPreferencesDraft({
     required ThemePreference themePreference,
     required LocalePreference localePreference,
+    AppFontScale? fontScale,
     required bool hapticsEnabled,
     required bool amountForceTwoDecimals,
     required MoneyUnitStyle moneyUnitStyle,
@@ -1266,15 +1401,30 @@ mixin _ControllerOps on ChangeNotifier, _ControllerState {
     required bool autoSuggestEnabled,
     required bool showRunningBalance,
   }) async {
+    final nextFontScale = fontScale ?? _fontScale;
     final nextDefaultAccounts = Map<String, String>.of(_defaultAccountIds);
     if (defaultAccountId == null || defaultAccountId.isEmpty) {
       nextDefaultAccounts.remove(_activeBookId);
     } else {
       nextDefaultAccounts[_activeBookId] = defaultAccountId;
     }
+    final previous = <String, String?>{
+      _themeKey: _store.read(_themeKey),
+      _localeKey: _store.read(_localeKey),
+      _fontScaleKey: _store.read(_fontScaleKey),
+      _hapticsKey: _store.read(_hapticsKey),
+      _amountFormatKey: _store.read(_amountFormatKey),
+      _moneyUnitStyleKey: _store.read(_moneyUnitStyleKey),
+      _hideSingleCurrencyUnitKey: _store.read(_hideSingleCurrencyUnitKey),
+      _fabActionKey: _store.read(_fabActionKey),
+      _defaultAccountKey: _store.read(_defaultAccountKey),
+      _autoSuggestKey: _store.read(_autoSuggestKey),
+      _runningBalanceKey: _store.read(_runningBalanceKey),
+    };
     try {
       await _store.writeAndFlush(_themeKey, themePreference.name);
       await _store.writeAndFlush(_localeKey, localePreference.name);
+      await _store.writeAndFlush(_fontScaleKey, nextFontScale.name);
       await _store.writeAndFlush(_hapticsKey, hapticsEnabled.toString());
       await _store.writeAndFlush(
         _amountFormatKey,
@@ -1299,12 +1449,24 @@ mixin _ControllerOps on ChangeNotifier, _ControllerState {
         showRunningBalance.toString(),
       );
     } catch (error, stackTrace) {
+      for (final entry in previous.entries) {
+        try {
+          if (entry.value == null) {
+            await _store.deleteAndFlush(entry.key);
+          } else {
+            await _store.writeAndFlush(entry.key, entry.value!);
+          }
+        } catch (_) {
+          // 原错误会统一上报；回滚尽力完成，避免为同一次保存重复提示。
+        }
+      }
       _handlePersistError(error, stackTrace);
       return false;
     }
 
     _themePreference = themePreference;
     _localePreference = localePreference;
+    _fontScale = nextFontScale;
     _hapticsEnabled = hapticsEnabled;
     _amountForceTwoDecimals = amountForceTwoDecimals;
     amount_format.amountForceTwoDecimals = amountForceTwoDecimals;
@@ -1318,6 +1480,7 @@ mixin _ControllerOps on ChangeNotifier, _ControllerState {
     _showRunningBalance = showRunningBalance;
     themePreferenceListenable.value = themePreference;
     localePreferenceListenable.value = localePreference;
+    fontScaleListenable.value = nextFontScale;
     notifyListeners();
     return true;
   }
@@ -2816,6 +2979,8 @@ mixin _ControllerOps on ChangeNotifier, _ControllerState {
     _persistDefaultAccounts();
     _budgetCycleStartDays.remove(bookId);
     _persistBudgetCycleStartDays();
+    _budgetPeriodKinds.remove(bookId);
+    _persistBudgetPeriodKinds();
     if (_activeBookId == bookId) {
       _activeBookId = defaultLedgerBookId;
       _store.write(_activeBookKey, _activeBookId);
@@ -3924,6 +4089,7 @@ mixin _ControllerOps on ChangeNotifier, _ControllerState {
     // 偏好类 KV 键清空；账目类数据在下方以默认状态写回 SQLite。
     for (final key in <String>[
       _themeKey,
+      _fontScaleKey,
       _profileKey,
       _activeBookKey,
       _assetCoverKey,
@@ -3962,6 +4128,7 @@ mixin _ControllerOps on ChangeNotifier, _ControllerState {
     _dailyBudgets.clear();
     _profile = _seedProfile;
     _themePreference = ThemePreference.system;
+    _fontScale = AppFontScale.standard;
     _activeBookId = defaultLedgerBookId;
     _assetCoverUrl = '';
     _hapticsEnabled = true;
@@ -3975,12 +4142,15 @@ mixin _ControllerOps on ChangeNotifier, _ControllerState {
     // 预算周期起始日随预算一起回到默认（自然月）。
     _budgetCycleStartDays.clear();
     _persistBudgetCycleStartDays();
+    _budgetPeriodKinds.clear();
+    _persistBudgetPeriodKinds();
     for (final page in PanelPageKind.values) {
       _pagePanels[page] = _defaultPanelSettings(page.specs);
     }
     // 把重置后的默认状态写回 SQLite（单事务原子替换全部表）。
     _persistAllLedgerData();
     themePreferenceListenable.value = _themePreference;
+    fontScaleListenable.value = _fontScale;
     notifyListeners();
   }
 
@@ -4004,6 +4174,9 @@ mixin _ControllerOps on ChangeNotifier, _ControllerState {
         'categoryBudgets': Map<String, double>.from(_categoryBudgets),
         'dailyBudgets': Map<String, double>.from(_dailyBudgets),
         'budgetCycleStartDays': Map<String, int>.from(_budgetCycleStartDays),
+        'budgetPeriodKinds': _budgetPeriodKinds.map(
+          (key, value) => MapEntry(key, value.name),
+        ),
         'profile': _profile.toJson(),
         'themePreference': _themePreference.name,
         'assetCoverUrl': _assetCoverUrl,
@@ -4148,6 +4321,15 @@ mixin _ControllerOps on ChangeNotifier, _ControllerState {
               (entry.value as num).toInt(),
             ),
     };
+    final rawBudgetPeriods = data['budgetPeriodKinds'];
+    final nextBudgetPeriodKinds = <String, BudgetPeriodKind>{
+      if (rawBudgetPeriods is Map)
+        for (final entry in rawBudgetPeriods.entries)
+          if (nextLedgerBooks.any((book) => book.id == entry.key.toString()) &&
+              BudgetPeriodKind.fromStorage(entry.value?.toString()) ==
+                  BudgetPeriodKind.year)
+            entry.key.toString(): BudgetPeriodKind.year,
+    };
 
     final profileValue = data['profile'];
     final nextProfile = profileValue is Map
@@ -4285,6 +4467,9 @@ mixin _ControllerOps on ChangeNotifier, _ControllerState {
     _budgetCycleStartDays
       ..clear()
       ..addAll(nextBudgetCycleStartDays);
+    _budgetPeriodKinds
+      ..clear()
+      ..addAll(nextBudgetPeriodKinds);
     _profile = nextProfile;
     _themePreference = nextThemePreference;
     _assetCoverUrl = nextAssetCoverUrl;
@@ -4338,6 +4523,7 @@ mixin _ControllerOps on ChangeNotifier, _ControllerState {
     }
     _persistDefaultAccounts();
     _persistBudgetCycleStartDays();
+    _persistBudgetPeriodKinds();
     _store.write(_fabActionKey, _fabActionMode.name);
     _store.write(_amountFormatKey, _amountForceTwoDecimals.toString());
     _store.write(_moneyUnitStyleKey, _moneyUnitStyle.name);

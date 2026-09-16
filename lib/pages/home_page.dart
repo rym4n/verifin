@@ -467,16 +467,16 @@ class HomeTrendPanel extends StatelessWidget {
                       const SizedBox(height: 2),
                       Text(
                         formatHomeMetric(config.big, bigValue),
+                        key: const Key('home_primary_metric_value'),
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
-                        style:
-                            (veriUnifiedDesignPreview
-                                    ? Theme.of(context).textTheme.displayMedium
-                                    : Theme.of(context).textTheme.displaySmall)
-                                ?.copyWith(
-                                  color: bigColor,
-                                  fontWeight: FontWeight.w800,
-                                ),
+                        style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                          color: bigColor,
+                          fontSize: config.big == HomeMetric.monthExpense
+                              ? 14
+                              : (veriUnifiedDesignPreview ? 32 : 26),
+                          fontWeight: FontWeight.w800,
+                        ),
                       ),
                     ],
                   ),

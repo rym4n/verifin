@@ -1,6 +1,6 @@
 {
   "@@locale": "zh",
-  "appTitle": "Veri Fin",
+  "appTitle": "不白记",
   "statRangeLabel": "统计区间",
   "@appTitle": {
     "description": "应用名称"
@@ -156,6 +156,12 @@
   "themeSystem": "跟随系统",
   "themeLight": "浅色",
   "themeDark": "深色",
+  "fontScaleLabel": "字体大小",
+  "fontScalePickerTitle": "选择字体大小",
+  "fontScaleSmall": "小",
+  "fontScaleStandard": "标准",
+  "fontScaleLarge": "大",
+  "fontScaleExtraLarge": "特大",
   "accountTypeOnlinePayment": "网络支付",
   "accountTypeCreditAccount": "信用账户",
   "accountTypeCreditCard": "信用卡",
@@ -928,6 +934,21 @@
   "changeCategoryShort": "改分类",
   "changeAccountShort": "改账户",
   "budgetSettingsTitle": "预算设置",
+  "budgetPeriodLabel": "预算设置方式",
+  "budgetPeriodMonth": "按月",
+  "budgetPeriodYear": "按年",
+  "annualBudgetTitle": "年度总预算",
+  "setAnnualBudgetTitle": "设置年度总预算",
+  "annualCategoryBudgetTitle": "年度分类预算",
+  "annualCategoryBudgetDesc": "设置当前自然年的分类总额，月度执行额度按十二个月平均分摊",
+  "setAnnualCategoryBudgetTitle": "设置“{category}”年度预算",
+  "@setAnnualCategoryBudgetTitle": {
+    "placeholders": {
+      "category": {
+        "type": "String"
+      }
+    }
+  },
   "yearMonth": "{month}",
   "@yearMonth": {
     "description": "年月标签(如 2026年7月)",
@@ -1188,6 +1209,15 @@
       }
     }
   },
+  "lastYearNone": "上年无支出",
+  "lastYearAmount": "上年 {amount}",
+  "@lastYearAmount": {
+    "placeholders": {
+      "amount": {
+        "type": "String"
+      }
+    }
+  },
   "setLabel": "设置",
   "monthEnded": "月份已结束",
   "remainingDaysInclToday": "含今天还剩 {days} 天",
@@ -1407,7 +1437,7 @@
   "skipLabel": "跳过",
   "startBookkeeping": "开始记账",
   "nextStep": "下一步",
-  "onboardWelcomeTitle": "欢迎使用 Veri Fin",
+  "onboardWelcomeTitle": "欢迎使用不白记",
   "onboardWelcomeDesc": "一款完全免费、数据自主、本地优先的记账应用。\n\n你的账目只保存在本机，不上传服务器；可随时导出 JSON 备份或加密上传到自己的 WebDAV。\n\n下面用几步帮你快速开始。",
   "onboardAccountTitle": "创建第一个账户",
   "onboardAccountDesc": "账户是记账的基础，比如「现金」「工资卡」。填写名称与当前余额即可，也可以稍后在「资产」页添加。",
@@ -1635,7 +1665,7 @@
   "personalInfo": "个人信息",
   "nicknameLabel": "昵称",
   "nicknameEmptyTitle": "未设置昵称",
-  "nicknameEmptyMessage": "未设置昵称，将使用默认昵称「Veri Fin」。是否继续保存？",
+  "nicknameEmptyMessage": "未设置昵称，将使用默认昵称「不白记」。是否继续保存？",
   "bioLabel": "简介",
   "genderLabel": "性别",
   "birthdayLabel": "生日",
@@ -2314,7 +2344,7 @@
       }
     }
   },
-  "bioUnlockReason": "验证生物识别以解锁 Veri Fin",
+  "bioUnlockReason": "验证生物识别以解锁不白记",
   "verifyFailedRetry": "验证失败，请重试",
   "enterPassword": "输入密码",
   "drawPatternUnlock": "请绘制图案解锁",
@@ -2365,7 +2395,7 @@
   "widgetPinRequested": "已发起添加，请在系统弹窗中确认",
   "widgetPinUnsupported": "当前桌面不支持一键添加，请按下方说明手动添加",
   "widgetHowToAddTitle": "如何手动添加",
-  "widgetHowToAddDesc": "长按桌面空白处 → 选择「小组件」→ 找到 Veri Fin → 拖动想要的小组件到桌面。",
+  "widgetHowToAddDesc": "长按桌面空白处 → 选择「小组件」→ 找到不白记 → 拖动想要的小组件到桌面。",
   "widgetQuickEntryName": "今日支出 + 记一笔",
   "widgetQuickEntryDesc": "查看今日支出，点按快速记一笔",
   "widgetBudgetName": "本月可用预算",

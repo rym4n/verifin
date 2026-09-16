@@ -20,6 +20,7 @@ void main() {
     await tester.pumpAndSettle();
     for (final item in {
       '主题模式': 'settingsSectionAppearance',
+      '字体大小': 'settingsSectionAppearance',
       '金额保留两位小数': 'settingsSectionAmountDisplay',
       '触感反馈': 'settingsSectionGeneral',
     }.entries) {
@@ -371,8 +372,8 @@ void main() {
     expect(find.text('触感反馈'), findsOneWidget);
     expect(find.text('同步方式'), findsNothing);
     expect(find.text('Android 打包'), findsNothing);
-    await tester.scrollUntilVisible(find.text('VeriFin $appVersionLabel'), 120);
-    expect(find.text('VeriFin $appVersionLabel'), findsOneWidget);
+    await tester.scrollUntilVisible(find.text('不白记 $appVersionLabel'), 120);
+    expect(find.text('不白记 $appVersionLabel'), findsOneWidget);
 
     await tester.scrollUntilVisible(find.text('主题模式'), -180);
     await tester.pumpAndSettle();

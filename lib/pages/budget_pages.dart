@@ -276,7 +276,11 @@ class _BudgetOverviewPageState extends State<BudgetOverviewPage> {
                                 isOverride: controller.monthlyBudgetIsOverride(
                                   _month,
                                 ),
-                                defaultBudget: controller.defaultMonthlyBudget,
+                                defaultBudget:
+                                    controller.budgetPeriodKind ==
+                                        BudgetPeriodKind.year
+                                    ? controller.annualBudget(_month) / 12
+                                    : controller.defaultMonthlyBudget,
                                 customPeriod: cyclic,
                                 onTap: () => _openOverride(_month),
                               ),

@@ -5,7 +5,7 @@ const List<AccountGroup> defaultAccountGroups = <AccountGroup>[];
 const List<Account> defaultAccounts = <Account>[];
 
 const UserProfile defaultUserProfile = UserProfile(
-  nickname: 'Veri Fin',
+  nickname: '不白记',
   bio: '完全免费 · 数据自主',
   avatarDataUrl: '',
 );
@@ -13,7 +13,7 @@ const UserProfile defaultUserProfile = UserProfile(
 /// 按语言取默认个人资料（首启动/初始化播种用；中文为兼容基准）。
 UserProfile defaultUserProfileFor({required bool english}) => english
     ? const UserProfile(
-        nickname: 'Veri Fin',
+        nickname: '不白记',
         bio: 'Completely free · Own your data',
         avatarDataUrl: '',
       )

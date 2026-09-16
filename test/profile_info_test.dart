@@ -147,6 +147,39 @@ void main() {
     // 确认框里点「保存」→ 用默认昵称落库。
     await tester.tap(find.widgetWithText(FilledButton, '保存'));
     await tester.pumpAndSettle();
-    expect(controller.profile.nickname, 'Veri Fin');
+    expect(controller.profile.nickname, '不白记');
+  });
+
+  testWidgets('空昵称头像不显示旧版 VF 品牌缩写', (tester) async {
+    await tester.pumpWidget(
+      zhMaterialApp(
+        home: ProfileAvatar(
+          profile: const UserProfile(nickname: '', bio: '', avatarDataUrl: ''),
+          radius: 24,
+        ),
+      ),
+    );
+    expect(find.text('VF'), findsNothing);
+    expect(find.text('不'), findsOneWidget);
+  });
+
+  test('升级时仅迁移旧默认昵称，不覆盖自定义昵称', () async {
+    final legacyStore = LocalKeyValueStore();
+    legacyStore.write(
+      'verifin.profile.v1',
+      '{"nickname":"Veri Fin","bio":"完全免费 · 数据自主","avatarDataUrl":""}',
+    );
+    final migrated = await makeController(legacyStore);
+    addTearDown(migrated.dispose);
+    expect(migrated.profile.nickname, '不白记');
+
+    final customStore = LocalKeyValueStore();
+    customStore.write(
+      'verifin.profile.v1',
+      '{"nickname":"我的昵称","bio":"","avatarDataUrl":""}',
+    );
+    final custom = await makeController(customStore);
+    addTearDown(custom.dispose);
+    expect(custom.profile.nickname, '我的昵称');
   });
 }

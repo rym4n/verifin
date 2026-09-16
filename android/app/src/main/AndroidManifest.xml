@@ -22,7 +22,7 @@
         android:maxSdkVersion="28" />
 
     <application
-        android:label="VeriFin"
+        android:label="不白记"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher"
         android:allowBackup="false"
@@ -58,7 +58,7 @@
             android:exported="true"
             android:excludeFromRecents="true"
             android:theme="@android:style/Theme.Translucent.NoTitleBar"
-            android:label="VeriFin">
+            android:label="不白记">
             <intent-filter>
                 <action android:name="android.intent.action.SEND" />
                 <category android:name="android.intent.category.DEFAULT" />

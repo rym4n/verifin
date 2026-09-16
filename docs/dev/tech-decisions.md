@@ -9,6 +9,7 @@ Veri Fin 关键技术选型与理由。变更相关实现时同步更新本表�
 | 分类参照完整性 | 三道防线消除「幽灵同名分类」：① 显示层——`rootIdOf`/`ancestorIds` 遇孤儿/悬空 id 截断不冒名，`categoryByIdFrom` 未知 id 返回「已删除分类」占位（不再回退列表首个分类），分类排行下钻按聚合原始 key（`ReportCategoryStat.categoryId`）而非可能被占位的 `category.id`；② 载入/导入时 `_healCategoryData` 自愈——孤儿 parentId 重挂顶级、重复分类（同 label+type+parentId）合并且引用迁移、悬空交易/规则引用与**空分类的收/支交易**（历史导入把缺失分类落成空串，issue #16）归入固定 id 的「未分类」、空分类的转账补齐到「转账」分类（issue #14）（幂等，收敛循环）；③ DB `categories` 加 `(label,type,IFNULL(parent_id,''))` 唯一索引（v9→v10 迁移先按同键去重再建索引），创建路径（`addCategory`、导入 `resolveCategory`）按 `normalizedCategoryLabel`（trim+小写+全半角）查重复用，导入侧 `plan_builder` 对缺失分类兜底到固定 id 的「未分类」（与自愈同一约定，不再产出空 `categoryId`） | 本 App 无同步，重复/悬空分类只可能来自 `importDataJson` 覆盖内部不一致的外部/异构备份（零参照校验）。显示层单独修即止血；自愈清存量；唯一约束+归一化查重堵源头。唯一索引用表达式 `IFNULL(parent_id,'')` 让顶级分类（parent_id NULL）也参与去重（NULL 在唯一索引中互不相等）；迁移必须「先去重再建索引」否则建索引即失败 |
 | i18n 方案 | Flutter 内置 gen-l10n（ARB，zh 为模板语言） | 官方方案零额外依赖；`generate: true` 由 pub get 自动生成 |
 | 语言偏好 | `LocalePreference`（跟随系统/zh/en）存 KV `verifin.locale.v1`，设备本地、不进备份、初始化保留；`MaterialApp.locale` 经 `ValueNotifier` 即时切换 | 语言是设备偏好而非账目数据；null locale 交系统解析、非中文回落英文 |
+| 字体大小偏好 | `AppFontScale` 四档（0.9/1.0/1.1/1.2）存 KV `verifin.font_scale.v1`，设备本地、不进备份；独立 `ValueNotifier` 驱动根 `MediaQuery`，应用倍率与系统 `TextScaler` 相乘 | 字体大小是设备阅读偏好，换机不应覆盖；乘法组合保留 Android 无障碍字体设置，独立通知避免为显示缩放扩大全树 Controller 重建 |
 | 无 context 文案 | 小组件/通知/生物弹窗经 `l10nForPreference(LocalePreference)` 用 `lookupAppLocalizations` 解析，失败回落中文 | 这些场景拿不到 BuildContext；按偏好显式解析保持与应用语言一致 |
 | 种子数据语言 | 首启动/初始化按当时语言偏好播种（`systemIsEnglish` 由 main 传入）；播种后属用户数据不再切换 | 账本/分类名是数据不是 UI；随语言反复改名会破坏用户编辑 |
 | 备份格式 | 未加密备份为 **zip**（`backup.json` + `attachments/<id>` 图片文件），加密备份沿用文本信封 `.json`；导入按 zip 魔数自动识别，旧版纯 JSON/加密备份仍可导入 | 附件以 base64 内嵌 JSON 会让备份随附件急剧膨胀（放大 33% 且每次整份重写），zip 把图片剥离外置；加密走文本信封复用既有加密逻辑；魔数识别保证老备份永远可导入 |
@@ -32,6 +33,7 @@ Veri Fin 关键技术选型与理由。变更相关实现时同步更新本表�
 | WebDAV 客户端 | `dart:io HttpClient` 手写 PUT/GET/PROPFIND/MKCOL + Basic Auth，PROPFIND XML 用正则按局部名解析 | 不引入 WebDAV/HTTP 第三方依赖；命名空间前缀不固定用局部名匹配 |
 | 多级分类结构 | 邻接表：`Category.parentId`（可空，顶级为 null），非物化路径/嵌套集；同级顺序沿用列表位置（`sort_order`）；子分类类型强制继承父分类 | 记账分类量级小、层级浅，邻接表最简单；改动只加一列一次迁移；树运算集中在 `category_tree.dart` 纯函数（带环检测），便于测试 |
 | 预算周期起始日 | 每账本一个起始日（1–28，默认 1=自然月；KV `verifin.budget_cycle.v1` 进备份），纯函数 `budget_cycle.dart`：预算仍按「键月」`yyyy-MM`（起始日所在月）存取，`budgetCycleOfKeyMonth` 窗口决定该期聚合哪些交易；**只有预算体系**（预算页/预算面板/预算小组件）按周期取数，统计报表仍自然月；自定义时文案切「本期/上期」；小组件自愈锚点从「月份」换成「周期截止日」（ISO 日期字典序比较，旧月锚点过渡兜底） | 发薪日不是 1 号时按自然月做预算会跨两个发薪期（issue #19）。键月不变让 startDay=1 完全退化为现状、历史预算零迁移、改起始日只换口径不动数据；限 1–28 与信用卡账单日同惯例避开短月缺日；统计不跟随避免「本月」出现两套含义，也把改动面从全部报表收敛到预算体系 |
+| 年度预算口径 | `BudgetPeriodKind` 按账本存 KV `verifin.budget_period.v1` 并进备份，缺省 `month`；年度总额和分类总额以 `bookId:annual:year[:categoryId]` 哨兵键复用现有预算表。`year` 模式下键月额度为对应自然年总额 ÷ 12，显式 `bookId:yyyy-MM[:categoryId]` 单月覆盖优先；`month` 模式保持默认月预算行为 | 复用现有 TEXT 主键避免 schema 迁移，年度与旧月度数据天然隔离；模式切换不删除任何额度，单月覆盖优先保证临时调整跨口径仍可解释；年度不跨年默认可避免把上一年计划静默沿用到下一年 |
 | 分类层级聚合口径 | 看板分类统计（环形/明细）把每笔交易归总到其**顶级祖先**分类；分类预算的「已花」把子分类支出上滚到各级父分类 | 顶级归总符合用户对「大类占比」的预期；预算上滚让父分类预算能约束整棵子树，子分类仍可单独设预算 |
 | 账目落库写入策略 | `saveX` 走**串行化的行级差分**（`_incrementalReplace`）：交易/账本/账户/分组/分类/标签/周期规则/汇率各在内存保留「上次落库的行快照」（id→规范化行），Repository 把“读取快照→计算差分→事务写入→更新快照”整体排入单一写队列，只写变化行；单次失败只结束自己的 Future，后续任务继续。附件表（大 blob）与预算表（极小）仍整表覆盖；导入/恢复/重置及跨表删除走 `replaceAllLedgerData` 多表原子整替，删除命令落库成功后才替换 Controller 内存。`saveX` 对外语义不变（落库后表内容 == 传入列表） | sqflite 虽串行底层事务，但并发 save 会在事务前同时读取旧行快照：新增 A 后立即删除 A 时，第二次差分曾误判“空→空无需写”，最终让 A 重启后复活。串行化完整临界区修复该竞态；破坏性跨表命令用事务和延迟提交内存避免半套数据 |
 | 多币种批量改账户 | 只对“每笔都有现存来源账户与 `accountAmount`、且全部来源账户币种相同”的选择集提供同币种目标账户；跨币种、无账户、悬空账户或转账目标冲突必须逐笔编辑。Controller 再做一次完整校验，成功落库后才替换交易列表 | 批量操作没有每笔新账户实际扣款金额，跨币种时无法忠实推导 `accountAmount`；直接换 `accountId` 会把旧数字按新币种解释。禁止猜汇率比静默重算历史安全，同币种搬移则保持 `amount/accountAmount/baseAmount/fee` 全部语义不变 |
@@ -65,12 +67,12 @@ Veri Fin 关键技术选型与理由。变更相关实现时同步更新本表�
 
 桌面小组件设计属于用户可迁移数据：备份 JSON v3 的 `data.userWidgetDefinitions` 保存用户创建的模板、尺寸、指标、筛选、图表范围、交互及背景元数据；Android `appWidgetId` 仅为本机运行时绑定，不进入备份。v1/v2 备份缺少该字段时导入为空，设备上旧的 `widget_instances.v1` 配置由读取层惰性迁移为 `legacy_<appWidgetId>` 设计与绑定。
 
-**进备份**（随 JSON v3 `exportDataJson` 的 `data` 导出、可跨设备还原）：全部账目数据（账本及本位币确认状态、交易三层金额与转换来源、账户币种、账户分组名称/顺序（分组仅为文件夹，无自定义图标）、分类、标签、附件、周期规则及汇率策略、用户维护/明确选择保存的汇率表、月度·分类·按日预算）+ 个人资料 + 活动账本 + 主题、触感、资产封面、资产视图模式/排序、资产折叠历史兼容字段（普通浏览页已不再写入）、首页面板、看板面板 + **默认付款账户 `default_account`（`Map<bookId,accountId>`）、预算周期起始日 `budget_cycle`、FAB 行为 `fab_action`、金额小数风格 `amount_format`、货币单位样式 `money_unit_style`、单币种隐藏开关 `hide_single_currency_unit`、记账自动识别开关 `auto_suggest`、交易列表逐笔结余开关 `entry_running_balance`、首页概览卡配置 `home_metrics`**。v1/缺字段备份按 CNY 原值重解释并标为待确认，旧 `amountForceTwoDecimals` 映射到新显示风格；货币静态目录属于应用代码，不进备份。这些偏好与 theme/haptics 等使用同一套“备份内容覆盖本机状态”的语义。
+**进备份**（随 JSON v3 `exportDataJson` 的 `data` 导出、可跨设备还原）：全部账目数据（账本及本位币确认状态、交易三层金额与转换来源、账户币种、账户分组名称/顺序（分组仅为文件夹，无自定义图标）、分类、标签、附件、周期规则及汇率策略、用户维护/明确选择保存的汇率表、月度·年度总预算与分类预算、按日预算）+ 个人资料 + 活动账本 + 主题、触感、资产封面、资产视图模式/排序、资产折叠历史兼容字段（普通浏览页已不再写入）、首页面板、看板面板 + **默认付款账户 `default_account`（`Map<bookId,accountId>`）、预算周期起始日 `budget_cycle`、预算月／年口径 `budget_period`、FAB 行为 `fab_action`、金额小数风格 `amount_format`、货币单位样式 `money_unit_style`、单币种隐藏开关 `hide_single_currency_unit`、记账自动识别开关 `auto_suggest`、交易列表逐笔结余开关 `entry_running_balance`、首页概览卡配置 `home_metrics`**。v1/缺字段备份按 CNY 原值重解释并标为待确认，旧 `amountForceTwoDecimals` 映射到新显示风格；货币静态目录属于应用代码，不进备份。这些偏好与 theme/haptics 等使用同一套“备份内容覆盖本机状态”的语义。
 
 **设备本地、不进备份**（换机需重设）：
 - **机密凭证**（进明文备份是安全倒退，坚决不备）：应用锁哈希 `app_lock`、备份加密口令 `backup_passphrase`、WebDAV 账号密码 `webdav`、AI `apiKey`（含在 `ai`）。
 - **设备专属**：备份目录路径 `backup_settings`、隐私同意 `privacy_consent`、新手引导 `onboarding`、软件日志 `logs`、AI 聊天历史 `ai_chat`、AI 能力探测缓存 `ai_capabilities`（按 endpoint + model 缓存协议能力，换设备重探即可，没有还原价值）。
-- **设备偏好，维持本地**（语义随设备/换机重设）：语言 `locale`、记账提醒 `reminder`、AI 的 baseUrl/model（`ai`）。
+- **设备偏好，维持本地**（语义随设备/换机重设）：语言 `locale`、字体大小 `font_scale`、记账提醒 `reminder`、AI 的 baseUrl/model（`ai`）。
 
 
 ## 账户类型能力矩阵

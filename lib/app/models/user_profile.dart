@@ -80,7 +80,7 @@ class UserProfile {
 
   static UserProfile fromJson(Map<String, Object?> json) {
     return UserProfile(
-      nickname: json['nickname'] as String? ?? 'Veri Fin',
+      nickname: json['nickname'] as String? ?? '不白记',
       bio: json['bio'] as String? ?? '完全免费 · 数据自主',
       avatarDataUrl: json['avatarDataUrl'] as String? ?? '',
       gender: ProfileGender.fromStorage(json['gender'] as String?),

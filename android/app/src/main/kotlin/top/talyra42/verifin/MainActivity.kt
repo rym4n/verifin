@@ -573,7 +573,7 @@ class MainActivity : FlutterFragmentActivity() {
             result.success(
                 mapOf(
                     "status" to "error",
-                    "message" to "请先允许 VeriFin 安装未知应用，授权后再次点击立即安装。",
+                    "message" to "请先允许不白记安装未知应用，授权后再次点击立即安装。",
                     "currentVersion" to currentVersion,
                     "latestVersion" to "v$latestVersion",
                 ),
@@ -745,7 +745,7 @@ class MainActivity : FlutterFragmentActivity() {
             )
             return mapOf(
                 "status" to "error",
-                "message" to "请先允许 VeriFin 安装未知应用，授权后再次点击下载新版本。",
+                "message" to "请先允许不白记安装未知应用，授权后再次点击下载新版本。",
                 "currentVersion" to currentVersion,
                 "latestVersion" to latestTag,
             )
@@ -1085,7 +1085,7 @@ class MainActivity : FlutterFragmentActivity() {
         val packageInfo = packageManager.getPackageArchiveInfo(apkFile.absolutePath, 0)
             ?: throw IllegalStateException("下载的文件不是有效 APK。")
         if (packageInfo.packageName != packageName) {
-            throw IllegalStateException("下载的 APK 包名与 VeriFin 不一致。")
+            throw IllegalStateException("下载的 APK 包名与不白记不一致。")
         }
         val version = packageInfo.versionName?.removePrefix("v")
             ?.takeIf { it.isNotBlank() }

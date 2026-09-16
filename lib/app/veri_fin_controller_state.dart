@@ -89,6 +89,8 @@ mixin _ControllerState on ChangeNotifier {
   // 预算周期起始日：每个账本一个（键为 bookId，值 1–28），缺省 = 1（自然月）。
   // 只有非默认值才落键；进 JSON 备份（预算语义的一部分，恢复须还原）。
   final Map<String, int> _budgetCycleStartDays = <String, int>{};
+  final Map<String, BudgetPeriodKind> _budgetPeriodKinds =
+      <String, BudgetPeriodKind>{};
   final Set<String> _collapsedAssetSections = <String>{};
   final Map<String, List<String>> _assetAccountOrders =
       <String, List<String>>{};
@@ -102,6 +104,9 @@ mixin _ControllerState on ChangeNotifier {
 
   late final ValueNotifier<ThemePreference> themePreferenceListenable;
 
+  /// 字体偏好只驱动根 `MediaQuery`，避免用全树 Controller 通知表达显示缩放。
+  late final ValueNotifier<AppFontScale> fontScaleListenable;
+
   /// 语言偏好通知器：驱动 `MaterialApp.locale` 即时切换。
   late final ValueNotifier<LocalePreference> localePreferenceListenable;
 
@@ -109,6 +114,7 @@ mixin _ControllerState on ChangeNotifier {
   late final ValueNotifier<AiCapabilityProfile?> aiCapabilityListenable;
 
   ThemePreference _themePreference = ThemePreference.system;
+  AppFontScale _fontScale = AppFontScale.standard;
   LocalePreference _localePreference = LocalePreference.system;
   UserProfile _profile = defaultUserProfile;
   String _activeBookId = defaultLedgerBookId;
@@ -191,10 +197,46 @@ mixin _ControllerState on ChangeNotifier {
     _store.write(_budgetCycleKey, jsonEncode(_budgetCycleStartDays));
   }
 
+  void _loadBudgetPeriodKinds() {
+    final raw = _store.read(_budgetPeriodKindKey);
+    if (raw == null || raw.isEmpty) {
+      return;
+    }
+    try {
+      final decoded = jsonDecode(raw) as Map<dynamic, dynamic>;
+      _budgetPeriodKinds
+        ..clear()
+        ..addAll(
+          decoded.map(
+            (key, value) => MapEntry(
+              key.toString(),
+              BudgetPeriodKind.fromStorage(value?.toString()),
+            ),
+          )..removeWhere((_, kind) => kind == BudgetPeriodKind.month),
+        );
+    } catch (_) {
+      _store.delete(_budgetPeriodKindKey);
+    }
+  }
+
+  void _persistBudgetPeriodKinds() {
+    if (_budgetPeriodKinds.isEmpty) {
+      _store.delete(_budgetPeriodKindKey);
+      return;
+    }
+    _store.write(
+      _budgetPeriodKindKey,
+      jsonEncode(
+        _budgetPeriodKinds.map((key, value) => MapEntry(key, value.name)),
+      ),
+    );
+  }
+
   /// 删除账户时，清掉任何指向它的默认付款账户设置。
 
   void _loadPreferences() {
     _themePreference = ThemePreference.fromStorage(_store.read(_themeKey));
+    _fontScale = AppFontScale.fromStorage(_store.read(_fontScaleKey));
     _localePreference = LocalePreference.fromStorage(_store.read(_localeKey));
     _loadProfile();
     _activeBookId = _store.read(_activeBookKey) ?? defaultLedgerBookId;
@@ -217,6 +259,7 @@ mixin _ControllerState on ChangeNotifier {
     _fabActionMode = FabActionMode.fromStorage(_store.read(_fabActionKey));
     _loadDefaultAccounts();
     _loadBudgetCycleStartDays();
+    _loadBudgetPeriodKinds();
     _amountForceTwoDecimals = _store.read(_amountFormatKey) == 'true';
     amount_format.amountForceTwoDecimals = _amountForceTwoDecimals;
     _moneyUnitStyle = MoneyUnitStyle.fromStorage(
@@ -665,11 +708,17 @@ mixin _ControllerState on ChangeNotifier {
     }
 
     try {
-      _profile = UserProfile.fromJson(
+      final profile = UserProfile.fromJson(
         Map<String, Object?>.from(
           jsonDecode(rawProfile) as Map<dynamic, dynamic>,
         ),
       );
+      // Preserve user-entered nicknames while migrating the old seeded name.
+      final migrated = profile.nickname == 'Veri Fin';
+      _profile = migrated ? profile.copyWith(nickname: '不白记') : profile;
+      if (migrated) {
+        _store.write(_profileKey, jsonEncode(_profile.toJson()));
+      }
     } catch (_) {
       _store.delete(_profileKey);
       _profile = _seedProfile;

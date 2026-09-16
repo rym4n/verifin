@@ -9,7 +9,7 @@ class AppLocalizationsEn extends AppLocalizations {
   AppLocalizationsEn([String locale = 'en']) : super(locale);
 
   @override
-  String get appTitle => 'Veri Fin';
+  String get appTitle => '不白记';
 
   @override
   String get statRangeLabel => 'Range';
@@ -203,6 +203,24 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get themeDark => 'Dark';
+
+  @override
+  String get fontScaleLabel => 'Text size';
+
+  @override
+  String get fontScalePickerTitle => 'Choose text size';
+
+  @override
+  String get fontScaleSmall => 'Small';
+
+  @override
+  String get fontScaleStandard => 'Standard';
+
+  @override
+  String get fontScaleLarge => 'Large';
+
+  @override
+  String get fontScaleExtraLarge => 'Extra large';
 
   @override
   String get accountTypeOnlinePayment => 'Online payment';
@@ -1578,6 +1596,33 @@ class AppLocalizationsEn extends AppLocalizations {
   String get budgetSettingsTitle => 'Budget settings';
 
   @override
+  String get budgetPeriodLabel => 'Budget frequency';
+
+  @override
+  String get budgetPeriodMonth => 'Monthly';
+
+  @override
+  String get budgetPeriodYear => 'Yearly';
+
+  @override
+  String get annualBudgetTitle => 'Annual budget';
+
+  @override
+  String get setAnnualBudgetTitle => 'Set annual budget';
+
+  @override
+  String get annualCategoryBudgetTitle => 'Annual category budgets';
+
+  @override
+  String get annualCategoryBudgetDesc =>
+      'Set category totals for the current calendar year; monthly limits are one twelfth of each total';
+
+  @override
+  String setAnnualCategoryBudgetTitle(String category) {
+    return 'Set annual budget for $category';
+  }
+
+  @override
   String yearMonth(DateTime month) {
     final intl.DateFormat monthDateFormat = intl.DateFormat(
       'MMM y',
@@ -1830,6 +1875,14 @@ class AppLocalizationsEn extends AppLocalizations {
   @override
   String lastMonthAmount(String amount) {
     return 'Last month $amount';
+  }
+
+  @override
+  String get lastYearNone => 'No spending last year';
+
+  @override
+  String lastYearAmount(String amount) {
+    return 'Last year $amount';
   }
 
   @override
@@ -2136,7 +2189,7 @@ class AppLocalizationsEn extends AppLocalizations {
   String get nextStep => 'Next';
 
   @override
-  String get onboardWelcomeTitle => 'Welcome to Veri Fin';
+  String get onboardWelcomeTitle => 'Welcome to 不白记';
 
   @override
   String get onboardWelcomeDesc =>
@@ -2440,7 +2493,7 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get nicknameEmptyMessage =>
-      'You haven\'t set a nickname. The default \"Veri Fin\" will be used. Save anyway?';
+      'You haven\'t set a nickname. The default \"不白记\" will be used. Save anyway?';
 
   @override
   String get bioLabel => 'Bio';
@@ -2651,7 +2704,7 @@ class AppLocalizationsEn extends AppLocalizations {
   String get platformCsvTemplate => 'CSV template';
 
   @override
-  String get platformCsvTemplateHint => 'Veri Fin CSV template';
+  String get platformCsvTemplateHint => '不白记 CSV template';
 
   @override
   String get importGroupSoftware => 'Apps / payment platforms';
@@ -3691,7 +3744,7 @@ class AppLocalizationsEn extends AppLocalizations {
   }
 
   @override
-  String get bioUnlockReason => 'Verify biometrics to unlock Veri Fin';
+  String get bioUnlockReason => 'Verify biometrics to unlock 不白记';
 
   @override
   String get verifyFailedRetry => 'Verification failed; try again';
@@ -3852,7 +3905,7 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get widgetHowToAddDesc =>
-      'Long-press an empty spot on your home screen → choose Widgets → find Veri Fin → drag the widget you want onto the screen.';
+      'Long-press an empty spot on your home screen → choose Widgets → find 不白记 → drag the widget you want onto the screen.';
 
   @override
   String get widgetQuickEntryName => 'Today\'s spending + quick entry';

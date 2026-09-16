@@ -30,6 +30,8 @@ class _SettingsPageState extends State<SettingsPage> {
   final EditorExitController _exitController = EditorExitController();
   late ThemePreference _initialTheme;
   late ThemePreference _theme;
+  late AppFontScale _initialFontScale;
+  late AppFontScale _fontScale;
   late LocalePreference _initialLocale;
   late LocalePreference _locale;
   late bool _initialHaptics;
@@ -58,6 +60,7 @@ class _SettingsPageState extends State<SettingsPage> {
     }
     final controller = VeriFinScope.of(context);
     _initialTheme = _theme = controller.themePreference;
+    _initialFontScale = _fontScale = controller.fontScale;
     _initialLocale = _locale = controller.localePreference;
     _initialHaptics = _haptics = controller.hapticsEnabled;
     _initialTwoDecimals = _twoDecimals = controller.amountForceTwoDecimals;
@@ -122,6 +125,36 @@ class _SettingsPageState extends State<SettingsPage> {
                           icon: Icons.dark_mode_outlined,
                           title: AppLocalizations.of(context).themeMode,
                           trailing: _theme.label(AppLocalizations.of(context)),
+                          trailingIcon: Icons.chevron_right,
+                          onTap: openMenu,
+                        ),
+                      ),
+                      const Divider(height: 1),
+                      VeriAnchoredChoice<AppFontScale>(
+                        values: AppFontScale.values,
+                        selected: _fontScale,
+                        idOf: (value) => 'settings_font_scale_${value.name}',
+                        labelOf: (value) =>
+                            value.label(AppLocalizations.of(context)),
+                        iconOf: (value) => switch (value) {
+                          AppFontScale.small => Icons.text_decrease,
+                          AppFontScale.standard => Icons.text_fields,
+                          AppFontScale.large => Icons.text_increase,
+                          AppFontScale.extraLarge => Icons.format_size,
+                        },
+                        onSelected: (value) =>
+                            setState(() => _fontScale = value),
+                        semanticLabel: AppLocalizations.of(
+                          context,
+                        ).fontScalePickerTitle,
+                        width: 208,
+                        builder: (context, openMenu, menuOpen) => SettingsRow(
+                          key: const Key('settings_font_scale'),
+                          icon: Icons.format_size,
+                          title: AppLocalizations.of(context).fontScaleLabel,
+                          trailing: _fontScale.label(
+                            AppLocalizations.of(context),
+                          ),
                           trailingIcon: Icons.chevron_right,
                           onTap: openMenu,
                         ),
@@ -414,7 +447,7 @@ class _SettingsPageState extends State<SettingsPage> {
                 ),
                 const SizedBox(height: 14),
                 Text(
-                  'VeriFin $appVersionLabel',
+                  '${AppLocalizations.of(context).appTitle} $appVersionLabel',
                   textAlign: TextAlign.center,
                   style: Theme.of(context).textTheme.labelSmall?.copyWith(
                     color: Theme.of(
@@ -500,6 +533,7 @@ class _SettingsPageState extends State<SettingsPage> {
 
   bool get _isDirty =>
       _theme != _initialTheme ||
+      _fontScale != _initialFontScale ||
       _locale != _initialLocale ||
       _haptics != _initialHaptics ||
       _twoDecimals != _initialTwoDecimals ||
@@ -514,6 +548,7 @@ class _SettingsPageState extends State<SettingsPage> {
     if (await _save() && mounted) {
       setState(() {
         _initialTheme = _theme;
+        _initialFontScale = _fontScale;
         _initialLocale = _locale;
         _initialHaptics = _haptics;
         _initialTwoDecimals = _twoDecimals;
@@ -532,6 +567,7 @@ class _SettingsPageState extends State<SettingsPage> {
     return VeriFinScope.of(context).saveAppPreferencesDraft(
       themePreference: _theme,
       localePreference: _locale,
+      fontScale: _fontScale,
       hapticsEnabled: _haptics,
       amountForceTwoDecimals: _twoDecimals,
       moneyUnitStyle: _moneyUnitStyle,

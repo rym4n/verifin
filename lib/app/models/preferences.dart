@@ -40,6 +40,61 @@ enum ThemePreference {
   }
 }
 
+/// 应用内字体大小。该偏好只保存在当前设备，不进入账本备份；实际渲染时与系统
+/// 无障碍文字缩放相乘，不能取代系统设置。
+enum AppFontScale {
+  small(0.9),
+  standard(1),
+  large(1.1),
+  extraLarge(1.2);
+
+  const AppFontScale(this.scaleFactor);
+
+  final double scaleFactor;
+
+  String label(AppLocalizations l10n) {
+    switch (this) {
+      case AppFontScale.small:
+        return l10n.fontScaleSmall;
+      case AppFontScale.standard:
+        return l10n.fontScaleStandard;
+      case AppFontScale.large:
+        return l10n.fontScaleLarge;
+      case AppFontScale.extraLarge:
+        return l10n.fontScaleExtraLarge;
+    }
+  }
+
+  static AppFontScale fromStorage(String? value) {
+    return AppFontScale.values.firstWhere(
+      (scale) => scale.name == value,
+      orElse: () => AppFontScale.standard,
+    );
+  }
+}
+
+/// 预算设置口径。按账本保存并进入备份；月度是旧数据的默认口径。
+enum BudgetPeriodKind {
+  month,
+  year;
+
+  String label(AppLocalizations l10n) {
+    switch (this) {
+      case BudgetPeriodKind.month:
+        return l10n.budgetPeriodMonth;
+      case BudgetPeriodKind.year:
+        return l10n.budgetPeriodYear;
+    }
+  }
+
+  static BudgetPeriodKind fromStorage(String? value) {
+    return BudgetPeriodKind.values.firstWhere(
+      (kind) => kind.name == value,
+      orElse: () => BudgetPeriodKind.month,
+    );
+  }
+}
+
 /// 应用语言偏好：跟随系统或固定某一语言。设备本地偏好（存 KV），
 /// 不进 JSON 备份，初始化数据时保留。
 enum LocalePreference {

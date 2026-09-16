@@ -16,14 +16,20 @@ class _BudgetSettingsPageState extends State<BudgetSettingsPage> {
   final Set<String> _collapsedCategories = <String>{};
   bool _collapseInitialized = false;
   bool _draftInitialized = false;
+  late BudgetPeriodKind _initialPeriodKind;
+  late BudgetPeriodKind _draftPeriodKind;
   late double _initialDefaultBudget;
   late double _draftDefaultBudget;
+  late double _initialAnnualBudget;
+  late double _draftAnnualBudget;
   late double _initialDailyBudget;
   late double _draftDailyBudget;
   late int _initialStartDay;
   late int _draftStartDay;
   final Map<String, double> _initialCategoryBudgets = <String, double>{};
   final Map<String, double> _draftCategoryBudgets = <String, double>{};
+  final Map<String, double> _initialAnnualCategoryBudgets = <String, double>{};
+  final Map<String, double> _draftAnnualCategoryBudgets = <String, double>{};
 
   void _initCollapse(VeriFinController controller) {
     if (_collapseInitialized) {
@@ -42,14 +48,24 @@ class _BudgetSettingsPageState extends State<BudgetSettingsPage> {
       return;
     }
     _draftInitialized = true;
+    _initialPeriodKind = _draftPeriodKind = controller.budgetPeriodKind;
     _initialDefaultBudget = _draftDefaultBudget =
         controller.defaultMonthlyBudget;
+    _initialAnnualBudget = _draftAnnualBudget = controller.annualBudget(
+      DateTime.now(),
+    );
     _initialDailyBudget = _draftDailyBudget = controller.dailyBudget();
     _initialStartDay = _draftStartDay = controller.budgetCycleStartDay;
     for (final category in controller.categoriesForType(EntryType.expense)) {
       final amount = controller.defaultCategoryBudget(category.id);
       _initialCategoryBudgets[category.id] = amount;
       _draftCategoryBudgets[category.id] = amount;
+      final annualAmount = controller.annualCategoryBudget(
+        DateTime.now(),
+        category.id,
+      );
+      _initialAnnualCategoryBudgets[category.id] = annualAmount;
+      _draftAnnualCategoryBudgets[category.id] = annualAmount;
     }
   }
 
@@ -60,31 +76,52 @@ class _BudgetSettingsPageState extends State<BudgetSettingsPage> {
     _initCollapse(controller);
     _initDraft(controller);
 
-    // 分类默认预算树展示「当前周期实际花销 vs 默认预算」，spent 只作参考。
+    // 分类预算树的预算与支出口径必须一致：月度模式看当前/上一预算期，年度模式
+    // 看当前/上一自然年，避免用单月支出去计算年度预算的剩余和使用率。
     final now = DateTime.now();
     final keyMonth = budgetCycleKeyMonthFor(now, _draftStartDay);
-    final periodEntries = entriesInWindow(
+    final annual = _draftPeriodKind == BudgetPeriodKind.year;
+    final periodWindow = annual
+        ? DateWindow(start: DateTime(now.year), end: DateTime(now.year, 12, 31))
+        : budgetCycleOfKeyMonth(keyMonth, _draftStartDay);
+    final previousWindow = annual
+        ? DateWindow(
+            start: DateTime(now.year - 1),
+            end: DateTime(now.year - 1, 12, 31),
+          )
+        : budgetCycleOfKeyMonth(
+            DateTime(keyMonth.year, keyMonth.month - 1),
+            _draftStartDay,
+          );
+    final periodEntries = entriesInWindow(controller.entries, periodWindow);
+    final previousPeriodEntries = entriesInWindow(
       controller.entries,
-      budgetCycleOfKeyMonth(keyMonth, _draftStartDay),
+      previousWindow,
     );
     final persistedCategorySnapshots = computeCategoryBudgetSnapshots(
       controller: controller,
       month: keyMonth,
       monthEntries: periodEntries,
+      previousMonthEntries: previousPeriodEntries,
       useDefaultBudget: true,
     );
+    final displayedCategoryBudgets = _draftPeriodKind == BudgetPeriodKind.year
+        ? _draftAnnualCategoryBudgets
+        : _draftCategoryBudgets;
     final categorySnapshots = persistedCategorySnapshots
         .map(
           (snapshot) => CategoryBudgetSnapshot(
             category: snapshot.category,
             spent: snapshot.spent,
-            budget: _draftCategoryBudgets[snapshot.category.id] ?? 0,
+            budget: displayedCategoryBudgets[snapshot.category.id] ?? 0,
             previousSpent: snapshot.previousSpent,
           ),
         )
         .toList();
 
-    final defaultBudget = _draftDefaultBudget;
+    final defaultBudget = _draftPeriodKind == BudgetPeriodKind.year
+        ? _draftAnnualBudget
+        : _draftDefaultBudget;
     final dailyBudget = _draftDailyBudget;
     final startDay = _draftStartDay;
 
@@ -111,18 +148,31 @@ class _BudgetSettingsPageState extends State<BudgetSettingsPage> {
                   ],
                 ),
                 const SizedBox(height: 10),
+                VeriSegmentedControl<BudgetPeriodKind>(
+                  values: BudgetPeriodKind.values,
+                  selected: _draftPeriodKind,
+                  labelOf: (kind) => kind.label(l10n),
+                  semanticLabel: l10n.budgetPeriodLabel,
+                  keyOf: (kind) => Key('budget_period_${kind.name}'),
+                  onChanged: (kind) => setState(() => _draftPeriodKind = kind),
+                ),
+                const SizedBox(height: 12),
                 _sectionLabel(context, l10n.budgetSettingsSectionOverall),
                 VeriCard(
                   child: Column(
                     children: <Widget>[
                       SettingsRow(
                         icon: Icons.flag_outlined,
-                        title: l10n.defaultMonthlyBudgetTitle,
+                        title: _draftPeriodKind == BudgetPeriodKind.year
+                            ? l10n.annualBudgetTitle
+                            : l10n.defaultMonthlyBudgetTitle,
                         trailing: defaultBudget > 0
                             ? formatAmount(defaultBudget)
                             : l10n.budgetCycleNotSet,
                         trailingIcon: Icons.chevron_right,
-                        onTap: _editDefaultMonthlyBudget,
+                        onTap: _draftPeriodKind == BudgetPeriodKind.year
+                            ? _editAnnualBudget
+                            : _editDefaultMonthlyBudget,
                       ),
                       const Divider(height: 1),
                       SettingsRow(
@@ -148,7 +198,12 @@ class _BudgetSettingsPageState extends State<BudgetSettingsPage> {
                   ),
                 ),
                 const SizedBox(height: 12),
-                _sectionLabel(context, l10n.budgetSettingsSectionCategory),
+                _sectionLabel(
+                  context,
+                  _draftPeriodKind == BudgetPeriodKind.year
+                      ? l10n.annualCategoryBudgetTitle
+                      : l10n.budgetSettingsSectionCategory,
+                ),
                 VeriCard(
                   padding: const EdgeInsets.fromLTRB(13, 6, 13, 8),
                   child: Column(
@@ -157,7 +212,9 @@ class _BudgetSettingsPageState extends State<BudgetSettingsPage> {
                       Padding(
                         padding: const EdgeInsets.fromLTRB(0, 6, 0, 2),
                         child: Text(
-                          l10n.defaultCategoryBudgetDesc,
+                          _draftPeriodKind == BudgetPeriodKind.year
+                              ? l10n.annualCategoryBudgetDesc
+                              : l10n.defaultCategoryBudgetDesc,
                           style: Theme.of(context).textTheme.labelSmall
                               ?.copyWith(
                                 color: Theme.of(
@@ -222,10 +279,19 @@ class _BudgetSettingsPageState extends State<BudgetSettingsPage> {
       final collapsed = _collapsedCategories.contains(category.id);
       final actionEntries = _categoryBudgetActionEntries(
         context: context,
-        hasBudget: (_draftCategoryBudgets[category.id] ?? 0) > 0,
+        hasBudget:
+            ((_draftPeriodKind == BudgetPeriodKind.year
+                    ? _draftAnnualCategoryBudgets
+                    : _draftCategoryBudgets)[category.id] ??
+                0) >
+            0,
         onSet: () => unawaited(_editDefaultCategoryBudget(category)),
         onClear: () => setState(() {
-          _draftCategoryBudgets[category.id] = 0;
+          if (_draftPeriodKind == BudgetPeriodKind.year) {
+            _draftAnnualCategoryBudgets[category.id] = 0;
+          } else {
+            _draftCategoryBudgets[category.id] = 0;
+          }
         }),
       );
       rows.add(
@@ -248,6 +314,7 @@ class _BudgetSettingsPageState extends State<BudgetSettingsPage> {
                   }),
             onTap: openMenu,
             onActions: openMenu,
+            previousPeriodKind: _draftPeriodKind,
           ),
         ),
       );
@@ -283,6 +350,17 @@ class _BudgetSettingsPageState extends State<BudgetSettingsPage> {
       return;
     }
     setState(() => _draftDefaultBudget = amount);
+  }
+
+  Future<void> _editAnnualBudget() async {
+    final amount = await _promptBudgetAmount(
+      AppLocalizations.of(context).setAnnualBudgetTitle,
+      _draftAnnualBudget,
+    );
+    if (amount == null || !mounted) {
+      return;
+    }
+    setState(() => _draftAnnualBudget = amount);
   }
 
   Future<void> _editDailyBudget() async {
@@ -322,20 +400,36 @@ class _BudgetSettingsPageState extends State<BudgetSettingsPage> {
   }
 
   Future<void> _editDefaultCategoryBudget(Category category) async {
+    final annual = _draftPeriodKind == BudgetPeriodKind.year;
     final amount = await _promptBudgetAmount(
-      AppLocalizations.of(
-        context,
-      ).setDefaultCategoryBudgetTitle(category.label),
-      _draftCategoryBudgets[category.id] ?? 0,
+      annual
+          ? AppLocalizations.of(
+              context,
+            ).setAnnualCategoryBudgetTitle(category.label)
+          : AppLocalizations.of(
+              context,
+            ).setDefaultCategoryBudgetTitle(category.label),
+      (annual
+              ? _draftAnnualCategoryBudgets
+              : _draftCategoryBudgets)[category.id] ??
+          0,
     );
     if (amount == null || !mounted) {
       return;
     }
-    setState(() => _draftCategoryBudgets[category.id] = amount);
+    setState(() {
+      if (annual) {
+        _draftAnnualCategoryBudgets[category.id] = amount;
+      } else {
+        _draftCategoryBudgets[category.id] = amount;
+      }
+    });
   }
 
   bool get _isDirty {
-    if (_draftDefaultBudget != _initialDefaultBudget ||
+    if (_draftPeriodKind != _initialPeriodKind ||
+        _draftDefaultBudget != _initialDefaultBudget ||
+        _draftAnnualBudget != _initialAnnualBudget ||
         _draftDailyBudget != _initialDailyBudget ||
         _draftStartDay != _initialStartDay ||
         _draftCategoryBudgets.length != _initialCategoryBudgets.length) {
@@ -346,18 +440,32 @@ class _BudgetSettingsPageState extends State<BudgetSettingsPage> {
         return true;
       }
     }
+    if (_draftAnnualCategoryBudgets.length !=
+        _initialAnnualCategoryBudgets.length) {
+      return true;
+    }
+    for (final entry in _draftAnnualCategoryBudgets.entries) {
+      if (_initialAnnualCategoryBudgets[entry.key] != entry.value) {
+        return true;
+      }
+    }
     return false;
   }
 
   Future<void> _saveAndExit() async {
     if (await _save() && mounted) {
       setState(() {
+        _initialPeriodKind = _draftPeriodKind;
         _initialDefaultBudget = _draftDefaultBudget;
+        _initialAnnualBudget = _draftAnnualBudget;
         _initialDailyBudget = _draftDailyBudget;
         _initialStartDay = _draftStartDay;
         _initialCategoryBudgets
           ..clear()
           ..addAll(_draftCategoryBudgets);
+        _initialAnnualCategoryBudgets
+          ..clear()
+          ..addAll(_draftAnnualCategoryBudgets);
       });
       _exitController.exit();
     }
@@ -368,6 +476,10 @@ class _BudgetSettingsPageState extends State<BudgetSettingsPage> {
     dailyBudget: _draftDailyBudget,
     cycleStartDay: _draftStartDay,
     defaultCategoryBudgets: _draftCategoryBudgets,
+    periodKind: _draftPeriodKind,
+    annualDate: DateTime.now(),
+    annualBudget: _draftAnnualBudget,
+    annualCategoryBudgets: _draftAnnualCategoryBudgets,
   );
 }
 
