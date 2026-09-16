@@ -504,10 +504,10 @@ packages:
     dependency: "direct main"
     description:
       name: local_auth_android
-      sha256: "2de619ed7196c136ec4579539c0446668e794afeec1e1815786a3158a478d04b"
+      sha256: fc6d4edecbb8baa59f1f1ab2005c5043bbe311c3936a467fb5e05c2b155bf111
       url: "https://pub.flutter-io.cn"
     source: hosted
-    version: "2.0.10"
+    version: "2.1.0"
   local_auth_darwin:
     dependency: transitive
     description:
@@ -781,10 +781,10 @@ packages:
     dependency: "direct main"
     description:
       name: sqflite_common
-      sha256: b3ebf7b30c8ae279615f146dfc29ea6ba097299294193107c85a7531ec2346d9
+      sha256: "077e38e82c099534146a2fb31b608c2a3a4489a0f21d9af6b2f5c87b566a1ea0"
       url: "https://pub.flutter-io.cn"
     source: hosted
-    version: "2.5.12"
+    version: "2.5.13"
   sqflite_common_ffi:
     dependency: "direct dev"
     description:
