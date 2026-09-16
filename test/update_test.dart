@@ -99,6 +99,8 @@ void main() {
     await tester.tap(find.byIcon(Icons.settings_outlined));
     await tester.pumpAndSettle();
     await tester.scrollUntilVisible(find.text('检查更新'), 160);
+    await tester.ensureVisible(find.text('检查更新'));
+    await tester.pumpAndSettle();
     await tester.tap(find.text('检查更新'));
     await tester.pumpAndSettle();
 
@@ -167,6 +169,8 @@ void main() {
     await tester.tap(find.byIcon(Icons.settings_outlined));
     await tester.pumpAndSettle();
     await tester.scrollUntilVisible(find.text('检查更新'), 160);
+    await tester.ensureVisible(find.text('检查更新'));
+    await tester.pumpAndSettle();
     await tester.tap(find.text('检查更新'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('下载新版本'));
