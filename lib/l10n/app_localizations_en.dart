@@ -2550,6 +2550,18 @@ class AppLocalizationsEn extends AppLocalizations {
   String get hapticsLabel => 'Haptic feedback';
 
   @override
+  String get numberPadLayoutLabel => 'Number pad layout';
+
+  @override
+  String get numberPadLayoutPickerTitle => 'Choose number pad layout';
+
+  @override
+  String get numberPadLayoutStandard => 'Standard layout';
+
+  @override
+  String get numberPadLayoutPhone => 'Phone layout';
+
+  @override
   String get amountTwoDecimalsLabel => 'Two decimal places';
 
   @override
@@ -2841,6 +2853,292 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get disconnectLabel => 'Disconnect';
+
+  @override
+  String get syncModeLabel => 'Sync mode';
+
+  @override
+  String get syncModeManual => 'Manual';
+
+  @override
+  String get syncModeAutoUpload => 'Auto-upload';
+
+  @override
+  String get syncModeAutoSync => 'Auto-sync';
+
+  @override
+  String get syncStatusLabel => 'Sync status';
+
+  @override
+  String get syncStatusConnected => 'Connected';
+
+  @override
+  String get syncStatusPending => 'Pending';
+
+  @override
+  String get syncStatusError => 'Sync error';
+
+  @override
+  String syncConflictCount(int count) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: '$count conflicts pending',
+      one: '1 conflict pending',
+      zero: 'No conflicts',
+    );
+    return '$_temp0';
+  }
+
+  @override
+  String syncPendingCount(int count) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: '$count items pending',
+      one: '1 item pending',
+      zero: 'Nothing pending',
+    );
+    return '$_temp0';
+  }
+
+  @override
+  String get syncTransportModeConflict =>
+      'Auto-sync and auto-upload are both enabled — please reset the transport mode.';
+
+  @override
+  String get syncCollisionDetected =>
+      'A concurrent-edit collision was detected and needs manual resolution.';
+
+  @override
+  String get syncKeyMismatch =>
+      'Sync key mismatch — remote data can\'t be decrypted.';
+
+  @override
+  String get syncRecoveryReset => 'Reset to auto-upload';
+
+  @override
+  String get syncRecoverySuccess => 'Sync mode has been reset';
+
+  @override
+  String get syncRecoveryFailed => 'Reset failed, please try again';
+
+  @override
+  String get syncEnabledAutoSyncFeedback =>
+      'Auto-sync enabled; auto-upload has been turned off.';
+
+  @override
+  String get syncEnabledAutoUploadFeedback =>
+      'Auto-upload enabled; auto-sync has been turned off.';
+
+  @override
+  String get syncConflictsTitle => 'Sync conflicts';
+
+  @override
+  String get syncNow => 'Sync now';
+
+  @override
+  String get syncNowHint => 'Upload local changes and download remote updates';
+
+  @override
+  String get syncSuccess => 'Sync complete';
+
+  @override
+  String get syncFailed => 'Sync failed';
+
+  @override
+  String get syncConflictsSubtitle =>
+      'These items were changed on more than one device — choose which version to keep.';
+
+  @override
+  String get syncConflictsEmpty => 'No conflicts to resolve';
+
+  @override
+  String get syncConflictsLoadFailed =>
+      'Couldn\'t load the conflict list. Please try again.';
+
+  @override
+  String get syncConflictsRetry => 'Retry';
+
+  @override
+  String get syncConflictResolved => 'Your choice has been applied';
+
+  @override
+  String get syncConflictResolveFailed =>
+      'Couldn\'t save your choice. Please try again.';
+
+  @override
+  String get syncConflictLocalVersion => 'This device';
+
+  @override
+  String get syncConflictRemoteVersion => 'Other device';
+
+  @override
+  String get syncConflictDeletedMarker => '(deleted)';
+
+  @override
+  String syncConflictSourceDevice(String deviceId) {
+    return 'From device $deviceId';
+  }
+
+  @override
+  String syncConflictSequence(int sequence) {
+    return 'seq $sequence';
+  }
+
+  @override
+  String syncConflictLogicalTime(String time) {
+    return 'logical time $time';
+  }
+
+  @override
+  String get syncConflictScopeGlobal => 'Global settings';
+
+  @override
+  String get syncConflictScopeLedger => 'Ledger data';
+
+  @override
+  String get syncConflictKeepLocal => 'Keep this device';
+
+  @override
+  String get syncConflictKeepRemote => 'Keep other device';
+
+  @override
+  String get syncConflictKeepDelete => 'Keep deletion';
+
+  @override
+  String get syncConflictKeepEdit => 'Keep edit';
+
+  @override
+  String get syncConflictConfirmDeleteTitle => 'Keep the deletion?';
+
+  @override
+  String get syncConflictConfirmDeleteMessage =>
+      'The other device\'s edit to this item will be discarded permanently. This can\'t be undone.';
+
+  @override
+  String get syncConflictConfirmLocalTitle => 'Keep this device\'s version?';
+
+  @override
+  String get syncConflictConfirmLocalMessage =>
+      'The changes on the other device will be overwritten. This can\'t be undone.';
+
+  @override
+  String get syncConflictConfirmRemoteTitle =>
+      'Keep the other device\'s version?';
+
+  @override
+  String get syncConflictConfirmRemoteMessage =>
+      'The changes on this device will be overwritten. This can\'t be undone.';
+
+  @override
+  String get syncConflictAbsent => '—';
+
+  @override
+  String get syncConflictUnreadable => 'Unreadable content';
+
+  @override
+  String get syncConflictEmptyPayload => 'No fields';
+
+  @override
+  String get syncConflictValueTrue => 'Yes';
+
+  @override
+  String get syncConflictValueFalse => 'No';
+
+  @override
+  String syncConflictListCount(int count) {
+    return 'List ($count items)';
+  }
+
+  @override
+  String syncConflictMapEntryCount(int count) {
+    return 'Object ($count fields)';
+  }
+
+  @override
+  String get syncConflictNoAccount => 'No account';
+
+  @override
+  String get syncConflictUnknownAccount => 'Unknown account';
+
+  @override
+  String get syncConflictUnknownCategory => 'Unknown category';
+
+  @override
+  String get syncConflictFieldSummary => 'Content';
+
+  @override
+  String get syncConflictFieldName => 'Name';
+
+  @override
+  String get syncConflictFieldType => 'Type';
+
+  @override
+  String get syncConflictFieldAmount => 'Amount';
+
+  @override
+  String get syncConflictFieldInitialBalance => 'Initial balance';
+
+  @override
+  String get syncConflictFieldCurrency => 'Currency';
+
+  @override
+  String get syncConflictFieldRate => 'Rate';
+
+  @override
+  String get syncConflictFieldAccount => 'Account';
+
+  @override
+  String get syncConflictFieldCategory => 'Category';
+
+  @override
+  String get syncConflictFieldNote => 'Note';
+
+  @override
+  String get syncConflictFieldDate => 'Time';
+
+  @override
+  String get syncEntityEntries => 'Transactions';
+
+  @override
+  String get syncEntityAccounts => 'Accounts';
+
+  @override
+  String get syncEntityAccountGroups => 'Account groups';
+
+  @override
+  String get syncEntityCategories => 'Categories';
+
+  @override
+  String get syncEntityTags => 'Tags';
+
+  @override
+  String get syncEntityAttachments => 'Attachments';
+
+  @override
+  String get syncEntityRecurringRules => 'Recurring entries';
+
+  @override
+  String get syncEntityExchangeRates => 'Exchange rates';
+
+  @override
+  String get syncEntityLedgerBook => 'Ledger';
+
+  @override
+  String get syncEntityBudgets => 'Budgets';
+
+  @override
+  String get syncEntityProfile => 'Profile';
+
+  @override
+  String get syncEntityHomePanels => 'Home layout';
+
+  @override
+  String get syncEntityReportPanels => 'Reports layout';
+
+  @override
+  String get syncEntityGeneric => 'Ledger data';
 
   @override
   String get resetData => 'Reset data';
@@ -3880,14 +4178,14 @@ class AppLocalizationsEn extends AppLocalizations {
   String get widgetNetWorth => 'Total assets';
 
   @override
-  String get widgetGalleryTitle => 'Home widgets';
+  String get widgetGalleryTitle => 'Desktop widgets';
 
   @override
   String get widgetGallerySubtitle =>
-      'Put the numbers you check most on your home screen';
+      'Preview the fixed VeriFin widget templates';
 
   @override
-  String get widgetGalleryShort => 'Preview & add';
+  String get widgetGalleryShort => 'Template preview';
 
   @override
   String get widgetAddToHome => 'Add to home screen';

@@ -30,9 +30,14 @@ void useTestDatabases() {
 ///
 /// [acceptConsent] 默认为 true，预置隐私政策同意标记，使 widget 测试不被首启动
 /// 同意弹窗阻塞；测试同意流程本身时传 false。
+///
+/// [repository] 用于测试需要**先**往仓储里写数据（如同步 journal 行）、再构造
+/// 控制器读它的场景。传入时该仓储即成为 [store] 的绑定仓储，后续同一 store 的
+/// [makeController] 仍会复用它（模拟重启）。
 Future<VeriFinController> makeController([
   LocalKeyValueStore? store,
   bool acceptConsent = true,
+  LedgerRepository? repository,
 ]) async {
   final resolvedStore = store ?? LocalKeyValueStore();
   if (acceptConsent) {
@@ -45,11 +50,14 @@ Future<VeriFinController> makeController([
   if (resolvedStore.read('verifin.locale.v1') == null) {
     resolvedStore.write('verifin.locale.v1', 'zh');
   }
-  final repository = _repoForStore.putIfAbsent(
+  final resolvedRepository =
+      repository ??
+      _repoForStore.putIfAbsent(resolvedStore, InMemoryLedgerRepository.new);
+  _repoForStore[resolvedStore] = resolvedRepository;
+  return VeriFinController.create(
     resolvedStore,
-    InMemoryLedgerRepository.new,
+    repository: resolvedRepository,
   );
-  return VeriFinController.create(resolvedStore, repository: repository);
 }
 
 /// 构造控制器并 pump 进 [VeriFinApp]，返回控制器（可用于断言）。

@@ -4,7 +4,6 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:verifin/app/home_widget_service.dart';
 import 'package:verifin/app/models.dart';
 import 'package:verifin/app/veri_fin_scope.dart';
-import 'package:verifin/app/widget_config.dart';
 import 'package:verifin/pages/shell.dart';
 
 import 'support/test_harness.dart';
@@ -37,31 +36,21 @@ void main() {
         occurredAt: DateTime.now(),
       ),
     );
-    await controller.saveUserWidgetDefinitions([
-      UserWidgetDefinition(
-        id: 'selected',
-        name: '旅行支出',
-        template: WidgetTemplate.trend,
-        bookId: selected,
-        chartMetric: WidgetChartMetric.expense,
-        dateRange: WidgetDateRange.sevenDays,
-      ),
-    ]);
     controller.switchLedgerBook(original);
     Map<dynamic, dynamic>? payload;
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(channel, (call) async {
-          if (call.method == 'syncUserWidgetDefinitions') {
+          if (call.method == 'syncWidgetSnapshots') {
             payload = call.arguments;
           }
           return null;
         });
     await pushWidgetData(controller);
-    final definition = (payload!['definitions'] as List).single as Map;
-    final presentation = definition['presentation'] as Map;
-    expect(definition['bookId'], selected);
+    final snapshots = payload!['snapshots'] as Map;
+    final metrics = snapshots[selected] as Map;
+    final presentation = metrics['periodExpense'] as Map;
     expect(presentation['amount'], contains('37'));
-    expect(presentation['points'], [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 37.0]);
+    expect((presentation['points'] as String).split(',').last, '37.0');
     expect(controller.activeBook.id, original);
   });
 
@@ -94,5 +83,75 @@ void main() {
     expect(controller.activeBook.id, selected);
     expect(find.byKey(const Key('number_pad_ok')), findsOneWidget);
     expect(tester.takeException(), isNull);
+  });
+
+  test('资产曲线使用净资产且缺汇率时不展示部分曲线', () async {
+    final controller = await makeController();
+    addTearDown(controller.dispose);
+    final now = DateTime.now();
+    controller.addAccount(
+      Account(
+        id: 'widget-cash',
+        bookId: controller.activeBook.id,
+        name: '现金',
+        type: AccountType.cash,
+        groupId: null,
+        initialBalance: 1000,
+        iconCode: 'wallet',
+        note: '',
+        includeInAssets: true,
+        hidden: false,
+      ),
+    );
+    controller.setMonthlyBudget(now, 100);
+    controller.addEntry(
+      LedgerEntry(
+        id: 'widget-expense',
+        bookId: controller.activeBook.id,
+        type: EntryType.expense,
+        amount: 37,
+        categoryId: controller.categoriesForType(EntryType.expense).first.id,
+        accountId: 'widget-cash',
+        note: '',
+        occurredAt: now,
+      ),
+    );
+    Map<dynamic, dynamic>? payload;
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(channel, (call) async {
+          if (call.method == 'updateWidgetData') {
+            payload = call.arguments as Map;
+          }
+          return null;
+        });
+    await pushWidgetData(controller);
+    expect(payload!['budgetUsage'], closeTo(.37, .0001));
+    expect(
+      double.parse((payload!['netWorthPoints'] as String).split(',').last),
+      963,
+    );
+    expect(
+      double.parse((payload!['trendPoints'] as String).split(',').last),
+      37,
+    );
+
+    controller.addAccount(
+      Account(
+        id: 'widget-usd',
+        bookId: controller.activeBook.id,
+        name: 'USD',
+        type: AccountType.cash,
+        groupId: null,
+        initialBalance: 10,
+        currencyCode: 'USD',
+        iconCode: 'wallet',
+        note: '',
+        includeInAssets: true,
+        hidden: false,
+      ),
+    );
+    await pushWidgetData(controller);
+    expect(payload!['netWorthAmount'], '—');
+    expect(payload!['netWorthPoints'], '');
   });
 }

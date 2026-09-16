@@ -90,7 +90,7 @@
 
 | 名称 | 类型 | 位置 | 用途 / 关键点 |
 |---|---|---|---|
-| `showNumberPadSheet` | Sheet 函数 | `sheets.dart` | **数字键盘弹窗**（四则算式 + 结果预览）；货币金额传 `currencyCode` 自动遵循 ISO minor unit，汇率输入才显式用 `maxFractionDigits:10`；`maxAmount` 的展示/比较也随币种精度，JPY 自动禁用小数点。触感偏好内部自取。**输金额一律用它**，不要弹系统 TextField、不要裸包 `showModalBottomSheet` |
+| `showNumberPadSheet` | Sheet 函数 | `sheets.dart` | **数字键盘弹窗**（四则算式 + 结果预览）；数字区支持设置中的标准（7 8 9 / 4 5 6 / 1 2 3）与电话（1 2 3 / 4 5 6 / 7 8 9）布局，默认标准；货币金额传 `currencyCode` 自动遵循 ISO minor unit，汇率输入才显式用 `maxFractionDigits:10`；`maxAmount` 的展示/比较也随币种精度，JPY 自动禁用小数点。触感偏好内部自取。**输金额一律用它**，不要弹系统 TextField、不要裸包 `showModalBottomSheet` |
 | `NumberPadSheet` | Widget | `entry_sheets.dart` | 上面 helper 的内部 widget（一般经 `showNumberPadSheet`） |
 | `showCurrencyPickerSheet` | Sheet 函数 | `sheets.dart` | 可搜索的离线 ISO 4217 法定货币选择器（代码/中英文名/符号，支持常用/业务优先币种与排除项）；取消返回 `null` |
 | `evaluateAmountExpression` / `amountExpressionHasOperator` | 纯函数 | `calc_expression.dart` | 算式求值（不完整返回 null，结果已规整到分）/ 是否含运算符 |
@@ -181,7 +181,7 @@
 
 ## 族 11 — AI 对话查询 UI
 
-桌面小组件的应用内预览统一使用 `pages/widget_design_preview.dart` 的 `WidgetDesignPreview`；画布、编辑页与拖动反馈共用尺寸、文字对齐及圆角。`app/widget_presentation.dart` 的 `buildWidgetPresentation` 接收 Controller 提供的 `WidgetLedgerSnapshot`，按所选账本、日期和筛选生成真实指标、预算进度和趋势；禁止为预览另造假数值、假比例或假折线。
+桌面小组件只提供四个固定模板。`WidgetGalleryPage` 经 `AppWidgetBridge.renderPreview` 请求 Android `FixedWidgetPreviewRenderer`，直接展示 Provider 的 `createViews` 渲染图；已删除独立的 Flutter `WidgetDesignPreview` 与闲置自定义编辑页，禁止重新手绘一套近似预览。实际桌面、应用内预览和 Android 15+ 系统预览共用 RemoteViews 布局。旧版启动器的中英文、深浅色 PNG 由 `scripts/export-widget-previews.ps1` 从同一 Provider 导出。`widget_presentation.dart` 仅负责真实指标与净资产序列；资产曲线不得复用支出数据。原生渲染与导出验收见 `docs/dev/widget-preview-parity.md`。
 
 | 名称 | 类型 | 位置 | 用途 |
 |---|---|---|---|

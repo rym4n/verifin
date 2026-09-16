@@ -1,4 +1,7 @@
 import 'package:verifin/app/models.dart';
+import 'package:verifin/app/sync/sync_change_tracker.dart';
+import 'package:verifin/app/sync/sync_models.dart';
+import 'package:verifin/app/sync/sync_store.dart';
 import 'package:verifin/data/ledger_repository.dart';
 
 /// 纯内存仓储实现，供 widget / 控制器逻辑测试注入。
@@ -6,8 +9,14 @@ import 'package:verifin/data/ledger_repository.dart';
 /// saveX 同步更新内部状态（返回已完成的 Future），因此不会引入真实异步 I/O，
 /// 避免与 testWidgets 的 fake-async 冲突；同一实例在多个控制器间共享即模拟重启后
 /// 从同一存储重新载入。
-class InMemoryLedgerRepository implements LedgerRepository {
+class InMemoryLedgerRepository
+    implements LedgerRepository, SyncProjectionSource {
+  Map<String, Object?> _profile = <String, Object?>{};
   List<LedgerEntry> _entries = <LedgerEntry>[];
+
+  /// Side map for remotely-applied entry payloads (no LedgerEntry needed).
+  final Map<String, Map<String, Object?>> _entryPayloads =
+      <String, Map<String, Object?>>{};
   List<LedgerBook> _books = <LedgerBook>[];
   List<Account> _accounts = <Account>[];
   List<AccountGroup> _groups = <AccountGroup>[];
@@ -19,6 +28,10 @@ class InMemoryLedgerRepository implements LedgerRepository {
   Map<String, double> _monthlyBudgets = <String, double>{};
   Map<String, double> _categoryBudgets = <String, double>{};
   Map<String, double> _dailyBudgets = <String, double>{};
+
+  /// 同步元数据的内存镜像，与 [SqliteLedgerRepository.sync] 同契约。
+  @override
+  late final SyncRepository sync = _InMemorySyncRepository(this);
 
   @override
   Future<List<LedgerEntry>> loadEntries() async =>
@@ -182,4 +195,340 @@ class InMemoryLedgerRepository implements LedgerRepository {
       _groups.isNotEmpty ||
       _categories.isNotEmpty ||
       _exchangeRates.isNotEmpty;
+
+  // SyncProjectionSource implementation for testing
+  @override
+  Map<String, Object?> exportDataForSync() {
+    final allEntries = [
+      ..._entries.map((e) => <String, Object?>{'id': e.id, 'amount': e.amount}),
+      ..._entryPayloads.values,
+    ];
+    return {
+      if (_profile.isNotEmpty) 'profile': _profile,
+      if (allEntries.isNotEmpty) 'entries': allEntries,
+    };
+  }
+
+  @override
+  Future<void> waitForPendingWrites() async {
+    // No async writes in memory implementation
+  }
+
+  // VeriFinController stub methods for testing
+  Future<T> runRemoteApply<T>(Future<T> Function() apply) async {
+    // Simple pass-through for testing
+    // In real implementation, this would call markRemoteApply, run apply,
+    // clearRemoteApply, and reconcile(alignShadowOnly: true)
+    return apply();
+  }
+
+  // Test helper methods
+  void setProfile(Map<String, Object?> profile) {
+    _profile = Map<String, Object?>.from(profile);
+  }
+
+  void addTestEntry(Map<String, Object?> entryData) {
+    final entry = LedgerEntry(
+      id: entryData['id'] as String? ?? 'entry-${_entries.length + 1}',
+      bookId: entryData['bookId'] as String? ?? 'default',
+      type: EntryType.expense,
+      amount: (entryData['amount'] as num?)?.toDouble() ?? 0.0,
+      currencyCode: entryData['currencyCode'] as String? ?? 'CNY',
+      categoryId: entryData['categoryId'] as String? ?? '',
+      accountId: entryData['accountId'] as String? ?? '',
+      note: entryData['memo'] as String? ?? '',
+      occurredAt: entryData['occurredAt'] as DateTime? ?? DateTime.now(),
+      tagIds:
+          (entryData['tagIds'] as List<dynamic>?)?.cast<String>() ?? const [],
+      refundOf: entryData['refundedEntryId'] as String?,
+    );
+    _entries.add(entry);
+  }
+}
+
+/// [SyncRepository] 的内存实现。与 SQLite 实现共用 [SyncPlanValidator]，
+/// 保证「测试放过的批次生产也放过、测试拒绝的生产也拒绝」。
+///
+/// [applyRemoteBatch] 先完成全部校验与全部新集合的构造，再一次性替换引用；
+/// 中途抛错时没有任何集合被改动，等价于 SQLite 的事务回滚。
+class _InMemorySyncRepository implements SyncRepository {
+  _InMemorySyncRepository(this._outer);
+
+  final InMemoryLedgerRepository _outer;
+
+  SyncDeviceState _deviceState = const SyncDeviceState(
+    deviceId: '',
+    nextSequence: 1,
+    knownVector: SyncVersionVector(<String, int>{}),
+  );
+  final List<SyncOutboxRecord> _outbox = <SyncOutboxRecord>[];
+  SyncScanState _scanState = const SyncScanState(
+    contiguousSequences: <String, int>{},
+    gaps: <String, List<int>>{},
+    lastSuccess: null,
+    lastErrorCode: null,
+    retryCount: 0,
+  );
+  final List<SyncConflictRecord> _conflicts = <SyncConflictRecord>[];
+
+  /// journal 行的内存镜像，与 SQLite 的 `sync_apply_journal` 同契约：
+  /// applyRemoteBatch 插入未应用行，`markKvJournalApplied` 原地翻转其 applied 位
+  /// （用 `_applied` 前缀命名的可变字段区分同名的 `_applied` 已应用操作表）。
+  final List<KvJournalEntry> _kvJournal = <KvJournalEntry>[];
+  final Set<int> _kvJournalApplied = <int>{};
+  int _kvJournalNextId = 1;
+
+  /// operationId → (batchId, payloadHash)：等价于 sync_applied_ops 与
+  /// sync_entity_versions 的合并视角。
+  final Map<String, ({String batchId, String payloadHash})> _applied =
+      <String, ({String batchId, String payloadHash})>{};
+
+  /// 已落库实体版本，按实体分桶（一个实体可有多版，冲突两侧都保留）。
+  final Map<SyncEntityKey, List<SyncEntityVersion>> _versions =
+      <SyncEntityKey, List<SyncEntityVersion>>{};
+
+  @override
+  Future<SyncDeviceState> loadDeviceState() async => _deviceState;
+
+  @override
+  Future<void> saveDeviceState(SyncDeviceState state) async {
+    _deviceState = state;
+  }
+
+  @override
+  Future<List<SyncOutboxRecord>> loadOutbox() async =>
+      List<SyncOutboxRecord>.of(_outbox);
+
+  @override
+  Future<void> enqueueBatch(SyncBatchRecord batch) async {
+    for (final event in batch.events) {
+      _outbox.removeWhere(
+        (record) =>
+            record.batchId == batch.batchId &&
+            record.operationId == event.operationId,
+      );
+      _outbox.add(
+        SyncOutboxRecord(
+          batchId: batch.batchId,
+          operationId: event.operationId,
+          // 与 SqliteSyncRepository._relativePathFor 保持一致：序列零填充到 20 位，
+          // 使远端目录的字典序等于序列序。契约测试逐字比对完整路径。
+          relativePath:
+              'events/${event.version.dot.deviceId}/'
+              '${event.version.dot.sequence.toString().padLeft(20, '0')}'
+              '-${event.operationId}.vfsync',
+          payloadHash: event.payloadHash,
+          retryCount: 0,
+        ),
+      );
+    }
+  }
+
+  @override
+  Future<void> markBatchUploaded(String batchId) async {
+    _outbox.removeWhere((record) => record.batchId == batchId);
+  }
+
+  @override
+  Future<void> applyRemoteBatch(RemoteApplyPlan plan) async {
+    // 1) 校验阶段：只读，不触碰任何状态。
+    final knownVersions = <SyncEntityKey, KnownSyncEntityVersion>{};
+    for (final key in plan.entityVersions.map((v) => v.entity).toSet()) {
+      final latest = _latestVersionFor(key);
+      if (latest != null) {
+        knownVersions[key] = latest;
+      }
+    }
+    SyncPlanValidator.validate(
+      plan: plan,
+      appliedHashes: <String, String>{
+        for (final entry in _applied.entries)
+          entry.key: entry.value.payloadHash,
+      },
+      knownVersions: knownVersions,
+    );
+
+    // 2) 构造阶段：全部新状态在本地算好，任何异常都不会留下半批数据。
+    final nextVersions = <SyncEntityKey, List<SyncEntityVersion>>{
+      for (final entry in _versions.entries)
+        entry.key: List<SyncEntityVersion>.of(entry.value),
+    };
+    for (final version in plan.entityVersions) {
+      final bucket = nextVersions.putIfAbsent(
+        version.entity,
+        () => <SyncEntityVersion>[],
+      );
+      // 同一 operationId 重放是幂等的：已存在的版本行原样保留。
+      if (bucket.every(
+        (existing) => existing.operationId != version.operationId,
+      )) {
+        bucket.add(version);
+      }
+    }
+    // 已应用登记覆盖计划声称的每一个操作（可能不含实体版本），hash 取值与
+    // SQLite 路径共用 plan.payloadHashForOperation，避免两条路径结论相反。
+    final nextApplied = <String, ({String batchId, String payloadHash})>{
+      ..._applied,
+      for (final operationId in plan.appliedOperationIds)
+        if (!_applied.containsKey(operationId))
+          operationId: (
+            batchId: plan.batchId,
+            payloadHash: plan.payloadHashForOperation(operationId),
+          ),
+    };
+
+    // 3) 提交阶段：仅做引用替换。
+    _versions
+      ..clear()
+      ..addAll(nextVersions);
+    _applied
+      ..clear()
+      ..addAll(nextApplied);
+    // Persist conflicts from the plan.
+    for (final conflict in plan.conflicts) {
+      if (_conflicts.every((c) => c.id != conflict.id)) {
+        _conflicts.add(conflict);
+      }
+    }
+
+    // KV journal：与 SqliteSyncRepository 同步——先记未应用行，重放时才真正
+    // 写本地 KV，让 InMemoryLedgerRepository 也能驱动
+    // `applySyncPreferenceJournal()` 的测试路径。
+    for (final entry in plan.kvJournalValues.entries) {
+      _kvJournal.add(
+        KvJournalEntry(
+          id: _kvJournalNextId++,
+          batchId: plan.batchId,
+          key: entry.key,
+          value: entry.value,
+          targetHash: computeSyncPayloadHash(entry.value),
+        ),
+      );
+    }
+
+    // Update shadow from plan's shadowHashes so the next causality check
+    // within the same scan cycle sees the freshly applied state.
+    for (final entry in plan.shadowHashes.entries) {
+      try {
+        final key = decodeSyncEntityKey(entry.key);
+        _shadow[key] = entry.value;
+      } catch (_) {
+        // Ignore malformed keys — do not block the whole apply.
+      }
+    }
+
+    // Update knownVector with applied remote dot sequences.
+    for (final version in plan.entityVersions) {
+      final dot = version.version.dot;
+      final current = _deviceState.knownVector.values[dot.deviceId] ?? 0;
+      if (dot.sequence > current) {
+        final updated = Map<String, int>.from(_deviceState.knownVector.values)
+          ..[dot.deviceId] = dot.sequence;
+        _deviceState = SyncDeviceState(
+          deviceId: _deviceState.deviceId,
+          nextSequence: _deviceState.nextSequence,
+          knownVector: SyncVersionVector(updated),
+        );
+      }
+    }
+
+    // Apply entity versions to live data so exportDataForSync() reflects them.
+    for (final version in plan.entityVersions) {
+      if (version.deleted || version.payload == null) continue;
+      final payload = version.payload;
+      if (version.entity.type == 'profile' && payload is Map) {
+        _outer._profile = Map<String, Object?>.from(
+          payload.cast<String, Object?>(),
+        );
+      } else if (version.entity.type == 'entries' && payload is Map) {
+        final id = version.entity.id;
+        _outer._entryPayloads[id] = Map<String, Object?>.from(
+          payload.cast<String, Object?>(),
+        );
+      }
+    }
+
+    // Update knownVector with applied remote dot sequences.
+    for (final version in plan.entityVersions) {
+      final dot = version.version.dot;
+      final current = _deviceState.knownVector.values[dot.deviceId] ?? 0;
+      if (dot.sequence > current) {
+        final updated = Map<String, int>.from(_deviceState.knownVector.values)
+          ..[dot.deviceId] = dot.sequence;
+        _deviceState = SyncDeviceState(
+          deviceId: _deviceState.deviceId,
+          nextSequence: _deviceState.nextSequence,
+          knownVector: SyncVersionVector(updated),
+        );
+      }
+    }
+  }
+
+  @override
+  Future<SyncScanState> loadScanState() async => _scanState;
+
+  @override
+  Future<void> saveScanState(SyncScanState state) async {
+    _scanState = state;
+  }
+
+  @override
+  Future<List<SyncConflictRecord>> loadConflicts() async =>
+      List<SyncConflictRecord>.of(_conflicts);
+
+  @override
+  Future<void> storeConflict(SyncConflictRecord conflict) async {
+    if (_conflicts.every((c) => c.id != conflict.id)) {
+      _conflicts.add(conflict);
+    }
+  }
+
+  @override
+  Future<void> removeConflict(String conflictId) async {
+    _conflicts.removeWhere((c) => c.id == conflictId);
+  }
+
+  @override
+  Future<List<KvJournalEntry>> loadPendingKvJournal() async => <KvJournalEntry>[
+    for (final entry in _kvJournal)
+      if (!_kvJournalApplied.contains(entry.id)) entry,
+  ];
+
+  @override
+  Future<void> markKvJournalApplied(int id) async {
+    _kvJournalApplied.add(id);
+  }
+
+  /// shadow 的内存镜像。语义与 SQLite 实现一致：整体替换，不合并。
+  final Map<SyncEntityKey, String> _shadow = <SyncEntityKey, String>{};
+
+  @override
+  Future<Map<SyncEntityKey, String>> loadShadow() async =>
+      Map<SyncEntityKey, String>.of(_shadow);
+
+  @override
+  Future<void> saveShadow(Map<SyncEntityKey, String> shadow) async {
+    _shadow
+      ..clear()
+      ..addAll(shadow);
+  }
+
+  KnownSyncEntityVersion? _latestVersionFor(SyncEntityKey key) {
+    final bucket = _versions[key];
+    if (bucket == null || bucket.isEmpty) {
+      return null;
+    }
+    var latest = bucket.first;
+    for (final version in bucket.skip(1)) {
+      if (version.version.logicalTime >= latest.version.logicalTime) {
+        latest = version;
+      }
+    }
+    return KnownSyncEntityVersion(
+      entity: key,
+      operationId: latest.operationId,
+      version: latest.version,
+      deleted: latest.deleted,
+    );
+  }
 }

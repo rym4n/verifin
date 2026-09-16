@@ -1,5 +1,21 @@
 part of 'veri_fin_controller.dart';
 
+/// 设置页「同步状态」展示所需的两个计数：待重放的 KV 偏好 journal 行数，
+/// 与未决的实体冲突数。两者语义不同——前者是"知道怎么应用、只是还没应用"，
+/// 后者是"需要用户决议"——分开计数而不是合并成一个数字，UI 才能分别提示。
+class SyncPreferenceStatus {
+  const SyncPreferenceStatus({
+    required this.pendingCount,
+    required this.conflictCount,
+  });
+
+  final int pendingCount;
+  final int conflictCount;
+
+  bool get hasError => conflictCount > 0;
+  bool get hasPending => pendingCount > 0;
+}
+
 /// 控制器的「领域操作」层：交易/账户/分组/账本/分类/标签/预算/偏好/备份/
 /// 导入导出等所有对外方法。字段与持久化在 [_ControllerState]。
 mixin _ControllerOps on ChangeNotifier, _ControllerState {
@@ -776,19 +792,31 @@ mixin _ControllerOps on ChangeNotifier, _ControllerState {
     setWebdavConfig(_webdavConfig.copyWith(autoUpload: enabled));
   }
 
+  /// 数据管理页的显式提交。传输模式与旧的备份频率/保留份数一起落库：
+  /// 模式走 [BackupTransportModeCodec] 的规范键（带版本+校验和），频率/保留仍写
+  /// 旧的 `BackupSettings` JSON——本地目录计划与传输模式是两件事，后者不改前者。
+  ///
+  /// `autoUpload` 标记由 [BackupTransportMode] 折算，不再由调用方直接传：
+  /// 互斥约束只有 [BackupTransportMode] 一处知道，让 UI 自己算会把这条规则复制出去。
   Future<bool> saveDataManagementPreferencesDraft({
     required BackupFrequency frequency,
     required int intervalHours,
     required int retention,
-    required bool webdavAutoUpload,
+    required BackupTransportMode transportMode,
   }) async {
     final nextBackup = _backupSettings.copyWith(
       frequency: frequency,
       intervalHours: intervalHours < 1 ? 1 : intervalHours,
       retention: retention < 1 ? 1 : retention,
     );
-    final nextWebdav = _webdavConfig.copyWith(autoUpload: webdavAutoUpload);
+    final nextWebdav = _webdavConfig.copyWith(
+      autoUpload: transportMode == BackupTransportMode.autoUpload,
+    );
     try {
+      await _store.writeAndFlush(
+        _backupTransportModeKey,
+        BackupTransportModeCodec.encode(transportMode),
+      );
       await _store.writeAndFlush(_backupSettingsKey, nextBackup.encode());
       if (nextWebdav.isConfigured) {
         await _store.writeAndFlush(_webdavKey, nextWebdav.encode());
@@ -797,6 +825,7 @@ mixin _ControllerOps on ChangeNotifier, _ControllerState {
       _handlePersistError(error, stackTrace);
       return false;
     }
+    _backupTransportMode = transportMode;
     _backupSettings = nextBackup;
     _webdavConfig = nextWebdav;
     notifyListeners();
@@ -807,6 +836,137 @@ mixin _ControllerOps on ChangeNotifier, _ControllerState {
     _webdavConfig = const WebdavConfig();
     _store.delete(_webdavKey);
     notifyListeners();
+  }
+
+  /// 当前备份传输模式（手动 / 自动上传 / 自动双向同步）。三者互斥，见
+  /// [setBackupTransportMode]。
+  BackupTransportMode get backupTransportMode => _backupTransportMode;
+
+  /// 传输模式与 [WebdavConfig.autoUpload] 理应互斥（`autoSync` 时旧字段必须为
+  /// false）；若发现两者同时「自动」，说明有代码绕过了 [setBackupTransportMode]
+  /// 直接改了 [WebdavConfig]（如旧版遗留路径），需要用户走 [recoverBackupTransportMode]
+  /// 显式复位，而不是静默吞掉这个不一致。
+  bool get backupTransportModeConflict =>
+      _backupTransportMode == BackupTransportMode.autoSync &&
+      _webdavConfig.autoUpload;
+
+  /// 设置传输模式；`autoSync`/`autoUpload` 与旧 `WebdavConfig.autoUpload` 互斥——
+  /// 选 `autoSync` 会关闭旧的自动上传标记，选 `autoUpload` 会打开它（沿用
+  /// [BackupCoordinator] 现有的「本地备份后按此标记决定是否上传」逻辑），
+  /// 选 `manual` 两者都关。规范键与 WebDAV 配置一次性 flush，失败则整体不提交。
+  Future<bool> setBackupTransportMode(BackupTransportMode mode) async {
+    final nextWebdav = _webdavConfig.copyWith(
+      autoUpload: mode == BackupTransportMode.autoUpload,
+    );
+    try {
+      await _store.writeAndFlush(
+        _backupTransportModeKey,
+        BackupTransportModeCodec.encode(mode),
+      );
+      if (nextWebdav.isConfigured) {
+        await _store.writeAndFlush(_webdavKey, nextWebdav.encode());
+      }
+    } catch (error, stackTrace) {
+      _handlePersistError(error, stackTrace);
+      return false;
+    }
+    _backupTransportMode = mode;
+    _webdavConfig = nextWebdav;
+    notifyListeners();
+    return true;
+  }
+
+  /// 修复 [backupTransportModeConflict]：与迁移时的冲突消解规则一致，
+  /// 默认收敛到 `autoUpload`（而不是更激进的 `autoSync`）。
+  Future<bool> recoverBackupTransportMode() =>
+      setBackupTransportMode(BackupTransportMode.autoUpload);
+
+  /// 待重放的 KV 偏好 journal 行数与未决冲突数，供设置页「同步状态」展示。
+  /// 两者都来自同步元数据仓储，只读，不产生副作用。
+  Future<SyncPreferenceStatus> loadSyncPreferenceStatus() async {
+    final sync = _repository.sync;
+    final pending = await sync.loadPendingKvJournal();
+    final conflicts = await sync.loadConflicts();
+    return SyncPreferenceStatus(
+      pendingCount: pending.length,
+      conflictCount: conflicts.length,
+    );
+  }
+
+  /// 未决冲突列表，供冲突审阅页展示。只读，不产生副作用。
+  Future<List<SyncConflict>> loadSyncConflicts() async {
+    final records = await _repository.sync.loadConflicts();
+    return records.map(SyncConflict.fromRecord).toList();
+  }
+
+  /// 对一条冲突应用用户决议。
+  ///
+  /// 决议本身是「写入一个 resolve 事件并让该冲突从列表消失」，只碰本地仓储，
+  /// 不需要 WebDAV 配置也不发起网络请求——因此这里用一个不带传输层的引擎，
+  /// 与正式同步流程共用同一套决议语义，而不是在 UI 里复制一份。
+  ///
+  /// [ConflictResolution.cancel] 是空操作：两侧版本都不动，冲突保持未决。
+  Future<void> resolveSyncConflict(
+    String conflictId,
+    ConflictResolution resolution,
+  ) async {
+    final engine = SyncEngine(
+      repository: _repository.sync,
+      controller: this as SyncProjectionSource,
+      config: _webdavConfig,
+      remoteApply: runRemoteApply,
+    );
+    await engine.resolveConflict(conflictId, resolution);
+  }
+
+  /// 运行一次同步循环：上传 outbox，扫描远端，下载并合并。
+  ///
+  /// 供 [SyncCoordinator] 调用，封装引擎构造与传输层注入。无 WebDAV 配置时
+  /// 返回 `no_config` 错误而不抛异常，让调用方决定如何反馈用户。
+  Future<SyncRunResult> runSyncEngine(SyncTrigger trigger) async {
+    final engine = SyncEngine(
+      repository: _repository.sync,
+      transport: _webdavConfig.isConfigured ? WebdavSyncTransportImpl() : null,
+      controller: this as SyncProjectionSource,
+      config: _webdavConfig,
+      remoteApply: runRemoteApply,
+    );
+    return engine.run(trigger: trigger);
+  }
+
+  /// 重放 `sync_apply_journal` 中未应用的 KV 偏好行：按 key 确定性顺序逐个
+  /// `writeAndFlush` 到本地 KV，成功一条标记一条 applied。**必须在应用重启时、
+  /// 投影对账（shadow 比较）之前调用**——否则本地 KV 还停留在旧值，投影会把
+  /// 「远端已应用但 KV 未落地」的字段错误地判成一次新的本地变更再传回去。
+  ///
+  /// 单条写入失败时停止本批剩余写入（保持待处理 + 让上层据此展示"同步出错"），
+  /// 不会把失败的行标记为已应用，也不会影响已经成功落地的行——重放本身是
+  /// 幂等的（下次重放会跳过已 applied 的行，未成功的行会原样重试）。
+  Future<void> applySyncPreferenceJournal() async {
+    final pending = await _repository.sync.loadPendingKvJournal();
+    if (pending.isEmpty) {
+      return;
+    }
+    final ordered = List<KvJournalEntry>.of(pending)
+      ..sort((a, b) => a.key.compareTo(b.key));
+    var appliedAny = false;
+    for (final entry in ordered) {
+      try {
+        await _store.writeAndFlush(entry.key, entry.value);
+        await _repository.sync.markKvJournalApplied(entry.id);
+        appliedAny = true;
+      } catch (error, stackTrace) {
+        _handlePersistError(error, stackTrace);
+        break;
+      }
+    }
+    if (appliedAny) {
+      // 重放改的是别的字段的本地 KV 镜像；重新走一遍偏好载入，让内存字段与
+      // 刚落地的 KV 保持一致（比逐个字段判断"这条 journal 对应哪个内存字段"更
+      // 不容易漏)。载入是纯读，不会覆盖尚未走 journal 的其它偏好。
+      _loadPreferences();
+      notifyListeners();
+    }
   }
 
   List<Category> categoriesForType(EntryType type) {
@@ -1054,6 +1214,7 @@ mixin _ControllerOps on ChangeNotifier, _ControllerState {
     themePreferenceListenable.value = preference;
     _store.write(_themeKey, preference.name);
     notifyListeners();
+    _notifySyncChanged();
   }
 
   AppFontScale get fontScale => _fontScale;
@@ -1115,6 +1276,7 @@ mixin _ControllerOps on ChangeNotifier, _ControllerState {
     _hapticsEnabled = enabled;
     _store.write(_hapticsKey, enabled.toString());
     notifyListeners();
+    _notifySyncChanged();
   }
 
   /// 首页 FAB（记一笔）的行为：手动记账（默认）或 AI 对话记账。设备本地偏好，
@@ -1125,7 +1287,11 @@ mixin _ControllerOps on ChangeNotifier, _ControllerState {
     _fabActionMode = mode;
     _store.write(_fabActionKey, mode.name);
     notifyListeners();
+    _notifySyncChanged();
   }
+
+  /// 金额数字键盘的数字排列。设备本地偏好，不影响账目数据。
+  NumberPadLayout get numberPadLayout => _numberPadLayout;
 
   /// 首页走势卡片的自定义配置（各槽展示的指标、曲线序列、标题）。设备本地显示偏好，
   /// 不进 JSON 备份、初始化时保留。
@@ -1135,12 +1301,14 @@ mixin _ControllerOps on ChangeNotifier, _ControllerState {
     _homeTrendConfig = config;
     _store.write(_homeTrendKey, config.encode());
     notifyListeners();
+    _notifySyncChanged();
   }
 
   void resetHomeTrendConfig() {
     _homeTrendConfig = HomeTrendConfig.defaults;
     _store.delete(_homeTrendKey);
     notifyListeners();
+    _notifySyncChanged();
   }
 
   Future<bool> saveBudgetSettingsDraft({
@@ -1269,6 +1437,7 @@ mixin _ControllerOps on ChangeNotifier, _ControllerState {
     _budgetPeriodKinds
       ..clear()
       ..addAll(nextPeriodKinds);
+    _notifySyncChanged();
     notifyListeners();
     return true;
   }
@@ -1282,6 +1451,7 @@ mixin _ControllerOps on ChangeNotifier, _ControllerState {
     }
     _homeTrendConfig = config;
     notifyListeners();
+    _notifySyncChanged();
     return true;
   }
 
@@ -1310,6 +1480,7 @@ mixin _ControllerOps on ChangeNotifier, _ControllerState {
     }
     _persistDefaultAccounts();
     notifyListeners();
+    _notifySyncChanged();
   }
 
   /// 账户编辑页显式提交默认账户偏好，KV 写入成功后才更新内存。
@@ -1330,6 +1501,7 @@ mixin _ControllerOps on ChangeNotifier, _ControllerState {
       ..clear()
       ..addAll(next);
     notifyListeners();
+    _notifySyncChanged();
     return true;
   }
 
@@ -1343,6 +1515,7 @@ mixin _ControllerOps on ChangeNotifier, _ControllerState {
     amount_format.amountForceTwoDecimals = value;
     _store.write(_amountFormatKey, value.toString());
     notifyListeners();
+    _notifySyncChanged();
   }
 
   MoneyUnitStyle get moneyUnitStyle => _moneyUnitStyle;
@@ -1362,6 +1535,7 @@ mixin _ControllerOps on ChangeNotifier, _ControllerState {
     _store.write(_moneyUnitStyleKey, unitStyle.name);
     _store.write(_hideSingleCurrencyUnitKey, hideInSingleCurrency.toString());
     notifyListeners();
+    _notifySyncChanged();
   }
 
   /// 记账自动识别（`category_suggest.dart` 的 `suggestEntry`）总开关：关闭后手动记账
@@ -1385,6 +1559,7 @@ mixin _ControllerOps on ChangeNotifier, _ControllerState {
     _autoSuggestEnabled = value;
     _store.write(_autoSuggestKey, value.toString());
     notifyListeners();
+    _notifySyncChanged();
   }
 
   /// 主设置页一次性提交显示与记账偏好；所有 KV 写入完成后才更新 Controller。
@@ -1400,6 +1575,7 @@ mixin _ControllerOps on ChangeNotifier, _ControllerState {
     required String? defaultAccountId,
     required bool autoSuggestEnabled,
     required bool showRunningBalance,
+    required NumberPadLayout numberPadLayout,
   }) async {
     final nextFontScale = fontScale ?? _fontScale;
     final nextDefaultAccounts = Map<String, String>.of(_defaultAccountIds);
@@ -1448,6 +1624,7 @@ mixin _ControllerOps on ChangeNotifier, _ControllerState {
         _runningBalanceKey,
         showRunningBalance.toString(),
       );
+      await _store.writeAndFlush(_numberPadLayoutKey, numberPadLayout.name);
     } catch (error, stackTrace) {
       for (final entry in previous.entries) {
         try {
@@ -1478,10 +1655,12 @@ mixin _ControllerOps on ChangeNotifier, _ControllerState {
       ..addAll(nextDefaultAccounts);
     _autoSuggestEnabled = autoSuggestEnabled;
     _showRunningBalance = showRunningBalance;
+    _numberPadLayout = numberPadLayout;
     themePreferenceListenable.value = themePreference;
     localePreferenceListenable.value = localePreference;
     fontScaleListenable.value = nextFontScale;
     notifyListeners();
+    _notifySyncChanged();
     return true;
   }
 
@@ -1682,6 +1861,7 @@ mixin _ControllerOps on ChangeNotifier, _ControllerState {
         : AssetAccountViewMode.group;
     _store.write(_assetViewModeKey, _assetAccountViewMode.name);
     notifyListeners();
+    _notifySyncChanged();
   }
 
   /// Saves the asset page's appearance and ordering as one explicit editor
@@ -1801,6 +1981,7 @@ mixin _ControllerOps on ChangeNotifier, _ControllerState {
       ..clear()
       ..addAll(nextCollapsedSections);
     notifyListeners();
+    _notifySyncChanged();
     return true;
   }
 
@@ -1823,6 +2004,7 @@ mixin _ControllerOps on ChangeNotifier, _ControllerState {
     }
     _persistAssetSectionCollapsed();
     notifyListeners();
+    _notifySyncChanged();
   }
 
   List<Account> sortedAccountsForAssetSection({
@@ -1878,6 +2060,7 @@ mixin _ControllerOps on ChangeNotifier, _ControllerState {
         .toList();
     _persistAssetAccountOrders();
     notifyListeners();
+    _notifySyncChanged();
   }
 
   List<T> sortedAssetSections<T>({
@@ -1931,6 +2114,7 @@ mixin _ControllerOps on ChangeNotifier, _ControllerState {
         next.map(idOf).toList();
     _persistAssetSectionOrders();
     notifyListeners();
+    _notifySyncChanged();
   }
 
   /// 页面的面板配置(含关闭项),顺序即渲染顺序。
@@ -1959,6 +2143,7 @@ mixin _ControllerOps on ChangeNotifier, _ControllerState {
     panels[index] = panels[index].copyWith(enabled: enabled);
     _persistPagePanels(page);
     notifyListeners();
+    _notifySyncChanged();
     return true;
   }
 
@@ -1967,6 +2152,7 @@ mixin _ControllerOps on ChangeNotifier, _ControllerState {
     _pagePanels[page] = _defaultPanelSettings(page.specs);
     _persistPagePanels(page);
     notifyListeners();
+    _notifySyncChanged();
   }
 
   void reorderPanels(PanelPageKind page, int oldIndex, int newIndex) {
@@ -1981,6 +2167,7 @@ mixin _ControllerOps on ChangeNotifier, _ControllerState {
     panels.insert(newIndex.clamp(0, panels.length).toInt(), moved);
     _persistPagePanels(page);
     notifyListeners();
+    _notifySyncChanged();
   }
 
   Future<bool> savePanelSettingsDraft(
@@ -1999,6 +2186,7 @@ mixin _ControllerOps on ChangeNotifier, _ControllerState {
     }
     _pagePanels[page] = normalized;
     notifyListeners();
+    _notifySyncChanged();
     return true;
   }
 
@@ -2952,6 +3140,7 @@ mixin _ControllerOps on ChangeNotifier, _ControllerState {
     _activeBookId = bookId;
     _store.write(_activeBookKey, _activeBookId);
     notifyListeners();
+    _notifySyncChanged();
   }
 
   bool deleteLedgerBook(String bookId) {
@@ -2993,6 +3182,7 @@ mixin _ControllerOps on ChangeNotifier, _ControllerState {
     _persistAssetAccountOrders();
     _persistAssetSectionOrders();
     notifyListeners();
+    _notifySyncChanged();
     return true;
   }
 
@@ -4072,6 +4262,7 @@ mixin _ControllerOps on ChangeNotifier, _ControllerState {
     }
     _profile = profile;
     notifyListeners();
+    _notifySyncChanged();
     return true;
   }
 
@@ -4083,6 +4274,7 @@ mixin _ControllerOps on ChangeNotifier, _ControllerState {
       _store.write(_assetCoverKey, _assetCoverUrl);
     }
     notifyListeners();
+    _notifySyncChanged();
   }
 
   void resetAllData() {
@@ -4152,6 +4344,7 @@ mixin _ControllerOps on ChangeNotifier, _ControllerState {
     themePreferenceListenable.value = _themePreference;
     fontScaleListenable.value = _fontScale;
     notifyListeners();
+    _notifySyncChanged();
   }
 
   String exportDataJson() {
@@ -4159,54 +4352,59 @@ mixin _ControllerOps on ChangeNotifier, _ControllerState {
       'app': 'verifin',
       'version': 3,
       'exportedAt': DateTime.now().toIso8601String(),
-      'data': <String, Object?>{
-        'ledgerBooks': _ledgerBooks.map((book) => book.toJson()).toList(),
-        'activeBookId': _activeBookId,
-        'entries': _entries.map((entry) => entry.toJson()).toList(),
-        'accounts': _accounts.map((account) => account.toJson()).toList(),
-        'accountGroups': _accountGroups.map((group) => group.toJson()).toList(),
-        'categories': _categories.map((category) => category.toJson()).toList(),
-        'tags': _tags.map((tag) => tag.toJson()).toList(),
-        'attachments': _attachments.map((a) => a.toJson()).toList(),
-        'recurringRules': _recurringRules.map((r) => r.toJson()).toList(),
-        'exchangeRates': _exchangeRates.map((rate) => rate.toJson()).toList(),
-        'monthlyBudgets': Map<String, double>.from(_monthlyBudgets),
-        'categoryBudgets': Map<String, double>.from(_categoryBudgets),
-        'dailyBudgets': Map<String, double>.from(_dailyBudgets),
-        'budgetCycleStartDays': Map<String, int>.from(_budgetCycleStartDays),
-        'budgetPeriodKinds': _budgetPeriodKinds.map(
-          (key, value) => MapEntry(key, value.name),
-        ),
-        'profile': _profile.toJson(),
-        'themePreference': _themePreference.name,
-        'assetCoverUrl': _assetCoverUrl,
-        'hapticsEnabled': _hapticsEnabled,
-        'assetAccountViewMode': _assetAccountViewMode.name,
-        'collapsedAssetSections': _collapsedAssetSections.toList(),
-        'assetAccountOrders': _assetAccountOrders,
-        'assetSectionOrders': _assetSectionOrders,
-        'homePanels': _pagePanels[PanelPageKind.home]!
-            .map((item) => item.toJson())
-            .toList(),
-        'reportPanels': _pagePanels[PanelPageKind.reports]!
-            .map((item) => item.toJson())
-            .toList(),
-        'defaultAccountIds': Map<String, String>.from(_defaultAccountIds),
-        'fabActionMode': _fabActionMode.name,
-        'amountForceTwoDecimals': _amountForceTwoDecimals,
-        'currencyFractionStyle': amount_format.currencyFractionStyle.name,
-        'moneyUnitStyle': _moneyUnitStyle.name,
-        'hideUnitInSingleCurrency': _hideUnitInSingleCurrency,
-        'autoSuggestEnabled': _autoSuggestEnabled,
-        'showRunningBalance': _showRunningBalance,
-        'homeTrendConfig': _homeTrendConfig.toJson(),
-        // 用户小组件设计属于可迁移数据；Android appWidgetId 不进入备份。
-        'userWidgetDefinitions': userWidgetDefinitions
-            .map((definition) => definition.toJson())
-            .toList(),
-      },
+      'data': exportDataSection(),
     };
     return const JsonEncoder.withIndent('  ').convert(payload);
+  }
+
+  /// 导出内容的 `data` 段。备份导出与同步投影**共用这一处**，保证
+  /// 「能备份的字段」与「能同步的字段」不会各自漂移成两份清单。
+  ///
+  /// 公开（而非私有）是因为同步层要拿结构化 `Map`，而不是让调用方去解析上面那段
+  /// pretty-printed JSON：投影每次比较都要读它，字符串往返纯属浪费。
+  Map<String, Object?> exportDataSection() {
+    return <String, Object?>{
+      'ledgerBooks': _ledgerBooks.map((book) => book.toJson()).toList(),
+      'activeBookId': _activeBookId,
+      'entries': _entries.map((entry) => entry.toJson()).toList(),
+      'accounts': _accounts.map((account) => account.toJson()).toList(),
+      'accountGroups': _accountGroups.map((group) => group.toJson()).toList(),
+      'categories': _categories.map((category) => category.toJson()).toList(),
+      'tags': _tags.map((tag) => tag.toJson()).toList(),
+      'attachments': _attachments.map((a) => a.toJson()).toList(),
+      'recurringRules': _recurringRules.map((r) => r.toJson()).toList(),
+      'exchangeRates': _exchangeRates.map((rate) => rate.toJson()).toList(),
+      'monthlyBudgets': Map<String, double>.from(_monthlyBudgets),
+      'categoryBudgets': Map<String, double>.from(_categoryBudgets),
+      'dailyBudgets': Map<String, double>.from(_dailyBudgets),
+      'budgetCycleStartDays': Map<String, int>.from(_budgetCycleStartDays),
+      'budgetPeriodKinds': _budgetPeriodKinds.map(
+        (key, value) => MapEntry(key, value.name),
+      ),
+      'profile': _profile.toJson(),
+      'themePreference': _themePreference.name,
+      'assetCoverUrl': _assetCoverUrl,
+      'hapticsEnabled': _hapticsEnabled,
+      'assetAccountViewMode': _assetAccountViewMode.name,
+      'collapsedAssetSections': _collapsedAssetSections.toList(),
+      'assetAccountOrders': _assetAccountOrders,
+      'assetSectionOrders': _assetSectionOrders,
+      'homePanels': _pagePanels[PanelPageKind.home]!
+          .map((item) => item.toJson())
+          .toList(),
+      'reportPanels': _pagePanels[PanelPageKind.reports]!
+          .map((item) => item.toJson())
+          .toList(),
+      'defaultAccountIds': Map<String, String>.from(_defaultAccountIds),
+      'fabActionMode': _fabActionMode.name,
+      'amountForceTwoDecimals': _amountForceTwoDecimals,
+      'currencyFractionStyle': amount_format.currencyFractionStyle.name,
+      'moneyUnitStyle': _moneyUnitStyle.name,
+      'hideUnitInSingleCurrency': _hideUnitInSingleCurrency,
+      'autoSuggestEnabled': _autoSuggestEnabled,
+      'showRunningBalance': _showRunningBalance,
+      'homeTrendConfig': _homeTrendConfig.toJson(),
+    };
   }
 
   /// 从明文导出 JSON 导入。**字节层的格式判定（zip/加密信封/明文）不在 controller**
@@ -4400,11 +4598,6 @@ mixin _ControllerOps on ChangeNotifier, _ControllerState {
         ? HomeTrendConfig.fromJson(Map<String, dynamic>.from(homeTrendValue))
         : HomeTrendConfig.defaults;
 
-    final nextWidgetDefinitions = _decodeModelList<UserWidgetDefinition>(
-      data['userWidgetDefinitions'],
-      UserWidgetDefinition.fromJson,
-    ).where((definition) => definition.id.isNotEmpty).toList(growable: false);
-
     _validateImportedCurrencyData(
       books: nextLedgerBooks,
       accounts: nextAccounts,
@@ -4497,11 +4690,7 @@ mixin _ControllerOps on ChangeNotifier, _ControllerState {
     _autoSuggestEnabled = nextAutoSuggestEnabled;
     _showRunningBalance = nextShowRunningBalance;
     _homeTrendConfig = nextHomeTrendConfig;
-    // v1/v2 备份没有该字段，按空设计处理；旧设备上的实例配置仍可由
-    // WidgetConfigStore 在读取时按 legacy appWidgetId 惰性迁移。
-    WidgetConfigStore.saveDefinitionsSync(_store, nextWidgetDefinitions);
-    // 桌面 appWidgetId 是设备私有绑定，导入设计后必须解除旧设备实例，避免
-    // 旧实例继续引用已不存在的设计；用户可在“我的小组件”中重新添加。
+    // 桌面 appWidgetId 与配置只属于当前设备，不随备份导入。
     WidgetConfigStore.savePlacementsSync(_store, const <WidgetPlacement>[]);
 
     // 备份恢复零参照完整性校验，是「幽灵同名分类」的唯一现实入口（内部不一致的外部/
@@ -4541,6 +4730,9 @@ mixin _ControllerOps on ChangeNotifier, _ControllerState {
     }
     themePreferenceListenable.value = _themePreference;
     notifyListeners();
+    // 导入/恢复是真实的本地变更（整库替换），必须上报同步：否则下一次比较只会
+    // 看到「导出内容变了」而无法区分它是本地改动还是远端回声。
+    _notifySyncChanged();
   }
 
   void _validateImportedCurrencyData({

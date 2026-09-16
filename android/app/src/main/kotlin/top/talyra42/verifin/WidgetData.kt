@@ -23,6 +23,19 @@ object WidgetData {
     // 本月预算小组件（展示本月可用/超支金额）。
     const val KEY_BUDGET_AMOUNT = "month_budget"
     const val KEY_BUDGET_LABEL = "month_budget_label"
+    const val KEY_BUDGET_USAGE = "month_budget_usage"
+    const val KEY_BUDGET_NEXT_USAGE = "next_budget_usage"
+    const val KEY_NET_WORTH_POINTS = "net_worth_points"
+    const val KEY_DARK_THEME = "dark_theme"
+    const val KEY_LOCALE = "locale"
+
+    fun localizedContext(context: Context): Context {
+        val language = read(context, KEY_LOCALE, "")
+        if (language.isBlank()) return context
+        val config = android.content.res.Configuration(context.resources.configuration)
+        config.setLocale(java.util.Locale.forLanguageTag(language))
+        return context.createConfigurationContext(config)
+    }
 
     // 资产总额小组件。
     const val KEY_NET_WORTH_AMOUNT = "net_worth"
@@ -39,6 +52,8 @@ object WidgetData {
     private const val INSTANCE_CONFIG_PREFIX = "instance_config_"
     private const val DEFINITIONS_KEY = "user_widget_definitions"
     private const val INSTANCE_DEFINITION_PREFIX = "user_widget_definition_"
+    private const val WIDGET_BOOKS_KEY = "widget_books"
+    private const val WIDGET_SNAPSHOTS_KEY = "widget_snapshots"
 
     /** A saved design owned by the user. Kept as JSON so Flutter can evolve the schema. */
     data class UserDefinition(
@@ -149,6 +164,7 @@ object WidgetData {
         val chartDays: Int = 30,
         val action: String = "app",
         val hideAmounts: Boolean = false,
+        val backgroundColor: Int = 0xFF1E293B.toInt(),
     )
 
     fun readInstanceConfig(context: Context, widgetId: Int): InstanceConfig {
@@ -165,6 +181,7 @@ object WidgetData {
                 chartDays = json.optInt("chartDays", 30).coerceIn(7, 365),
                 action = json.optString("action", "app"),
                 hideAmounts = json.optBoolean("hideAmounts", false),
+                backgroundColor = json.optInt("backgroundColor", 0xFF1E293B.toInt()),
             )
         } catch (_: Exception) {
             InstanceConfig()
@@ -183,6 +200,15 @@ object WidgetData {
             put("chartDays", values["chartDays"]?.toIntOrNull() ?: current.chartDays)
             put("action", values["action"] ?: current.action)
             put("hideAmounts", values["hideAmounts"]?.toBoolean() ?: current.hideAmounts)
+            val colorText = values["backgroundColor"]?.removePrefix("#")
+            val colorValue = colorText?.toLongOrNull(16)?.let {
+                when (colorText.length) {
+                    6 -> (0xFF000000L or it).toInt()
+                    8 -> it.toInt()
+                    else -> null
+                }
+            }
+            put("backgroundColor", colorValue ?: current.backgroundColor)
         }
         write(context, mapOf(instanceConfigKey(widgetId) to json.toString()))
     }
@@ -195,9 +221,65 @@ object WidgetData {
 
     private fun instanceConfigKey(widgetId: Int) = "$INSTANCE_CONFIG_PREFIX$widgetId"
 
+    fun writeWidgetBooks(context: Context, books: List<Pair<String, String>>) {
+        val json = org.json.JSONArray().apply {
+            books.forEach { (id, name) ->
+                put(JSONObject().apply { put("id", id); put("name", name) })
+            }
+        }
+        write(context, mapOf(WIDGET_BOOKS_KEY to json.toString()))
+    }
+
+    fun readWidgetBooks(context: Context): List<Pair<String, String>> {
+        val raw = read(context, WIDGET_BOOKS_KEY, "")
+        if (raw.isBlank()) return emptyList()
+        return runCatching {
+            val json = org.json.JSONArray(raw)
+            (0 until json.length()).mapNotNull { index ->
+                val item = json.optJSONObject(index) ?: return@mapNotNull null
+                val id = item.optString("id").takeIf { it.isNotBlank() } ?: return@mapNotNull null
+                id to item.optString("name", id)
+            }
+        }.getOrDefault(emptyList())
+    }
+
+    fun backgroundResource(color: Int): Int = when (color) {
+        0xFF111827.toInt() -> R.drawable.widget_background_ink
+        0xFFFFFFFF.toInt() -> R.drawable.widget_background_white
+        0xFF312E81.toInt() -> R.drawable.widget_background_indigo
+        0xFF0F3D3E.toInt() -> R.drawable.widget_background_teal
+        else -> R.drawable.widget_background_navy
+    }
+
+    fun writeWidgetSnapshots(context: Context, json: String) {
+        write(context, mapOf(WIDGET_SNAPSHOTS_KEY to json))
+    }
+
+    fun snapshotMetric(
+        context: Context,
+        bookId: String,
+        metric: String,
+        fallbackAmount: String,
+        fallbackLabel: String,
+    ): Pair<String, String> {
+        if (bookId.isBlank()) return fallbackAmount to fallbackLabel
+        return runCatching {
+            val books = JSONObject(read(context, WIDGET_SNAPSHOTS_KEY, "{}"))
+            val values = books.optJSONObject(bookId)?.optJSONObject(metric) ?: return@runCatching fallbackAmount to fallbackLabel
+            values.optString("amount", fallbackAmount) to values.optString("label", fallbackLabel)
+        }.getOrDefault(fallbackAmount to fallbackLabel)
+    }
+
+    fun snapshotPoints(context: Context, bookId: String): List<Float> = runCatching {
+        val books = JSONObject(read(context, WIDGET_SNAPSHOTS_KEY, "{}"))
+        val metric = books.optJSONObject(bookId)?.optJSONObject("periodExpense")
+        metric?.optString("points", "").orEmpty().split(',').mapNotNull { it.toFloatOrNull() }
+    }.getOrDefault(emptyList())
+
     /** Resolve a metric from the global Flutter snapshot. This keeps native rendering
      * deterministic while allowing new metrics to be added without changing providers. */
-    fun metric(context: Context, metric: String, fallbackAmount: String, fallbackLabel: String): Pair<String, String> {
+    fun metric(context: Context, metric: String, fallbackAmount: String, fallbackLabel: String, bookId: String = ""): Pair<String, String> {
+        if (bookId.isNotBlank()) return snapshotMetric(context, bookId, metric, fallbackAmount, fallbackLabel)
         val normalized = metric.trim().lowercase()
         return when (normalized) {
             "today", "today_expense", "daily_expense" -> todayForToday(context)
@@ -304,6 +386,19 @@ object WidgetData {
         return read(context, KEY_BUDGET_FULL, amount) to
             read(context, KEY_BUDGET_FULL_LABEL, label)
     }
+
+    fun budgetUsage(context: Context): Float? {
+        val expiry = read(context, KEY_BUDGET_EXPIRY, "")
+        val nextExpiry = read(context, KEY_BUDGET_NEXT_EXPIRY, "")
+        val key = when {
+            expiry.isEmpty() || currentDate() <= expiry -> KEY_BUDGET_USAGE
+            nextExpiry.isNotEmpty() && currentDate() <= nextExpiry -> KEY_BUDGET_NEXT_USAGE
+            else -> return null
+        }
+        return read(context, key, "").toFloatOrNull()?.takeIf { it.isFinite() }
+    }
+
+    fun darkTheme(context: Context) = read(context, KEY_DARK_THEME, "true") == "true"
 
     /// 批量写入字段（只写传入的键，缺省键保持原值）。
     fun write(context: Context, values: Map<String, String>) {

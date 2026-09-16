@@ -29,6 +29,12 @@ import 'logging/app_logger.dart';
 import 'models.dart';
 import 'recurring.dart';
 import 'reminder/reminder_settings.dart';
+import 'sync/sync_change_tracker.dart';
+import 'sync/sync_conflict.dart';
+import 'sync/sync_coordinator.dart';
+import 'sync/sync_engine.dart';
+import 'sync/sync_store.dart';
+import 'sync/webdav_sync_transport.dart';
 
 part 'veri_fin_controller_state.dart';
 part 'veri_fin_controller_ops.dart';
@@ -54,7 +60,6 @@ const Set<String> _knownBackupDataKeys = <String>{
   'themePreference',
   'homePanels',
   'reportPanels',
-  'userWidgetDefinitions',
 };
 
 // 偏好类 KV 键（库级私有以便各 part 共享）。全部 `verifin.*.v1` 键集中在此，
@@ -81,6 +86,7 @@ const String _backupPassphraseKey = 'verifin.backup_passphrase.v1';
 const String _webdavKey = 'verifin.webdav.v1';
 const String _reminderKey = 'verifin.reminder.v1';
 const String _fabActionKey = 'verifin.fab_action.v1';
+const String _numberPadLayoutKey = 'verifin.number_pad_layout.v1';
 const String _defaultAccountKey = 'verifin.default_account.v1';
 const String _budgetCycleKey = 'verifin.budget_cycle.v1';
 const String _budgetPeriodKindKey = 'verifin.budget_period.v1';
@@ -95,6 +101,7 @@ const String _aiCapabilitiesKey = 'verifin.ai_capabilities.v1';
 const String _aiChatHistoryKey = 'verifin.ai_chat.v1';
 const String _homeTrendKey = 'verifin.home_metrics.v1';
 const String _onboardingKey = 'verifin.onboarding.v1';
+const String _backupTransportModeKey = 'verifin.backup_transport_mode.v1';
 
 String _panelsKeyFor(PanelPageKind page) {
   switch (page) {
@@ -118,7 +125,8 @@ int _compareEntriesLatestFirst(LedgerEntry a, LedgerEntry b) {
 /// 由应用根组件注入，控制器本身不做文件 I/O，测试宿主保持为空。
 
 class VeriFinController extends ChangeNotifier
-    with _ControllerState, _ControllerOps {
+    with _ControllerState, _ControllerOps
+    implements SyncProjectionSource {
   VeriFinController._(
     this._store,
     this._repository, {
@@ -143,6 +151,12 @@ class VeriFinController extends ChangeNotifier
 
   /// 唯一的构造入口：同步载入偏好类 KV 数据后，从 SQLite 载入账目类数据
   /// （全新数据库首启动写入默认数据）。账目类数据只以 SQLite 为准。
+  ///
+  /// 载入序列的最后一件事是重放未完成的 KV 偏好 journal：上次会话若在
+  /// 「SQLite 元数据已提交、本地 KV 还没写」之间被打断，这里补写并让内存字段与
+  /// KV 对齐。**必须在启动时、投影对账之前完成**——对账拿的是
+  /// [exportDataForSync] 的内存投影，若 KV 仍是旧值，远端已应用的偏好在本地看起来
+  /// 从未生效，会被判成本地新变更再上传一遍。
   static Future<VeriFinController> create(
     LocalKeyValueStore store, {
     required LedgerRepository repository,
@@ -156,6 +170,7 @@ class VeriFinController extends ChangeNotifier
       systemIsEnglish: systemIsEnglish,
     );
     await controller._loadFromRepository();
+    await controller.applySyncPreferenceJournal();
     controller._syncAmountFormatContext();
     return controller;
   }
@@ -172,8 +187,18 @@ class VeriFinController extends ChangeNotifier
   /// 软件日志入口，供「软件日志」页读取；未注入时为 null。
   AppLogger? get logger => _logger;
 
+  /// 同步层读取当前全量数据的入口。
+  ///
+  /// 复用 [exportDataJson] 的**同一份**内容（`exportDataSection()`），避免出现
+  /// 「备份导出的字段集」与「同步上传的字段集」两套真相。这里刻意返回结构化 `Map`
+  /// 而不是 JSON 字符串：投影每次比较都要读它，字符串往返纯属浪费，且会把已经规范
+  /// 化过的数值表示再改变一次。
+  @override
+  Map<String, Object?> exportDataForSync() => exportDataSection();
+
   @override
   void dispose() {
+    _syncChangeTracker?.dispose();
     themePreferenceListenable.dispose();
     fontScaleListenable.dispose();
     localePreferenceListenable.dispose();

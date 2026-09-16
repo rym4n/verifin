@@ -185,6 +185,10 @@ class _WebdavEditDialogState extends State<_WebdavEditDialog> {
   String? _statusText;
   bool _testing = false;
 
+  /// 只承载服务器地址与凭证。传输模式（手动/自动上传/自动同步）由数据管理页的
+  /// 独立设置项管理，这里**不再**读改写 [WebdavConfig.autoUpload]——对话框保留
+  /// 旧值会让「编辑一次服务器地址」把用户刚设的传输模式悄悄改回去（互斥约束
+  /// 只有 `setBackupTransportMode` 知道）。
   WebdavConfig _current() => WebdavConfig(
     url: _urlController.text.trim(),
     username: _userController.text.trim(),
