@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'package:verifin/app/backup/webdav_config.dart';
+import 'package:verifin/app/logging/app_logger.dart';
 import 'package:verifin/app/models.dart';
 import 'package:verifin/app/sync/sync_change_tracker.dart';
 import 'package:verifin/app/sync/sync_engine.dart';
@@ -10,6 +11,7 @@ import 'package:verifin/app/sync/sync_codec.dart';
 import 'package:verifin/app/sync/sync_clock.dart';
 import 'package:verifin/app/sync/sync_models.dart';
 import 'package:verifin/app/sync/webdav_sync_transport_stub.dart';
+import 'package:verifin/app/sync/webdav_sync_transport.dart';
 import 'package:verifin/app/veri_fin_controller.dart';
 import 'package:verifin/data/app_database.dart';
 import 'package:verifin/data/ledger_repository.dart';
@@ -17,6 +19,228 @@ import 'package:verifin/local_storage/local_storage.dart';
 
 void main() {
   setUpAll(sqfliteFfiInit);
+
+  test(
+    'software logs correlate every synchronization stage with one run ID',
+    () async {
+      final db = await AppDatabase.open(
+        factory: databaseFactoryFfi,
+        path: inMemoryDatabasePath,
+      );
+      final repo = SqliteLedgerRepository(db);
+      final store = LocalKeyValueStore();
+      final logger = AppLogger(store);
+      final controller = await VeriFinController.create(
+        store,
+        repository: repo,
+        logger: logger,
+      );
+      addTearDown(() async {
+        controller.dispose();
+        logger.dispose();
+        await db.close();
+      });
+      controller.setWebdavConfig(
+        const WebdavConfig(
+          url: 'https://dav.example.com/private/user?token=url-secret',
+          username: 'sync-user-secret',
+          password: 'sync-password-secret',
+        ),
+      );
+      final runtime = await controller.createSyncRuntime(
+        transport: StubWebdavSyncTransport(),
+      );
+
+      final result = await runtime.run(SyncTrigger.manual);
+
+      final messages = logger.records.reversed
+          .where((record) => record.source == 'sync')
+          .map((record) => record.message)
+          .toList(growable: false);
+      final start = messages.firstWhere(
+        (message) => message.startsWith('同步开始'),
+      );
+      final match = RegExp(r'run=([A-F0-9]{6})\b').firstMatch(start);
+      expect(match, isNotNull);
+      final runId = match!.group(1)!;
+      expect(start, contains('trigger=manual'));
+      expect(
+        messages,
+        containsAll(<String>[
+          '同步阶段 run=$runId phase=prepare state=start',
+          '同步阶段 run=$runId phase=prepare state=success',
+          '同步阶段 run=$runId phase=initialize state=start',
+          '同步阶段 run=$runId phase=initialize state=success',
+          '同步阶段 run=$runId phase=reconcile state=start',
+          '同步阶段 run=$runId phase=reconcile state=success',
+          '同步阶段 run=$runId phase=ensure_remote state=start',
+          '同步阶段 run=$runId phase=ensure_remote state=success',
+          '同步阶段 run=$runId phase=upload state=start',
+          '同步阶段 run=$runId phase=upload state=success',
+          '同步阶段 run=$runId phase=download state=start',
+          '同步阶段 run=$runId phase=download state=success',
+        ]),
+      );
+      expect(
+        messages.last,
+        '同步结束 run=$runId uploaded=${result.uploaded} '
+        'downloaded=${result.downloaded} conflicts=${result.conflicts} '
+        'pending=${result.pending} errorCode=none',
+      );
+      expect(
+        messages.where((message) => message.contains('run=')),
+        everyElement(contains('run=$runId')),
+      );
+      final exported = logger.exportText();
+      expect(exported, isNot(contains('dav.example.com')));
+      expect(exported, isNot(contains('private/user')));
+      expect(exported, isNot(contains('url-secret')));
+      expect(exported, isNot(contains('sync-user-secret')));
+      expect(exported, isNot(contains('sync-password-secret')));
+    },
+  );
+
+  test(
+    'software logs expose only redacted WebDAV failure diagnostics',
+    () async {
+      final db = await AppDatabase.open(
+        factory: databaseFactoryFfi,
+        path: inMemoryDatabasePath,
+      );
+      final repo = SqliteLedgerRepository(db);
+      final store = LocalKeyValueStore();
+      final logger = AppLogger(store);
+      final controller = await VeriFinController.create(
+        store,
+        repository: repo,
+        logger: logger,
+      );
+      addTearDown(() async {
+        controller.dispose();
+        logger.dispose();
+        await db.close();
+      });
+      controller.setWebdavConfig(
+        const WebdavConfig(
+          url: 'https://dav.example.com/private/path?token=config-secret',
+          username: 'private-user',
+          password: 'private-password',
+        ),
+      );
+      final runtime = await controller.createSyncRuntime(
+        transport: _DiagnosticFailureTransport(),
+      );
+
+      final result = await runtime.run(SyncTrigger.manual);
+
+      expect(result.errorCode, 'network');
+      final messages = logger.records.reversed
+          .where((record) => record.source == 'sync')
+          .map((record) => record.message)
+          .toList(growable: false);
+      final start = messages.firstWhere(
+        (message) => message.startsWith('同步开始'),
+      );
+      final runId = RegExp(r'run=([A-F0-9]{6})\b').firstMatch(start)!.group(1)!;
+      expect(
+        messages,
+        contains(
+          '同步阶段 run=$runId phase=initialize state=error '
+          'errorCode=network',
+        ),
+      );
+      expect(
+        messages,
+        contains(
+          'WebDAV失败 run=$runId phase=initialize method=GET '
+          'operation=download file=manifest status=302 redirects=0 '
+          'redirect=downgrade reason=redirect_downgrade',
+        ),
+      );
+      expect(
+        messages.last,
+        '同步结束 run=$runId uploaded=0 downloaded=0 conflicts=0 '
+        'pending=0 errorCode=network',
+      );
+      final exported = logger.exportText();
+      for (final secret in <String>[
+        'dav.example.com',
+        'private/path',
+        'config-secret',
+        'private-user',
+        'private-password',
+        'Authorization',
+        'ledger-body',
+      ]) {
+        expect(exported, isNot(contains(secret)));
+      }
+    },
+  );
+
+  test(
+    'failure to persist error state does not drop the final sync log',
+    () async {
+      final db = await AppDatabase.open(
+        factory: databaseFactoryFfi,
+        path: inMemoryDatabasePath,
+      );
+      final repo = SqliteLedgerRepository(db);
+      final store = LocalKeyValueStore();
+      final logger = AppLogger(store);
+      final controller = await VeriFinController.create(
+        store,
+        repository: repo,
+        logger: logger,
+      );
+      addTearDown(() async {
+        controller.dispose();
+        logger.dispose();
+        await db.close();
+      });
+      controller.setWebdavConfig(
+        const WebdavConfig(
+          url: 'https://dav.example.com',
+          username: 'user',
+          password: 'password',
+        ),
+      );
+      final runtime = await controller.createSyncRuntime(
+        transport: _DiagnosticFailureTransport(),
+      );
+      await db.db.execute('''
+      CREATE TRIGGER fail_sync_scan_state_insert
+      BEFORE INSERT ON sync_scan_state
+      BEGIN
+        SELECT RAISE(ABORT, 'scan state write blocked');
+      END
+    ''');
+      await db.db.execute('''
+      CREATE TRIGGER fail_sync_scan_state_update
+      BEFORE UPDATE ON sync_scan_state
+      BEGIN
+        SELECT RAISE(ABORT, 'scan state write blocked');
+      END
+    ''');
+
+      final result = await runtime.run(SyncTrigger.manual);
+
+      expect(result.errorCode, 'network');
+      final messages = logger.records.reversed
+          .where((record) => record.source == 'sync')
+          .map((record) => record.message)
+          .toList(growable: false);
+      final runId = RegExp(
+        r'run=([A-F0-9]{6})\b',
+      ).firstMatch(messages.first)!.group(1)!;
+      expect(messages, contains('同步状态记录失败 run=$runId errorCode=persist'));
+      expect(
+        messages.last,
+        '同步结束 run=$runId uploaded=0 downloaded=0 conflicts=0 '
+        'pending=0 errorCode=network',
+      );
+    },
+  );
+
   test(
     'manual synchronization uses one runtime and baseline uploads complete events only once',
     () async {
@@ -261,4 +485,23 @@ void main() {
       second.dispose();
     },
   );
+}
+
+class _DiagnosticFailureTransport extends StubWebdavSyncTransport {
+  @override
+  Future<void> ensureSyncTree(WebdavConfig config) {
+    throw const WebdavException(
+      'https://private-user:private-password@dav.example.com/private/path '
+      'Authorization ledger-body',
+      diagnostic: WebdavDiagnostic(
+        method: 'GET',
+        operation: 'download',
+        fileKind: 'manifest',
+        statusCode: 302,
+        redirectCount: 0,
+        redirectRelation: 'downgrade',
+        reason: 'redirect_downgrade',
+      ),
+    );
+  }
 }

@@ -63,6 +63,25 @@ enum SyncTrigger {
   manual,
 }
 
+/// Stable phase names used by software logs to locate a sync failure.
+enum SyncPhase {
+  prepare('prepare'),
+  initialize('initialize'),
+  reconcile('reconcile'),
+  ensureRemote('ensure_remote'),
+  upload('upload'),
+  download('download');
+
+  const SyncPhase(this.logValue);
+
+  final String logValue;
+}
+
+enum SyncPhaseState { start, success, error }
+
+typedef SyncPhaseReporter =
+    void Function(SyncPhase phase, SyncPhaseState state, Object? error);
+
 /// Sync run result.
 class SyncRunResult {
   const SyncRunResult({
@@ -78,6 +97,13 @@ class SyncRunResult {
   final int conflicts;
   final int pending;
   final String? errorCode;
+}
+
+class _SyncRunProgress {
+  int uploaded = 0;
+  int downloaded = 0;
+  int conflicts = 0;
+  int pending = 0;
 }
 
 /// Sync engine: orchestrates upload, download, merge, and conflict resolution.
@@ -135,7 +161,10 @@ class SyncEngine {
   }
 
   /// Run a sync cycle: upload outbox, scan remote, download and merge.
-  Future<SyncRunResult> run({required SyncTrigger trigger}) async {
+  Future<SyncRunResult> run({
+    required SyncTrigger trigger,
+    SyncPhaseReporter? onPhase,
+  }) async {
     final transport = _transport;
     if (_config == null || transport == null) {
       return const SyncRunResult(
@@ -147,6 +176,7 @@ class SyncEngine {
       );
     }
 
+    final progress = _SyncRunProgress();
     try {
       if (await _repository.loadEnrollmentState() == 'enrolling') {
         await initializeFromRestoredData();
@@ -163,29 +193,60 @@ class SyncEngine {
       await _ensureClock();
 
       // Ensure sync tree exists
-      await transport.ensureSyncTree(_config!);
+      await _runPhase(
+        SyncPhase.ensureRemote,
+        () => transport.ensureSyncTree(_config!),
+        onPhase,
+      );
 
       // Upload phase
-      final uploaded = await _uploadOutbox();
+      progress.uploaded = await _runPhase(
+        SyncPhase.upload,
+        () => _uploadOutbox(progress),
+        onPhase,
+      );
 
       // Download phase
-      final (downloaded, conflicts, pending) = await _scanAndApply();
+      final scanResult = await _runPhase(
+        SyncPhase.download,
+        () => _scanAndApply(progress),
+        onPhase,
+      );
+      progress.downloaded = scanResult.$1;
+      progress.conflicts = scanResult.$2;
+      progress.pending = scanResult.$3;
 
       return SyncRunResult(
-        uploaded: uploaded,
-        downloaded: downloaded,
-        conflicts: conflicts,
-        pending: pending,
+        uploaded: progress.uploaded,
+        downloaded: progress.downloaded,
+        conflicts: progress.conflicts,
+        pending: progress.pending,
       );
     } catch (error) {
       _onError?.call(error);
       return SyncRunResult(
-        uploaded: 0,
-        downloaded: 0,
-        conflicts: 0,
-        pending: 0,
+        uploaded: progress.uploaded,
+        downloaded: progress.downloaded,
+        conflicts: progress.conflicts,
+        pending: progress.pending,
         errorCode: syncErrorCode(error),
       );
+    }
+  }
+
+  Future<T> _runPhase<T>(
+    SyncPhase phase,
+    Future<T> Function() action,
+    SyncPhaseReporter? reporter,
+  ) async {
+    reporter?.call(phase, SyncPhaseState.start, null);
+    try {
+      final result = await action();
+      reporter?.call(phase, SyncPhaseState.success, null);
+      return result;
+    } catch (error) {
+      reporter?.call(phase, SyncPhaseState.error, error);
+      rethrow;
     }
   }
 
@@ -585,7 +646,7 @@ class SyncEngine {
     return bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
   }
 
-  Future<int> _uploadOutbox() async {
+  Future<int> _uploadOutbox([_SyncRunProgress? progress]) async {
     final outbox = await _repository.loadOutbox();
     if (outbox.isEmpty) {
       return 0;
@@ -635,7 +696,16 @@ class SyncEngine {
             if (existingEvent != record.event &&
                 existingEvent !=
                     syncEventForWire(record.event!, limits: wireLimits)) {
-              throw StateError('sync_event_collision');
+              throw const WebdavFileCollision(
+                'sync_event_collision',
+                diagnostic: WebdavDiagnostic(
+                  method: 'GET',
+                  operation: 'inspect_existing',
+                  fileKind: 'event',
+                  statusCode: 200,
+                  reason: 'file_collision',
+                ),
+              );
             }
             wireEvents.add(existingEvent);
             if (existingEvent.entity.type == 'attachments' &&
@@ -695,6 +765,7 @@ class SyncEngine {
         // Mark batch uploaded only after commit succeeds.
         await _repository.markBatchUploaded(batchId);
         uploadedCount++;
+        progress?.uploaded = uploadedCount;
       } catch (error) {
         // Record error for propagation; continue trying remaining batches.
         lastUploadError = error;
@@ -792,7 +863,16 @@ class SyncEngine {
       );
       if (computeSyncPayloadHash(await _decodeDocument(bytes)) !=
           computeSyncPayloadHash(document)) {
-        throw const WebdavFileCollision('sync_document_collision');
+        throw WebdavFileCollision(
+          'sync_document_collision',
+          diagnostic: WebdavDiagnostic(
+            method: 'GET',
+            operation: 'inspect_existing',
+            fileKind: _fileKindFromSyncPath(path),
+            statusCode: 200,
+            reason: 'file_collision',
+          ),
+        );
       }
       return bytes;
     }
@@ -816,7 +896,15 @@ class SyncEngine {
     return bytes;
   }
 
-  Future<(int, int, int)> _scanAndApply() async {
+  static String _fileKindFromSyncPath(String path) {
+    if (path.endsWith('.vfsync')) return 'event';
+    if (path.endsWith('.manifest')) return 'manifest';
+    if (path.endsWith('.commit')) return 'commit';
+    if (path.endsWith('.blob')) return 'blob';
+    return 'tree';
+  }
+
+  Future<(int, int, int)> _scanAndApply([_SyncRunProgress? progress]) async {
     final joins = (await _repository.loadPendingBatches())
         .where((p) => p.reason == 'join_conflict' || p.reason == 'join_ready')
         .toList();
@@ -839,7 +927,12 @@ class SyncEngine {
         .where((p) => p.reason == 'join_conflict' || p.reason == 'join_ready')
         .length;
     if (remainingJoins > 0) {
-      return (0, (await _repository.loadConflicts()).length, remainingJoins);
+      final conflictCount = (await _repository.loadConflicts()).length;
+      if (progress != null) {
+        progress.conflicts = conflictCount;
+        progress.pending = remainingJoins;
+      }
+      return (0, conflictCount, remainingJoins);
     }
     final transport = _transport!;
     final remoteFiles = await transport.listSyncFiles(_config!);
@@ -852,6 +945,13 @@ class SyncEngine {
     var pendingCount = 0;
     var invalidReferences = false;
     final completedFiles = <WebdavSyncFile>[];
+
+    void captureProgress() {
+      if (progress == null) return;
+      progress.downloaded = downloadedCount;
+      progress.conflicts = conflictCount;
+      progress.pending = pendingCount;
+    }
 
     for (final batch in _causalBatchOrder(batches.values)) {
       if (!batch.isComplete) {
@@ -867,6 +967,7 @@ class SyncEngine {
               ? 'missing_commit'
               : 'missing_event',
         );
+        captureProgress();
         continue;
       }
 
@@ -881,6 +982,7 @@ class SyncEngine {
         final result = await _mergeAndApply(batch.events);
         downloadedCount += result.$1;
         conflictCount += result.$2;
+        captureProgress();
         if (result.$2 > 0) {
           await _repository.savePendingBatch(
             batch.batchId,
@@ -888,12 +990,14 @@ class SyncEngine {
             'conflict',
           );
           pendingCount++;
+          captureProgress();
         } else {
           final prepared = (await _repository.loadPendingBatches()).any(
             (p) => p.batchId == batch.batchId && p.reason == 'prepared',
           );
           if (prepared) {
             pendingCount++;
+            captureProgress();
           } else {
             completedFiles.addAll(batch.eventFiles);
             await _repository.removePendingBatch(batch.batchId);
@@ -909,6 +1013,7 @@ class SyncEngine {
           );
           invalidReferences = true;
           pendingCount++;
+          captureProgress();
           continue;
         }
         rethrow;
@@ -923,6 +1028,7 @@ class SyncEngine {
       pendingCount,
       (await _repository.loadPendingBatches()).length,
     );
+    captureProgress();
     if (pendingCount == 0) {
       await _repository.saveScanState(await _buildScanState(completedFiles));
     }

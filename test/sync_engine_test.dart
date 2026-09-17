@@ -6,7 +6,9 @@ import 'package:verifin/app/backup/webdav_config.dart';
 import 'package:verifin/app/sync/sync_clock.dart';
 import 'package:verifin/app/sync/sync_engine.dart';
 import 'package:verifin/app/sync/sync_models.dart';
+import 'package:verifin/app/sync/sync_wire.dart';
 import 'package:verifin/app/sync/webdav_sync_transport_stub.dart';
+import 'package:verifin/app/sync/webdav_sync_transport.dart';
 import 'package:verifin/data/app_database.dart';
 import 'package:verifin/data/ledger_repository.dart';
 import 'package:verifin/app/veri_fin_controller.dart';
@@ -253,6 +255,150 @@ void main() {
       final outbox = await repo.sync.loadOutbox();
       expect(outbox, isNotEmpty);
     });
+
+    test(
+      'download failure preserves batches already uploaded in the result',
+      () async {
+        final repo = InMemoryLedgerRepository();
+        final transport = _FailDownloadListingTransport();
+        final engine = SyncEngine(
+          repository: repo.sync,
+          transport: transport,
+          controller: repo,
+          config: testConfig,
+        );
+        final clock = SyncClock.createWithDeviceId('dev-progress');
+        final event = SyncEvent(
+          protocolVersion: syncProtocolVersion,
+          operationId: clock.nextOperationId(),
+          version: clock.nextVersion(),
+          entity: const SyncEntityKey(
+            scope: 'global',
+            type: 'profile',
+            id: 'default',
+          ),
+          operation: SyncOperationKind.upsert,
+          payloadHash: computeSyncPayloadHash({
+            'nickname': 'Progress',
+            'bio': '',
+            'avatarDataUrl': '',
+          }),
+          payload: {'nickname': 'Progress', 'bio': '', 'avatarDataUrl': ''},
+          batchId: 'batch-progress',
+          keyFingerprint: 'test-key',
+        );
+        await engine.enqueueBatch(
+          SyncBatchRecord(
+            batchId: event.batchId,
+            events: [event],
+            manifest: SyncBatchManifest(
+              batchId: event.batchId,
+              operationIds: [event.operationId],
+              blobHashes: const [],
+              manifestHash: 'manifest-hash',
+            ),
+          ),
+        );
+
+        final result = await engine.run(trigger: SyncTrigger.manual);
+
+        expect(result.uploaded, 1);
+        expect(result.downloaded, 0);
+        expect(result.conflicts, 0);
+        expect(result.pending, 0);
+        expect(result.errorCode, 'network');
+        expect(await repo.sync.loadOutbox(), isEmpty);
+      },
+    );
+
+    test(
+      'later upload failure preserves earlier completed batch count',
+      () async {
+        final repo = InMemoryLedgerRepository();
+        final transport = _FailSpecificCommitTransport('batch-fail');
+        final engine = SyncEngine(
+          repository: repo.sync,
+          transport: transport,
+          controller: repo,
+          config: testConfig,
+        );
+        final clock = SyncClock.createWithDeviceId('dev-partial-upload');
+        final first = _profileEvent(clock, 'batch-ok', 'profile-ok');
+        final second = _profileEvent(clock, 'batch-fail', 'profile-fail');
+        for (final event in <SyncEvent>[first, second]) {
+          await engine.enqueueBatch(
+            SyncBatchRecord(
+              batchId: event.batchId,
+              events: [event],
+              manifest: SyncBatchManifest(
+                batchId: event.batchId,
+                operationIds: [event.operationId],
+                blobHashes: const [],
+                manifestHash: 'manifest-hash',
+              ),
+            ),
+          );
+        }
+
+        final result = await engine.run(trigger: SyncTrigger.manual);
+
+        expect(result.uploaded, 1);
+        expect(result.errorCode, 'network');
+        expect(await repo.sync.loadOutbox(), hasLength(1));
+      },
+    );
+
+    test('manifest collision reports redacted WebDAV diagnostics', () async {
+      final repo = InMemoryLedgerRepository();
+      final transport = StubWebdavSyncTransport();
+      final engine = SyncEngine(
+        repository: repo.sync,
+        transport: transport,
+        controller: repo,
+        config: testConfig,
+      );
+      final clock = SyncClock.createWithDeviceId('dev-collision');
+      final event = _profileEvent(
+        clock,
+        'batch-collision',
+        'profile-collision',
+      );
+      await engine.enqueueBatch(
+        SyncBatchRecord(
+          batchId: event.batchId,
+          events: [event],
+          manifest: SyncBatchManifest(
+            batchId: event.batchId,
+            operationIds: [event.operationId],
+            blobHashes: const [],
+            manifestHash: 'manifest-hash',
+          ),
+        ),
+      );
+      transport.files['verifin-sync/v1/batches/dev-collision/'
+          'batch-collision.manifest'] = syncJsonBytes({
+        'protocolVersion': syncProtocolVersion,
+        'batchId': 'different-batch',
+      });
+      Object? phaseError;
+
+      final result = await engine.run(
+        trigger: SyncTrigger.manual,
+        onPhase: (phase, state, error) {
+          if (phase == SyncPhase.upload && state == SyncPhaseState.error) {
+            phaseError = error;
+          }
+        },
+      );
+
+      expect(result.errorCode, 'protocol');
+      expect(phaseError, isA<WebdavFileCollision>());
+      expect(
+        (phaseError! as WebdavFileCollision).safeLogDetails,
+        'method=GET operation=inspect_existing file=manifest status=200 '
+        'redirects=0 redirect=none reason=file_collision',
+      );
+    });
   });
 
   group('SyncEngine · 下载与应用', () {
@@ -303,6 +449,72 @@ void main() {
       expect((data['profile'] as Map)['nickname'], 'Remote');
     });
 
+    test(
+      'later invalid batch preserves earlier download and pending counts',
+      () async {
+        final repo = InMemoryLedgerRepository();
+        final controller = await VeriFinController.create(
+          LocalKeyValueStore(),
+          repository: repo,
+        );
+        addTearDown(controller.dispose);
+        final transport = StubWebdavSyncTransport();
+        final engine = SyncEngine(
+          repository: repo.sync,
+          transport: transport,
+          controller: controller,
+          config: testConfig,
+        );
+        final clock = SyncClock.createWithDeviceId('dev-partial-download');
+        final valid = SyncEvent(
+          protocolVersion: syncProtocolVersion,
+          operationId: clock.nextOperationId(),
+          version: clock.nextVersion(),
+          entity: const SyncEntityKey(
+            scope: 'global',
+            type: 'hapticsEnabled',
+            id: 'singleton',
+          ),
+          operation: SyncOperationKind.upsert,
+          payloadHash: computeSyncPayloadHash(false),
+          payload: false,
+          batchId: 'batch-valid',
+          keyFingerprint: 'test-key',
+        );
+        final invalidPayload = <String, Object?>{
+          'nickname': 42,
+          'bio': '',
+          'avatarDataUrl': '',
+        };
+        final invalid = SyncEvent(
+          protocolVersion: syncProtocolVersion,
+          operationId: clock.nextOperationId(),
+          version: clock.nextVersion(),
+          entity: const SyncEntityKey(
+            scope: 'global',
+            type: 'profile',
+            id: 'singleton',
+          ),
+          operation: SyncOperationKind.upsert,
+          payloadHash: computeSyncPayloadHash(invalidPayload),
+          payload: invalidPayload,
+          batchId: 'batch-invalid',
+          keyFingerprint: 'test-key',
+        );
+        await transport.simulateRemoteBatch('dev-partial-download', 1, [valid]);
+        await transport.simulateRemoteBatch('dev-partial-download', 2, [
+          invalid,
+        ]);
+
+        final result = await engine.run(trigger: SyncTrigger.manual);
+
+        expect(result.downloaded, 1);
+        expect(result.pending, 1);
+        expect(result.errorCode, 'validation');
+        expect(controller.hapticsEnabled, isFalse);
+      },
+    );
+
     test('不完整批次（缺少 commit）延迟到下次扫描', () async {
       final repo = InMemoryLedgerRepository();
       final transport = StubWebdavSyncTransport();
@@ -351,3 +563,76 @@ const testConfig = WebdavConfig(
   username: 'test',
   password: 'test',
 );
+
+class _FailDownloadListingTransport extends StubWebdavSyncTransport {
+  @override
+  Future<List<WebdavSyncFile>> listSyncFiles(WebdavConfig config) {
+    if (files.keys.any((path) => path.endsWith('.commit'))) {
+      throw const WebdavException(
+        'download listing failed',
+        diagnostic: WebdavDiagnostic(
+          method: 'PROPFIND',
+          operation: 'list_remote',
+          fileKind: 'event',
+          statusCode: 503,
+          reason: 'http_status',
+        ),
+      );
+    }
+    return super.listSyncFiles(config);
+  }
+}
+
+class _FailSpecificCommitTransport extends StubWebdavSyncTransport {
+  _FailSpecificCommitTransport(this.batchId);
+
+  final String batchId;
+
+  @override
+  Future<void> putImmutable(
+    WebdavConfig config,
+    String relativePath,
+    Stream<List<int>> bytes,
+    int length,
+    String expectedHash,
+  ) {
+    if (relativePath.endsWith('/$batchId.commit')) {
+      throw const WebdavException(
+        'commit upload failed',
+        diagnostic: WebdavDiagnostic(
+          method: 'PUT',
+          operation: 'upload',
+          fileKind: 'commit',
+          statusCode: 503,
+          reason: 'http_status',
+        ),
+      );
+    }
+    return super.putImmutable(
+      config,
+      relativePath,
+      bytes,
+      length,
+      expectedHash,
+    );
+  }
+}
+
+SyncEvent _profileEvent(SyncClock clock, String batchId, String entityId) {
+  final payload = <String, Object?>{
+    'nickname': entityId,
+    'bio': '',
+    'avatarDataUrl': '',
+  };
+  return SyncEvent(
+    protocolVersion: syncProtocolVersion,
+    operationId: clock.nextOperationId(),
+    version: clock.nextVersion(),
+    entity: SyncEntityKey(scope: 'global', type: 'profile', id: entityId),
+    operation: SyncOperationKind.upsert,
+    payloadHash: computeSyncPayloadHash(payload),
+    payload: payload,
+    batchId: batchId,
+    keyFingerprint: 'test-key',
+  );
+}

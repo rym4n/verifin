@@ -270,6 +270,61 @@ void main() {
   });
 
   group('WebdavSyncTransportImpl with a real HTTP server', () {
+    test(
+      'invalid configuration exposes operation without leaking input',
+      () async {
+        const invalidConfig = WebdavConfig(
+          url: 'not-a-url/private?token=must-not-leak',
+          username: 'private-user',
+          password: 'private-password',
+        );
+
+        await expectLater(
+          WebdavSyncTransportImpl().downloadSyncFile(
+            invalidConfig,
+            'blobs/private-file.blob',
+            maxBytes: syncMaxDownloadBytes,
+          ),
+          throwsA(
+            isA<WebdavException>().having(
+              (error) => error.safeLogDetails,
+              'safe diagnostics',
+              'method=GET operation=download file=blob status=none '
+                  'redirects=0 redirect=none reason=invalid_config',
+            ),
+          ),
+        );
+      },
+    );
+
+    test('redirect loop exposes redacted redirect diagnostics', () async {
+      final server = await _TestWebdavServer.start((request) async {
+        await request.drain<void>();
+        request.response.statusCode = HttpStatus.found;
+        request.response.headers.set(
+          HttpHeaders.locationHeader,
+          request.uri.toString(),
+        );
+        await request.response.close();
+      });
+
+      await expectLater(
+        WebdavSyncTransportImpl().downloadSyncFile(
+          server.config,
+          'blobs/private-file.blob',
+          maxBytes: syncMaxDownloadBytes,
+        ),
+        throwsA(
+          isA<WebdavException>().having(
+            (error) => error.safeLogDetails,
+            'safe diagnostics',
+            'method=GET operation=download file=blob status=302 '
+                'redirects=0 redirect=same_origin reason=redirect_loop',
+          ),
+        ),
+      );
+    });
+
     test('follows a GET redirect when downloading a sync file', () async {
       const relativePath = 'blobs/redirected.blob';
       final content = utf8.encode('redirected sync content');
@@ -308,6 +363,125 @@ void main() {
       expect(downloaded, content);
       expect(redirectedRequestHadAuthorization, isTrue);
     });
+
+    test('download failure exposes redacted redirect diagnostics', () async {
+      final server = await _TestWebdavServer.start((request) async {
+        await request.drain<void>();
+        if (request.uri.queryParameters['redirected'] != '1') {
+          request.response.statusCode = HttpStatus.found;
+          request.response.headers.set(
+            HttpHeaders.locationHeader,
+            '${request.uri.path}?redirected=1&token=must-not-leak',
+          );
+          await request.response.close();
+          return;
+        }
+        await _respond(request, HttpStatus.serviceUnavailable);
+      });
+
+      late WebdavException failure;
+      try {
+        await WebdavSyncTransportImpl().downloadSyncFile(
+          server.config,
+          'blobs/private-file-name.blob',
+          maxBytes: syncMaxDownloadBytes,
+        );
+        fail('expected WebDAV download failure');
+      } on WebdavException catch (error) {
+        failure = error;
+      }
+
+      expect(failure.diagnostic?.method, 'GET');
+      expect(failure.diagnostic?.operation, 'download');
+      expect(failure.diagnostic?.fileKind, 'blob');
+      expect(failure.diagnostic?.statusCode, HttpStatus.serviceUnavailable);
+      expect(failure.diagnostic?.redirectCount, 1);
+      expect(failure.diagnostic?.redirectRelation, 'same_origin');
+      expect(failure.diagnostic?.reason, 'http_status');
+      final safe = failure.safeLogDetails;
+      expect(
+        safe,
+        'method=GET operation=download file=blob status=503 '
+        'redirects=1 redirect=same_origin reason=http_status',
+      );
+      expect(safe, isNot(contains(server.config.url)));
+      expect(safe, isNot(contains('private-file-name')));
+      expect(safe, isNot(contains('must-not-leak')));
+      expect(safe, isNot(contains(server.config.username)));
+      expect(safe, isNot(contains(server.config.password)));
+    });
+
+    test('download size failure preserves redirect diagnostics', () async {
+      final content = Uint8List(8);
+      final server = await _TestWebdavServer.start((request) async {
+        await request.drain<void>();
+        if (request.uri.queryParameters['redirected'] != '1') {
+          request.response.statusCode = HttpStatus.found;
+          request.response.headers.set(
+            HttpHeaders.locationHeader,
+            '${request.uri.path}?redirected=1',
+          );
+          await request.response.close();
+          return;
+        }
+        request.response.statusCode = HttpStatus.ok;
+        request.response.add(content);
+        await request.response.close();
+      });
+
+      await expectLater(
+        WebdavSyncTransportImpl().downloadSyncFile(
+          server.config,
+          'blobs/oversized.blob',
+          maxBytes: 2,
+        ),
+        throwsA(
+          isA<WebdavException>().having(
+            (error) => error.safeLogDetails,
+            'safe diagnostics',
+            'method=GET operation=download file=blob status=none '
+                'redirects=1 redirect=same_origin reason=size_limit',
+          ),
+        ),
+      );
+    });
+
+    test(
+      'redirected connection failure preserves redirect diagnostics',
+      () async {
+        final target = await _TestWebdavServer.start((request) async {
+          await request.drain<void>();
+          await _respond(request, HttpStatus.ok);
+        });
+        final targetUri = Uri.parse(target.config.url).resolve('download');
+        await target.close();
+        final source = await _TestWebdavServer.start((request) async {
+          await request.drain<void>();
+          request.response.statusCode = HttpStatus.found;
+          request.response.headers.set(
+            HttpHeaders.locationHeader,
+            targetUri.toString(),
+          );
+          await request.response.close();
+        });
+
+        await expectLater(
+          WebdavSyncTransportImpl().downloadSyncFile(
+            source.config,
+            'blobs/private-file.blob',
+            maxBytes: syncMaxDownloadBytes,
+          ),
+          throwsA(
+            isA<WebdavException>().having(
+              (error) => error.safeLogDetails,
+              'safe diagnostics',
+              'method=GET operation=download file=blob status=none '
+                  'redirects=1 redirect=cross_origin reason=connection',
+            ),
+          ),
+        );
+      },
+    );
 
     test('does not forward authorization across redirect origins', () async {
       final content = utf8.encode('cross-origin sync content');
@@ -388,6 +562,43 @@ void main() {
         expect(putCalled, isFalse);
       },
     );
+
+    test('immutable collision exposes redacted file diagnostics', () async {
+      final existing = utf8.encode('existing content');
+      final replacement = utf8.encode('replacement content');
+      final server = await _TestWebdavServer.start((request) async {
+        await request.drain<void>();
+        if (request.method == 'MKCOL') {
+          await _respond(request, HttpStatus.methodNotAllowed);
+          return;
+        }
+        if (request.method == 'GET') {
+          request.response.statusCode = HttpStatus.ok;
+          request.response.add(existing);
+          await request.response.close();
+          return;
+        }
+        await _respond(request, HttpStatus.methodNotAllowed);
+      });
+
+      await expectLater(
+        WebdavSyncTransportImpl().putImmutable(
+          server.config,
+          'events/private-device/00000000000000000001-private.vfsync',
+          Stream.value(replacement),
+          replacement.length,
+          sha256.convert(replacement).toString(),
+        ),
+        throwsA(
+          isA<WebdavFileCollision>().having(
+            (error) => error.safeLogDetails,
+            'safe diagnostics',
+            'method=GET operation=inspect_existing file=event status=200 '
+                'redirects=0 redirect=none reason=file_collision',
+          ),
+        ),
+      );
+    });
 
     test(
       'normalizes absolute and collection-prefixed hrefs and parses canonical event names',
@@ -530,6 +741,37 @@ void main() {
       },
     );
 
+    test(
+      'parent directory connection failure reports MKCOL diagnostics',
+      () async {
+        final content = utf8.encode('event');
+        final server = await _TestWebdavServer.start((request) async {
+          await request.drain<void>();
+          await request.response.close();
+        });
+        final serverConfig = server.config;
+        await server.close();
+
+        await expectLater(
+          WebdavSyncTransportImpl().putImmutable(
+            serverConfig,
+            'events/device-a/00000000000000000001-operation.vfsync',
+            Stream.value(content),
+            content.length,
+            sha256.convert(content).toString(),
+          ),
+          throwsA(
+            isA<WebdavException>().having(
+              (error) => error.safeLogDetails,
+              'safe diagnostics',
+              'method=MKCOL operation=ensure_tree file=tree status=none '
+                  'redirects=0 redirect=none reason=connection',
+            ),
+          ),
+        );
+      },
+    );
+
     test('propagates authentication errors from PROPFIND', () async {
       final server = await _TestWebdavServer.start((request) async {
         await request.drain<void>();
@@ -557,11 +799,15 @@ void main() {
       await expectLater(
         WebdavSyncTransportImpl().listSyncFiles(server.config),
         throwsA(
-          isA<WebdavException>().having(
-            (error) => error.message,
-            'message',
-            contains('503'),
-          ),
+          isA<WebdavException>()
+              .having((error) => error.message, 'message', contains('503'))
+              .having(
+                (error) => error.safeLogDetails,
+                'safe diagnostics',
+                'method=PROPFIND operation=list_remote file=event '
+                    'status=503 redirects=0 redirect=none '
+                    'reason=http_status',
+              ),
         ),
       );
     });
@@ -726,11 +972,15 @@ void main() {
       await expectLater(
         WebdavSyncTransportImpl().ensureSyncTree(server.config),
         throwsA(
-          isA<WebdavException>().having(
-            (error) => error.message,
-            'message',
-            contains('500'),
-          ),
+          isA<WebdavException>()
+              .having((error) => error.message, 'message', contains('500'))
+              .having(
+                (error) => error.safeLogDetails,
+                'safe diagnostics',
+                'method=MKCOL operation=ensure_tree file=tree '
+                    'status=500 redirects=0 redirect=none '
+                    'reason=http_status',
+              ),
         ),
       );
     });
@@ -787,7 +1037,14 @@ void main() {
             content.length,
             sha256.convert(content).toString(),
           ),
-          throwsA(isA<WebdavException>()),
+          throwsA(
+            isA<WebdavException>().having(
+              (error) => error.safeLogDetails,
+              'safe diagnostics',
+              'method=PUT operation=upload file=event status=$statusCode '
+                  'redirects=0 redirect=none reason=http_status',
+            ),
+          ),
         );
       });
     }
@@ -1019,7 +1276,14 @@ void main() {
           content.length,
           sha256.convert(content).toString(),
         ),
-        throwsA(isA<WebdavException>()),
+        throwsA(
+          isA<WebdavException>().having(
+            (error) => error.safeLogDetails,
+            'safe diagnostics',
+            'method=GET operation=inspect_existing file=event status=none '
+                'redirects=0 redirect=none reason=size_limit',
+          ),
+        ),
       );
       expect(putCalled, isFalse);
     });

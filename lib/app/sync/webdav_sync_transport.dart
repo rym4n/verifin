@@ -13,9 +13,12 @@ const int syncMaxDownloadBytes = 32 * 1024 * 1024;
 
 /// WebDAV file collision: same path, different content hash.
 class WebdavFileCollision implements Exception {
-  const WebdavFileCollision(this.message);
+  const WebdavFileCollision(this.message, {this.diagnostic});
 
   final String message;
+  final WebdavDiagnostic? diagnostic;
+
+  String get safeLogDetails => diagnostic?.toLogFields() ?? 'reason=unknown';
 
   @override
   String toString() => message;
@@ -70,12 +73,41 @@ abstract interface class WebdavSyncTransport {
 
 /// WebDAV operation exception.
 class WebdavException implements Exception {
-  const WebdavException(this.message);
+  const WebdavException(this.message, {this.diagnostic});
 
   final String message;
+  final WebdavDiagnostic? diagnostic;
+
+  String get safeLogDetails => diagnostic?.toLogFields() ?? 'reason=unknown';
 
   @override
   String toString() => message;
+}
+
+/// URL-free diagnostic fields safe to include in user-copyable software logs.
+class WebdavDiagnostic {
+  const WebdavDiagnostic({
+    required this.method,
+    required this.operation,
+    required this.fileKind,
+    this.statusCode,
+    this.redirectCount = 0,
+    this.redirectRelation = 'none',
+    required this.reason,
+  });
+
+  final String method;
+  final String operation;
+  final String fileKind;
+  final int? statusCode;
+  final int redirectCount;
+  final String redirectRelation;
+  final String reason;
+
+  String toLogFields() =>
+      'method=$method operation=$operation file=$fileKind '
+      'status=${statusCode ?? 'none'} redirects=$redirectCount '
+      'redirect=$redirectRelation reason=$reason';
 }
 
 const Duration _connectTimeout = Duration(seconds: 30);
@@ -107,35 +139,80 @@ Future<HttpClientRequest> _open(
   return request;
 }
 
-Future<HttpClientResponse> _getFollowingRedirects(
+Future<_RedirectedResponse> _getFollowingRedirects(
   HttpClient client,
   Uri initialUri,
-  WebdavConfig config,
-) async {
+  WebdavConfig config, {
+  required String operation,
+  required String fileKind,
+}) async {
   final credentialOrigin = _collectionUri(config);
   final visited = <Uri>{initialUri};
   var currentUri = initialUri;
   var redirectsFollowed = 0;
+  var redirectRelation = 'none';
 
   while (true) {
-    final request = await client.openUrl('GET', currentUri);
-    if (_sameOrigin(currentUri, credentialOrigin)) {
-      request.headers.set(HttpHeaders.authorizationHeader, _authHeader(config));
+    late final HttpClientResponse response;
+    try {
+      final request = await client.openUrl('GET', currentUri);
+      if (_sameOrigin(currentUri, credentialOrigin)) {
+        request.headers.set(
+          HttpHeaders.authorizationHeader,
+          _authHeader(config),
+        );
+      }
+      request.followRedirects = false;
+      response = await request.close().timeout(_responseTimeout);
+    } catch (error) {
+      throw _withRedirectDiagnostic(
+        error,
+        method: 'GET',
+        operation: operation,
+        fileKind: fileKind,
+        statusCode: null,
+        redirectCount: redirectsFollowed,
+        redirectRelation: redirectRelation,
+      );
     }
-    request.followRedirects = false;
-    final response = await request.close().timeout(_responseTimeout);
     if (!_isGetRedirect(response.statusCode)) {
-      return response;
+      return _RedirectedResponse(
+        response,
+        redirectCount: redirectsFollowed,
+        redirectRelation: redirectRelation,
+      );
     }
 
     if (redirectsFollowed >= _maxGetRedirects) {
       _abortResponse(client);
-      throw const WebdavException('Too many download redirects');
+      throw WebdavException(
+        'Too many download redirects',
+        diagnostic: WebdavDiagnostic(
+          method: 'GET',
+          operation: operation,
+          fileKind: fileKind,
+          statusCode: response.statusCode,
+          redirectCount: redirectsFollowed,
+          redirectRelation: redirectRelation,
+          reason: 'redirect_limit',
+        ),
+      );
     }
     final location = response.headers.value(HttpHeaders.locationHeader);
     if (location == null || location.trim().isEmpty) {
       _abortResponse(client);
-      throw const WebdavException('Download redirect has no location');
+      throw WebdavException(
+        'Download redirect has no location',
+        diagnostic: WebdavDiagnostic(
+          method: 'GET',
+          operation: operation,
+          fileKind: fileKind,
+          statusCode: response.statusCode,
+          redirectCount: redirectsFollowed,
+          redirectRelation: redirectRelation,
+          reason: 'redirect_missing_location',
+        ),
+      );
     }
 
     late final Uri nextUri;
@@ -143,25 +220,133 @@ Future<HttpClientResponse> _getFollowingRedirects(
       nextUri = currentUri.resolve(location);
     } on FormatException {
       _abortResponse(client);
-      throw const WebdavException('Download redirect is invalid');
+      throw WebdavException(
+        'Download redirect is invalid',
+        diagnostic: WebdavDiagnostic(
+          method: 'GET',
+          operation: operation,
+          fileKind: fileKind,
+          statusCode: response.statusCode,
+          redirectCount: redirectsFollowed,
+          redirectRelation: redirectRelation,
+          reason: 'redirect_invalid',
+        ),
+      );
     }
     if (!_isHttpUri(nextUri) || nextUri.userInfo.isNotEmpty) {
       _abortResponse(client);
-      throw const WebdavException('Download redirect is invalid');
+      throw WebdavException(
+        'Download redirect is invalid',
+        diagnostic: WebdavDiagnostic(
+          method: 'GET',
+          operation: operation,
+          fileKind: fileKind,
+          statusCode: response.statusCode,
+          redirectCount: redirectsFollowed,
+          redirectRelation: redirectRelation,
+          reason: 'redirect_invalid',
+        ),
+      );
     }
     if (currentUri.scheme == 'https' && nextUri.scheme != 'https') {
       _abortResponse(client);
-      throw const WebdavException('Download redirect cannot downgrade HTTPS');
+      throw WebdavException(
+        'Download redirect cannot downgrade HTTPS',
+        diagnostic: WebdavDiagnostic(
+          method: 'GET',
+          operation: operation,
+          fileKind: fileKind,
+          statusCode: response.statusCode,
+          redirectCount: redirectsFollowed,
+          redirectRelation: 'downgrade',
+          reason: 'redirect_downgrade',
+        ),
+      );
     }
     if (!visited.add(nextUri)) {
       _abortResponse(client);
-      throw const WebdavException('Download redirect loop detected');
+      throw WebdavException(
+        'Download redirect loop detected',
+        diagnostic: WebdavDiagnostic(
+          method: 'GET',
+          operation: operation,
+          fileKind: fileKind,
+          statusCode: response.statusCode,
+          redirectCount: redirectsFollowed,
+          redirectRelation: _sameOrigin(currentUri, nextUri)
+              ? 'same_origin'
+              : 'cross_origin',
+          reason: 'redirect_loop',
+        ),
+      );
     }
 
-    await response.drain<void>().timeout(_responseTimeout);
+    try {
+      await response.drain<void>().timeout(_responseTimeout);
+    } catch (error) {
+      throw _withRedirectDiagnostic(
+        error,
+        method: 'GET',
+        operation: operation,
+        fileKind: fileKind,
+        statusCode: response.statusCode,
+        redirectCount: redirectsFollowed,
+        redirectRelation: redirectRelation,
+      );
+    }
+    redirectRelation = _sameOrigin(currentUri, nextUri)
+        ? redirectRelation == 'none'
+              ? 'same_origin'
+              : redirectRelation
+        : 'cross_origin';
     currentUri = nextUri;
     redirectsFollowed++;
   }
+}
+
+WebdavException _withRedirectDiagnostic(
+  Object error, {
+  required String method,
+  required String operation,
+  required String fileKind,
+  required int? statusCode,
+  required int redirectCount,
+  required String redirectRelation,
+}) {
+  if (error is WebdavException && error.diagnostic != null) {
+    return error;
+  }
+  final message = switch (error) {
+    TimeoutException() => 'Connection timeout',
+    SocketException() => 'Cannot connect to server',
+    HandshakeException() => 'HTTPS handshake failed',
+    WebdavException(:final message) => message,
+    _ => 'WebDAV request failed',
+  };
+  return WebdavException(
+    message,
+    diagnostic: WebdavDiagnostic(
+      method: method,
+      operation: operation,
+      fileKind: fileKind,
+      statusCode: statusCode,
+      redirectCount: redirectCount,
+      redirectRelation: redirectRelation,
+      reason: _transportFailureReason(error),
+    ),
+  );
+}
+
+class _RedirectedResponse {
+  const _RedirectedResponse(
+    this.response, {
+    required this.redirectCount,
+    required this.redirectRelation,
+  });
+
+  final HttpClientResponse response;
+  final int redirectCount;
+  final String redirectRelation;
 }
 
 bool _isGetRedirect(int statusCode) =>
@@ -179,20 +364,60 @@ bool _sameOrigin(Uri left, Uri right) =>
     left.host == right.host &&
     left.port == right.port;
 
-Never _fail(Object error) {
-  if (error is WebdavException || error is WebdavFileCollision) {
+Never _fail(
+  Object error, {
+  required String method,
+  required String operation,
+  required String fileKind,
+}) {
+  if (error is WebdavException && error.diagnostic != null) {
     throw error;
   }
+  if (error is WebdavFileCollision) {
+    throw error;
+  }
+  final diagnostic = WebdavDiagnostic(
+    method: method,
+    operation: operation,
+    fileKind: fileKind,
+    reason: _transportFailureReason(error),
+  );
+  if (error is WebdavException) {
+    throw WebdavException(error.message, diagnostic: diagnostic);
+  }
   if (error is TimeoutException) {
-    throw const WebdavException('Connection timeout');
+    throw WebdavException('Connection timeout', diagnostic: diagnostic);
   }
   if (error is SocketException) {
-    throw const WebdavException('Cannot connect to server');
+    throw WebdavException('Cannot connect to server', diagnostic: diagnostic);
   }
   if (error is HandshakeException) {
-    throw const WebdavException('HTTPS handshake failed');
+    throw WebdavException('HTTPS handshake failed', diagnostic: diagnostic);
   }
-  throw WebdavException('WebDAV request failed: $error');
+  throw WebdavException(
+    'WebDAV request failed: $error',
+    diagnostic: diagnostic,
+  );
+}
+
+String _transportFailureReason(Object error) {
+  if (error is TimeoutException) return 'timeout';
+  if (error is SocketException) return 'connection';
+  if (error is HandshakeException) return 'tls';
+  if (error is WebdavException) {
+    final message = error.message;
+    if (message == 'Invalid WebDAV URL') return 'invalid_config';
+    if (message.contains('size limit') || message.contains('maxBytes')) {
+      return 'size_limit';
+    }
+    if (message.contains('Malformed') || message.contains('href')) {
+      return 'invalid_response';
+    }
+    if (message.contains('path') || message.contains('URI')) {
+      return 'invalid_path';
+    }
+  }
+  return 'request_failed';
 }
 
 Uri _collectionUri(WebdavConfig config) {
@@ -461,10 +686,11 @@ Future<Uint8List> _readResponseWithLimit(
   HttpClientResponse response, {
   required int maxBytes,
   required String errorMessage,
+  WebdavDiagnostic? diagnostic,
 }) async {
   if (response.contentLength > maxBytes) {
     _abortResponse(client);
-    throw WebdavException(errorMessage);
+    throw WebdavException(errorMessage, diagnostic: diagnostic);
   }
 
   final builder = BytesBuilder(copy: false);
@@ -476,7 +702,7 @@ Future<Uint8List> _readResponseWithLimit(
       totalBytes += chunk.length;
       if (totalBytes > maxBytes) {
         _abortResponse(client);
-        throw WebdavException(errorMessage);
+        throw WebdavException(errorMessage, diagnostic: diagnostic);
       }
       builder.add(chunk);
     }
@@ -514,7 +740,7 @@ class WebdavSyncTransportImpl implements WebdavSyncTransport {
         await _mkcolIfNeeded(client, _syncFileUri(config, path), config);
       }
     } catch (error) {
-      _fail(error);
+      _fail(error, method: 'MKCOL', operation: 'ensure_tree', fileKind: 'tree');
     } finally {
       client.close(force: true);
     }
@@ -530,7 +756,16 @@ class WebdavSyncTransportImpl implements WebdavSyncTransport {
     await response.drain<void>();
     if (response.statusCode != HttpStatus.created &&
         response.statusCode != HttpStatus.methodNotAllowed) {
-      throw WebdavException('MKCOL failed: ${response.statusCode}');
+      throw WebdavException(
+        'MKCOL failed: ${response.statusCode}',
+        diagnostic: WebdavDiagnostic(
+          method: 'MKCOL',
+          operation: 'ensure_tree',
+          fileKind: 'tree',
+          statusCode: response.statusCode,
+          reason: 'http_status',
+        ),
+      );
     }
   }
 
@@ -557,6 +792,13 @@ class WebdavSyncTransportImpl implements WebdavSyncTransport {
         } else {
           throw WebdavFileCollision(
             'File exists with different hash: $relativePath',
+            diagnostic: WebdavDiagnostic(
+              method: 'GET',
+              operation: 'inspect_existing',
+              fileKind: _fileKindFromPath(relativePath),
+              statusCode: HttpStatus.ok,
+              reason: 'file_collision',
+            ),
           );
         }
       }
@@ -576,10 +818,24 @@ class WebdavSyncTransportImpl implements WebdavSyncTransport {
       if (response.statusCode != HttpStatus.ok &&
           response.statusCode != HttpStatus.created &&
           response.statusCode != HttpStatus.noContent) {
-        throw WebdavException('Upload failed: ${response.statusCode}');
+        throw WebdavException(
+          'Upload failed: ${response.statusCode}',
+          diagnostic: WebdavDiagnostic(
+            method: 'PUT',
+            operation: 'upload',
+            fileKind: _fileKindFromPath(relativePath),
+            statusCode: response.statusCode,
+            reason: 'http_status',
+          ),
+        );
       }
     } catch (error) {
-      _fail(error);
+      _fail(
+        error,
+        method: 'PUT',
+        operation: 'upload',
+        fileKind: _fileKindFromPath(relativePath),
+      );
     } finally {
       client.close(force: true);
     }
@@ -590,25 +846,61 @@ class WebdavSyncTransportImpl implements WebdavSyncTransport {
     Uri uri,
     WebdavConfig config,
   ) async {
-    final response = await _getFollowingRedirects(client, uri, config);
+    final fileKind = _fileKindFromUri(uri);
+    try {
+      final redirected = await _getFollowingRedirects(
+        client,
+        uri,
+        config,
+        operation: 'inspect_existing',
+        fileKind: fileKind,
+      );
+      final response = redirected.response;
 
-    if (response.statusCode == 404) {
-      await response.drain<void>();
-      return null;
-    }
+      if (response.statusCode == 404) {
+        await response.drain<void>();
+        return null;
+      }
 
-    if (response.statusCode < HttpStatus.ok || response.statusCode >= 300) {
-      _abortResponse(client);
-      throw WebdavException('GET failed: ${response.statusCode}');
+      if (response.statusCode < HttpStatus.ok || response.statusCode >= 300) {
+        _abortResponse(client);
+        throw WebdavException(
+          'GET failed: ${response.statusCode}',
+          diagnostic: WebdavDiagnostic(
+            method: 'GET',
+            operation: 'inspect_existing',
+            fileKind: fileKind,
+            statusCode: response.statusCode,
+            redirectCount: redirected.redirectCount,
+            redirectRelation: redirected.redirectRelation,
+            reason: 'http_status',
+          ),
+        );
+      }
+      final bytes = await _readResponseWithLimit(
+        client,
+        response,
+        maxBytes: syncMaxDownloadBytes,
+        errorMessage: 'Existing file exceeds sync size limit',
+        diagnostic: WebdavDiagnostic(
+          method: 'GET',
+          operation: 'inspect_existing',
+          fileKind: fileKind,
+          redirectCount: redirected.redirectCount,
+          redirectRelation: redirected.redirectRelation,
+          reason: 'size_limit',
+        ),
+      );
+      final hash = sha256.convert(bytes);
+      return hash.toString();
+    } catch (error) {
+      _fail(
+        error,
+        method: 'GET',
+        operation: 'inspect_existing',
+        fileKind: fileKind,
+      );
     }
-    final bytes = await _readResponseWithLimit(
-      client,
-      response,
-      maxBytes: syncMaxDownloadBytes,
-      errorMessage: 'Existing file exceeds sync size limit',
-    );
-    final hash = sha256.convert(bytes);
-    return hash.toString();
   }
 
   Future<void> _ensureParentDirectories(
@@ -620,9 +912,17 @@ class WebdavSyncTransportImpl implements WebdavSyncTransport {
     if (segments.length < 2) {
       throw const WebdavException('Sync file path has no parent directory');
     }
-    for (var count = 1; count < segments.length; count++) {
-      final directoryPath = segments.sublist(0, count).join('/');
-      await _mkcolIfNeeded(client, _syncFileUri(config, directoryPath), config);
+    try {
+      for (var count = 1; count < segments.length; count++) {
+        final directoryPath = segments.sublist(0, count).join('/');
+        await _mkcolIfNeeded(
+          client,
+          _syncFileUri(config, directoryPath),
+          config,
+        );
+      }
+    } catch (error) {
+      _fail(error, method: 'MKCOL', operation: 'ensure_tree', fileKind: 'tree');
     }
   }
 
@@ -650,7 +950,12 @@ class WebdavSyncTransportImpl implements WebdavSyncTransport {
 
       return files;
     } catch (error) {
-      _fail(error);
+      _fail(
+        error,
+        method: 'PROPFIND',
+        operation: 'list_remote',
+        fileKind: 'tree',
+      );
     } finally {
       client.close(force: true);
     }
@@ -731,7 +1036,16 @@ class WebdavSyncTransportImpl implements WebdavSyncTransport {
       return [];
     }
     if (response.statusCode != HttpStatus.multiStatus) {
-      throw WebdavException('PROPFIND failed: ${response.statusCode}');
+      throw WebdavException(
+        'PROPFIND failed: ${response.statusCode}',
+        diagnostic: WebdavDiagnostic(
+          method: 'PROPFIND',
+          operation: 'list_remote',
+          fileKind: _fileKindFromListingPath(basePath),
+          statusCode: response.statusCode,
+          reason: 'http_status',
+        ),
+      );
     }
 
     final dirs = <String>[];
@@ -774,7 +1088,16 @@ class WebdavSyncTransportImpl implements WebdavSyncTransport {
       return [];
     }
     if (response.statusCode != HttpStatus.multiStatus) {
-      throw WebdavException('PROPFIND failed: ${response.statusCode}');
+      throw WebdavException(
+        'PROPFIND failed: ${response.statusCode}',
+        diagnostic: WebdavDiagnostic(
+          method: 'PROPFIND',
+          operation: 'list_remote',
+          fileKind: _fileKindFromListingPath(basePath),
+          statusCode: response.statusCode,
+          reason: 'http_status',
+        ),
+      );
     }
     return _parseSyncPropfind(body, basePath, config);
   }
@@ -788,22 +1111,70 @@ class WebdavSyncTransportImpl implements WebdavSyncTransport {
     final client = _newClient();
     try {
       final uri = _syncFileUri(config, relativePath);
-      final response = await _getFollowingRedirects(client, uri, config);
+      final redirected = await _getFollowingRedirects(
+        client,
+        uri,
+        config,
+        operation: 'download',
+        fileKind: _fileKindFromPath(relativePath),
+      );
+      final response = redirected.response;
 
       if (response.statusCode < HttpStatus.ok || response.statusCode >= 300) {
         _abortResponse(client);
-        throw WebdavException('Download failed: ${response.statusCode}');
+        throw WebdavException(
+          'Download failed: ${response.statusCode}',
+          diagnostic: WebdavDiagnostic(
+            method: 'GET',
+            operation: 'download',
+            fileKind: _fileKindFromPath(relativePath),
+            statusCode: response.statusCode,
+            redirectCount: redirected.redirectCount,
+            redirectRelation: redirected.redirectRelation,
+            reason: 'http_status',
+          ),
+        );
       }
       return await _readResponseWithLimit(
         client,
         response,
         maxBytes: maxBytes,
         errorMessage: 'File exceeds maxBytes limit',
+        diagnostic: WebdavDiagnostic(
+          method: 'GET',
+          operation: 'download',
+          fileKind: _fileKindFromPath(relativePath),
+          redirectCount: redirected.redirectCount,
+          redirectRelation: redirected.redirectRelation,
+          reason: 'size_limit',
+        ),
       );
     } catch (error) {
-      _fail(error);
+      _fail(
+        error,
+        method: 'GET',
+        operation: 'download',
+        fileKind: _fileKindFromPath(relativePath),
+      );
     } finally {
       client.close(force: true);
     }
   }
+}
+
+String _fileKindFromUri(Uri uri) => _fileKindFromPath(uri.path);
+
+String _fileKindFromListingPath(String path) {
+  if (path.contains('/events')) return 'event';
+  if (path.contains('/batches')) return 'batch';
+  if (path.contains('/blobs')) return 'blob';
+  return 'tree';
+}
+
+String _fileKindFromPath(String path) {
+  if (path.endsWith('.vfsync')) return 'event';
+  if (path.endsWith('.manifest')) return 'manifest';
+  if (path.endsWith('.commit')) return 'commit';
+  if (path.endsWith('.blob')) return 'blob';
+  return 'tree';
 }
