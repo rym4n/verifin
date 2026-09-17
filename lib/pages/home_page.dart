@@ -397,6 +397,15 @@ class HomeTrendPanel extends StatelessWidget {
         ? mutedColor
         : _trendSeriesColor(config.series, Theme.of(context).brightness);
     final seriesLabel = homeTrendSeriesLabel(l10n, config.series);
+    final dailyAverageExpense = computeHomeMetric(
+      HomeMetric.dailyAvgExpense,
+      metricContext,
+    );
+    final dailyAverageColor = veriSemantic(context, veriWarning);
+    final trendValueRange = trendChartValueRange(
+      chartValues,
+      referenceValue: dailyAverageExpense,
+    );
 
     return VeriCard(
       compact: veriUnifiedDesignPreview,
@@ -529,16 +538,6 @@ class HomeTrendPanel extends StatelessWidget {
                 const SizedBox(width: 8),
                 Expanded(
                   child: _MetricTile(
-                    key: const Key('home_metric_2'),
-                    metric: config.card2,
-                    metricContext: metricContext,
-                    dark: isDark,
-                    mutedColor: mutedColor,
-                  ),
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: _MetricTile(
                     key: const Key('home_metric_3'),
                     metric: config.card3,
                     metricContext: metricContext,
@@ -558,11 +557,18 @@ class HomeTrendPanel extends StatelessWidget {
                   color: seriesColor,
                   values: chartValues,
                   xLabels: sparseLabelsForWindow(window),
-                  yLabels: reportAxisLabels(
-                    chartValues.map((v) => v.abs()).fold(0, math.max),
+                  yLabels: reportAxisLabelsForRange(
+                    trendValueRange.min,
+                    trendValueRange.max,
                   ),
                   labelColor: mutedColor,
                   glow: isDark && !veriUnifiedDesignPreview,
+                  referenceLineValue: dailyAverageExpense,
+                  referenceLineColor: dailyAverageColor,
+                  semanticsLabel:
+                      '${l10n.chartTrendSemantics(chartValues.length)}, '
+                      '${l10n.metricDailyAvgExpense} '
+                      '${formatExpenseAmount(dailyAverageExpense)}',
                   tooltipOf: (index) {
                     final day = window.days[index];
                     return ChartTooltip(
@@ -571,6 +577,12 @@ class HomeTrendPanel extends StatelessWidget {
                         ChartTooltipLine(
                           text:
                               '$seriesLabel ${_trendSeriesValueText(config.series, chartValues[index])}',
+                          color: seriesColor,
+                        ),
+                        ChartTooltipLine(
+                          text:
+                              '${l10n.metricDailyAvgExpense} ${formatExpenseAmount(dailyAverageExpense)}',
+                          color: dailyAverageColor,
                         ),
                       ],
                     );

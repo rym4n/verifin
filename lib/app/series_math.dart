@@ -24,6 +24,15 @@ List<String> reportAxisLabels(double maxValue) {
   return <String>['0', _formatAxisAmount(top / 2), _formatAxisAmount(top)];
 }
 
+List<String> reportAxisLabelsForRange(double minValue, double maxValue) {
+  final middle = minValue + (maxValue - minValue) / 2;
+  return <String>[
+    _formatAxisAmount(minValue),
+    _formatAxisAmount(middle),
+    _formatAxisAmount(maxValue),
+  ];
+}
+
 String _formatAxisAmount(num value, {String? currencyCode}) {
   final abs = value.abs();
   if (abs >= 10000) {

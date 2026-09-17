@@ -239,11 +239,6 @@ class _HomeMetricsSettingsPageState extends State<HomeMetricsSettingsPage> {
                       ),
                       _SlotField(
                         label: l10n.trendSlotCard2,
-                        value: homeMetricLabel(l10n, config.card2),
-                        onTap: () => _pickSlotMetric(3),
-                      ),
-                      _SlotField(
-                        label: l10n.trendSlotCard3,
                         value: homeMetricLabel(l10n, config.card3),
                         onTap: () => _pickSlotMetric(4),
                         last: true,

@@ -171,6 +171,45 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('账户名称固定右对齐且不挤占左侧日期标签', (tester) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(300, 240);
+    addTearDown(tester.view.resetPhysicalSize);
+    const longAccount = Account(
+      id: 'acc1',
+      bookId: 'b1',
+      name: '这是一个很长的账户名称用于验证右侧固定对齐',
+      type: AccountType.debitCard,
+      groupId: 'g1',
+      initialBalance: 0,
+      iconCode: 'wallet',
+      note: '',
+      includeInAssets: true,
+      hidden: false,
+    );
+    await pumpTile(
+      tester,
+      entry(tagIds: const <String>['t1']),
+      tileAccounts: const <Account>[longAccount],
+    );
+
+    final tileRect = tester.getRect(find.byType(TransactionTile));
+    final amountRect = tester.getRect(find.text('-30'));
+    final accountRect = tester.getRect(find.text(longAccount.name));
+    final timeRect = tester.getRect(find.text('09:00'));
+    final tagRect = tester.getRect(find.text('#出差'));
+    final accountText = tester.widget<Text>(find.text(longAccount.name));
+
+    expect(accountRect.right, closeTo(amountRect.right, 0.5));
+    expect(accountRect.width, lessThanOrEqualTo(tileRect.width / 3));
+    expect(timeRect.right, lessThanOrEqualTo(tagRect.left));
+    expect(tagRect.right, lessThanOrEqualTo(accountRect.left));
+    expect(accountText.textAlign, TextAlign.end);
+    expect(accountText.maxLines, 1);
+    expect(accountText.overflow, TextOverflow.ellipsis);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('副行展示标签，最多两个、更多收成 +N', (tester) async {
     await pumpTile(tester, entry(tagIds: <String>['t1', 't2', 't3']));
     expect(find.textContaining('#出差'), findsOneWidget);

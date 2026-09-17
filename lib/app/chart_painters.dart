@@ -10,6 +10,41 @@ import 'app_theme.dart';
 /// 定位,保证刻度读数与曲线/柱高一致。
 const double chartValueScale = 0.86;
 
+@immutable
+class TrendChartValueRange {
+  const TrendChartValueRange({required this.min, required this.max});
+
+  final double min;
+  final double max;
+
+  double get span => max - min;
+}
+
+/// 折线和水平参考线共用的实际纵轴值域。至少保留 1 个数值单位，
+/// 与折线原有的极小范围缩放行为一致，并让刻度与绘制位置使用同一套边界。
+TrendChartValueRange trendChartValueRange(
+  Iterable<double> values, {
+  double? referenceValue,
+}) {
+  var minValue = 0.0;
+  var maxValue = 0.0;
+  for (final value in values) {
+    if (!value.isFinite) {
+      continue;
+    }
+    minValue = math.min(minValue, value);
+    maxValue = math.max(maxValue, value);
+  }
+  if (referenceValue?.isFinite == true) {
+    minValue = math.min(minValue, referenceValue!);
+    maxValue = math.max(maxValue, referenceValue);
+  }
+  if (maxValue - minValue < 1) {
+    maxValue = minValue + 1;
+  }
+  return TrendChartValueRange(min: minValue, max: maxValue);
+}
+
 /// 图表点击后展示的数据气泡内容。
 class ChartTooltip {
   const ChartTooltip({required this.title, required this.lines});
@@ -196,6 +231,8 @@ class TrendLinePainter extends CustomPainter {
     this.yLabels = const <String>[],
     this.labelColor,
     this.glow = false,
+    this.referenceLineValue,
+    this.referenceLineColor,
     this.selectedIndex,
     this.tooltip,
     this.textScaler = TextScaler.noScaling,
@@ -207,6 +244,8 @@ class TrendLinePainter extends CustomPainter {
   final List<String> yLabels;
   final Color? labelColor;
   final bool glow;
+  final double? referenceLineValue;
+  final Color? referenceLineColor;
   final int? selectedIndex;
   final ChartTooltip? tooltip;
 
@@ -257,11 +296,17 @@ class TrendLinePainter extends CustomPainter {
       return;
     }
 
-    // 序列可能包含负值(如负债账户余额),按 [min, max] 区间归一化;
-    // 全为非负时与按最大值归一化完全一致。
-    final maxValue = math.max(values.reduce(math.max), 0.0);
-    final minValue = math.min(values.reduce(math.min), 0.0);
-    final range = math.max(maxValue - minValue, 1.0);
+    final referenceValue =
+        referenceLineColor != null && referenceLineValue?.isFinite == true
+        ? referenceLineValue
+        : null;
+    // 序列可能包含负值(如负债账户余额),参考线与主曲线必须使用同一值域。
+    final valueRange = trendChartValueRange(
+      values,
+      referenceValue: referenceValue,
+    );
+    final minValue = valueRange.min;
+    final range = valueRange.span;
     double yFor(double value) =>
         chartRect.bottom -
         ((value - minValue) / range * chartRect.height * chartValueScale);
@@ -294,6 +339,17 @@ class TrendLinePainter extends CustomPainter {
       ..lineTo(chartRect.right, chartRect.bottom)
       ..close();
     canvas.drawPath(fillPath, fillPaint);
+    if (referenceValue != null) {
+      final referenceY = yFor(referenceValue);
+      canvas.drawLine(
+        Offset(chartRect.left, referenceY),
+        Offset(chartRect.right, referenceY),
+        Paint()
+          ..color = referenceLineColor!
+          ..strokeWidth = 1.5
+          ..strokeCap = StrokeCap.round,
+      );
+    }
     if (glow) {
       canvas.drawPath(path, glowPaint);
     }
@@ -347,6 +403,8 @@ class TrendLinePainter extends CustomPainter {
         !listEquals(oldDelegate.yLabels, yLabels) ||
         oldDelegate.labelColor != labelColor ||
         oldDelegate.glow != glow ||
+        oldDelegate.referenceLineValue != referenceLineValue ||
+        oldDelegate.referenceLineColor != referenceLineColor ||
         oldDelegate.selectedIndex != selectedIndex ||
         oldDelegate.tooltip != tooltip ||
         oldDelegate.textScaler != textScaler;
@@ -541,6 +599,8 @@ class InteractiveTrendChart extends StatefulWidget {
     this.yLabels = const <String>[],
     this.labelColor,
     this.glow = false,
+    this.referenceLineValue,
+    this.referenceLineColor,
     required this.tooltipOf,
     this.semanticsLabel,
   });
@@ -551,6 +611,8 @@ class InteractiveTrendChart extends StatefulWidget {
   final List<String> yLabels;
   final Color? labelColor;
   final bool glow;
+  final double? referenceLineValue;
+  final Color? referenceLineColor;
 
   /// 为选中的数据点构建气泡内容。
   final ChartTooltip Function(int index) tooltipOf;
@@ -619,6 +681,8 @@ class _InteractiveTrendChartState extends State<InteractiveTrendChart> {
               yLabels: widget.yLabels,
               labelColor: widget.labelColor,
               glow: widget.glow,
+              referenceLineValue: widget.referenceLineValue,
+              referenceLineColor: widget.referenceLineColor,
               selectedIndex: _selectedIndex,
               tooltip: tooltip,
               textScaler: textScaler,

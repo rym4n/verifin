@@ -272,6 +272,10 @@ void main() {
       final controller = await makeController();
       await pumpPage(tester, controller);
 
+      expect(find.text('小卡片 1'), findsOneWidget);
+      expect(find.text('小卡片 2'), findsOneWidget);
+      expect(find.text('小卡片 3'), findsNothing);
+
       // 点「大数字」槽位打开选择弹窗（先滚到可见）。
       await tester.ensureVisible(find.text('大数字'));
       await tester.pumpAndSettle();
@@ -311,6 +315,36 @@ void main() {
       await tester.tap(find.byTooltip('保存'));
       await tester.pumpAndSettle();
       expect(controller.homeTrendConfig, HomeTrendConfig.defaults);
+    });
+
+    testWidgets('第二个可见小卡片更新 card3 并保留兼容 card2', (tester) async {
+      final controller = await makeController();
+      controller.setHomeTrendConfig(
+        HomeTrendConfig.defaults.copyWith(card2: HomeMetric.totalLiabilities),
+      );
+      await pumpPage(tester, controller);
+
+      await tester.ensureVisible(find.text('小卡片 2'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('小卡片 2'));
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(find.text('日均收入'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('日均收入'));
+      await tester.pumpAndSettle();
+
+      expect(controller.homeTrendConfig.card3, HomeMetric.todayExpense);
+      expect(controller.homeTrendConfig.card2, HomeMetric.totalLiabilities);
+      await tester.fling(
+        firstVerticalScrollable(),
+        const Offset(0, 1200),
+        1000,
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.byTooltip('保存'));
+      await tester.pumpAndSettle();
+      expect(controller.homeTrendConfig.card3, HomeMetric.dailyAvgIncome);
+      expect(controller.homeTrendConfig.card2, HomeMetric.totalLiabilities);
     });
 
     testWidgets('曲线数据使用锚点菜单且保存前只改草稿', (tester) async {
