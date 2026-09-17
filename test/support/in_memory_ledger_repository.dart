@@ -14,9 +14,6 @@ class InMemoryLedgerRepository
   Map<String, Object?> _profile = <String, Object?>{};
   List<LedgerEntry> _entries = <LedgerEntry>[];
 
-  /// Side map for remotely-applied entry payloads (no LedgerEntry needed).
-  final Map<String, Map<String, Object?>> _entryPayloads =
-      <String, Map<String, Object?>>{};
   List<LedgerBook> _books = <LedgerBook>[];
   List<Account> _accounts = <Account>[];
   List<AccountGroup> _groups = <AccountGroup>[];
@@ -31,7 +28,7 @@ class InMemoryLedgerRepository
 
   /// 同步元数据的内存镜像，与 [SqliteLedgerRepository.sync] 同契约。
   @override
-  late final SyncRepository sync = _InMemorySyncRepository(this);
+  late final SyncRepository sync = _InMemorySyncRepository();
 
   @override
   Future<List<LedgerEntry>> loadEntries() async =>
@@ -188,6 +185,15 @@ class InMemoryLedgerRepository
   }
 
   @override
+  Future<void> applyRemoteLedgerData(
+    LedgerDataSnapshot snapshot,
+    RemoteApplyPlan plan,
+  ) async {
+    await sync.applyRemoteBatch(plan);
+    await replaceAllLedgerData(snapshot);
+  }
+
+  @override
   Future<bool> hasAnyData() async =>
       _entries.isNotEmpty ||
       _books.isNotEmpty ||
@@ -201,7 +207,6 @@ class InMemoryLedgerRepository
   Map<String, Object?> exportDataForSync() {
     final allEntries = [
       ..._entries.map((e) => <String, Object?>{'id': e.id, 'amount': e.amount}),
-      ..._entryPayloads.values,
     ];
     return {
       if (_profile.isNotEmpty) 'profile': _profile,
@@ -252,9 +257,124 @@ class InMemoryLedgerRepository
 /// [applyRemoteBatch] 先完成全部校验与全部新集合的构造，再一次性替换引用；
 /// 中途抛错时没有任何集合被改动，等价于 SQLite 的事务回滚。
 class _InMemorySyncRepository implements SyncRepository {
-  _InMemorySyncRepository(this._outer);
+  String? _enrollment;
+  @override
+  Future<String?> loadEnrollmentState() async => _enrollment;
+  @override
+  Future<void> saveEnrollmentState(String state) async {
+    _enrollment = state;
+  }
 
-  final InMemoryLedgerRepository _outer;
+  @override
+  Future<void> saveConflictChoice(
+    String batchId,
+    String conflictId,
+    SyncEvent? event,
+  ) async {
+    final prior = _pendingBatches[batchId]!;
+    _pendingBatches[batchId] = SyncPendingBatch(
+      batchId: batchId,
+      events: prior.events,
+      reason: prior.reason,
+      choices: {
+        for (final item in prior.choices.entries)
+          if (item.key != conflictId) item.key: item.value,
+        conflictId: ?event,
+      },
+    );
+  }
+
+  final Map<String, RemoteApplyPlan> _prepared = {};
+  final Map<SyncEntityKey, SyncEntityVersion> _heads = {};
+  @override
+  Future<void> removePendingBatch(String id) async {
+    _pendingBatches.remove(id);
+  }
+
+  @override
+  Future<void> finalizePreparedBatches() async {
+    for (final plan in _prepared.values.toList()) {
+      if (_kvJournal.any(
+        (e) => e.batchId == plan.batchId && !_kvJournalApplied.contains(e.id),
+      )) {
+        continue;
+      }
+      _finalize(plan);
+      _prepared.remove(plan.batchId);
+    }
+  }
+
+  void _finalize(RemoteApplyPlan plan) {
+    for (final id in plan.appliedOperationIds) {
+      _applied[id] = (
+        batchId: plan.batchId,
+        payloadHash: plan.payloadHashForOperation(id),
+      );
+    }
+    var known = _deviceState.knownVector;
+    for (final v in plan.entityVersions) {
+      known = known
+          .merged(v.version.context)
+          .merged(
+            SyncVersionVector({v.version.dot.deviceId: v.version.dot.sequence}),
+          );
+    }
+    _deviceState = SyncDeviceState(
+      deviceId: _deviceState.deviceId,
+      nextSequence: _deviceState.nextSequence,
+      knownVector: known,
+    );
+    for (final e in plan.resolutionEvents) {
+      _outbox.add(
+        SyncOutboxRecord(
+          batchId: e.batchId,
+          operationId: e.operationId,
+          relativePath:
+              'events/${e.version.dot.deviceId}/${e.version.dot.sequence.toString().padLeft(20, '0')}-${e.operationId}.vfsync',
+          payloadHash: e.payloadHash,
+          retryCount: 0,
+          event: e,
+        ),
+      );
+    }
+    _conflicts.removeWhere((c) => plan.resolvedConflictIds.contains(c.id));
+    for (final id in [plan.batchId, ...plan.completedPendingIds]) {
+      _pendingBatches.remove(id);
+    }
+  }
+
+  @override
+  Future<Map<SyncEntityKey, SyncEntityVersion>> loadEntityHeads(
+    Set<SyncEntityKey> keys,
+  ) async => {
+    for (final key in keys)
+      if (_heads.containsKey(key)) key: _heads[key]!,
+  };
+  final Map<String, SyncPendingBatch> _pendingBatches = {};
+  @override
+  Future<void> savePendingBatch(
+    String id,
+    List<SyncEvent> events,
+    String reason,
+  ) async {
+    _pendingBatches[id] = SyncPendingBatch(
+      batchId: id,
+      events: events,
+      reason: reason,
+      choices: _pendingBatches[id]?.choices ?? const {},
+    );
+  }
+
+  @override
+  Future<List<SyncPendingBatch>> loadPendingBatches() async =>
+      _pendingBatches.values.toList();
+  @override
+  Future<Map<String, String>> loadAppliedOperationHashes(
+    List<String> operationIds,
+  ) async => {
+    for (final id in operationIds)
+      if (_applied.containsKey(id)) id: _applied[id]!.payloadHash,
+  };
 
   SyncDeviceState _deviceState = const SyncDeviceState(
     deviceId: '',
@@ -302,6 +422,16 @@ class _InMemorySyncRepository implements SyncRepository {
   @override
   Future<void> enqueueBatch(SyncBatchRecord batch) async {
     for (final event in batch.events) {
+      final version = SyncEntityVersion(
+        entity: event.entity,
+        version: event.version,
+        payloadHash: event.payloadHash,
+        payload: event.payload,
+        deleted: event.operation == SyncOperationKind.delete,
+        operationId: event.operationId,
+      );
+      _heads[event.entity] = version;
+      _versions.putIfAbsent(event.entity, () => []).add(version);
       _outbox.removeWhere(
         (record) =>
             record.batchId == batch.batchId &&
@@ -319,6 +449,7 @@ class _InMemorySyncRepository implements SyncRepository {
               '-${event.operationId}.vfsync',
           payloadHash: event.payloadHash,
           retryCount: 0,
+          event: event,
         ),
       );
     }
@@ -381,9 +512,14 @@ class _InMemorySyncRepository implements SyncRepository {
     _versions
       ..clear()
       ..addAll(nextVersions);
-    _applied
-      ..clear()
-      ..addAll(nextApplied);
+    if (plan.kvJournalValues.isEmpty) {
+      _applied
+        ..clear()
+        ..addAll(nextApplied);
+    }
+    for (final version in plan.entityVersions) {
+      _heads[version.entity] = version;
+    }
     // Persist conflicts from the plan.
     for (final conflict in plan.conflicts) {
       if (_conflicts.every((c) => c.id != conflict.id)) {
@@ -394,6 +530,10 @@ class _InMemorySyncRepository implements SyncRepository {
     // KV journal：与 SqliteSyncRepository 同步——先记未应用行，重放时才真正
     // 写本地 KV，让 InMemoryLedgerRepository 也能驱动
     // `applySyncPreferenceJournal()` 的测试路径。
+    _kvJournal.removeWhere((e) => plan.completedPendingIds.contains(e.batchId));
+    for (final id in plan.completedPendingIds) {
+      _prepared.remove(id);
+    }
     for (final entry in plan.kvJournalValues.entries) {
       _kvJournal.add(
         KvJournalEntry(
@@ -402,6 +542,8 @@ class _InMemorySyncRepository implements SyncRepository {
           key: entry.key,
           value: entry.value,
           targetHash: computeSyncPayloadHash(entry.value),
+          expectedHash:
+              plan.kvExpectedHashes[entry.key] ?? computeSyncPayloadHash(null),
         ),
       );
     }
@@ -417,50 +559,30 @@ class _InMemorySyncRepository implements SyncRepository {
       }
     }
 
-    // Update knownVector with applied remote dot sequences.
-    for (final version in plan.entityVersions) {
-      final dot = version.version.dot;
-      final current = _deviceState.knownVector.values[dot.deviceId] ?? 0;
-      if (dot.sequence > current) {
-        final updated = Map<String, int>.from(_deviceState.knownVector.values)
-          ..[dot.deviceId] = dot.sequence;
-        _deviceState = SyncDeviceState(
-          deviceId: _deviceState.deviceId,
-          nextSequence: _deviceState.nextSequence,
-          knownVector: SyncVersionVector(updated),
-        );
-      }
-    }
-
-    // Apply entity versions to live data so exportDataForSync() reflects them.
-    for (final version in plan.entityVersions) {
-      if (version.deleted || version.payload == null) continue;
-      final payload = version.payload;
-      if (version.entity.type == 'profile' && payload is Map) {
-        _outer._profile = Map<String, Object?>.from(
-          payload.cast<String, Object?>(),
-        );
-      } else if (version.entity.type == 'entries' && payload is Map) {
-        final id = version.entity.id;
-        _outer._entryPayloads[id] = Map<String, Object?>.from(
-          payload.cast<String, Object?>(),
-        );
-      }
-    }
-
-    // Update knownVector with applied remote dot sequences.
-    for (final version in plan.entityVersions) {
-      final dot = version.version.dot;
-      final current = _deviceState.knownVector.values[dot.deviceId] ?? 0;
-      if (dot.sequence > current) {
-        final updated = Map<String, int>.from(_deviceState.knownVector.values)
-          ..[dot.deviceId] = dot.sequence;
-        _deviceState = SyncDeviceState(
-          deviceId: _deviceState.deviceId,
-          nextSequence: _deviceState.nextSequence,
-          knownVector: SyncVersionVector(updated),
-        );
-      }
+    if (plan.kvJournalValues.isEmpty && plan.conflicts.isEmpty) {
+      _finalize(plan);
+    } else if (plan.kvJournalValues.isNotEmpty) {
+      _prepared[plan.batchId] = plan;
+      _pendingBatches[plan.batchId] = SyncPendingBatch(
+        batchId: plan.batchId,
+        events: [
+          for (final v in plan.entityVersions)
+            SyncEvent(
+              protocolVersion: syncProtocolVersion,
+              operationId: v.operationId,
+              version: v.version,
+              entity: v.entity,
+              operation: v.deleted
+                  ? SyncOperationKind.delete
+                  : SyncOperationKind.upsert,
+              payloadHash: v.payloadHash,
+              payload: v.payload,
+              batchId: plan.batchId,
+              keyFingerprint: 'local',
+            ),
+        ],
+        reason: 'prepared',
+      );
     }
   }
 
@@ -478,9 +600,8 @@ class _InMemorySyncRepository implements SyncRepository {
 
   @override
   Future<void> storeConflict(SyncConflictRecord conflict) async {
-    if (_conflicts.every((c) => c.id != conflict.id)) {
-      _conflicts.add(conflict);
-    }
+    _conflicts.removeWhere((c) => c.id == conflict.id);
+    _conflicts.add(conflict);
   }
 
   @override

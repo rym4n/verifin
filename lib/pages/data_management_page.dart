@@ -50,8 +50,7 @@ class _DataManagementPageState extends State<DataManagementPage> {
   late BackupTransportMode _initialTransportMode;
   late BackupTransportMode _draftTransportMode;
 
-  /// 同步状态行数据（待重放偏好数 / 未决冲突数）。异步读取，未就绪时为 null，
-  /// 此时状态行显示为「已连接」占位而不是闪烁错误色。
+  /// 同步状态行数据来自持久化扫描/队列状态。未就绪时为 null，不能冒充成功。
   SyncPreferenceStatus? _syncStatus;
   bool _initialized = false;
 
@@ -396,7 +395,9 @@ class _DataManagementPageState extends State<DataManagementPage> {
                           title: AppLocalizations.of(context).syncNow,
                           trailing: AppLocalizations.of(context).syncNowHint,
                           trailingIcon: Icons.chevron_right,
-                          onTap: () => _runManualSync(context, controller),
+                          onTap: controller.syncRunning
+                              ? null
+                              : () => _runManualSync(context, controller),
                         ),
                         if (controller.backupTransportModeConflict) ...<Widget>[
                           const Divider(),
@@ -499,8 +500,7 @@ class _DataManagementPageState extends State<DataManagementPage> {
 
   /// 同步状态行：`已连接` / `待同步 N 项` / `同步出错`。三个状态互斥且按严重程度
   /// 排序——冲突（需要用户决议）比待重放（系统自己会处理）更需要被看到，所以
-  /// 有冲突时整行走错误色。状态数据还没读到时按「已连接」显示，避免首帧闪一下
-  /// 错误色。
+  /// 有冲突或失败时整行走错误色。没有成功记录时不伪装成「已连接」。
   ///
   /// 点按进入冲突审阅页（有未决冲突时）或就地刷新状态。未决冲突刻意不阻塞记账：
   /// 用户完全可以先继续记账，回头再处理这些冲突。
@@ -509,15 +509,26 @@ class _DataManagementPageState extends State<DataManagementPage> {
     final status = _syncStatus;
     final String detail;
     final Color? color;
-    if (status == null) {
-      detail = l10n.syncStatusConnected;
-      color = null;
-    } else if (status.conflictCount > 0) {
+    if (status != null && status.conflictCount > 0) {
       detail = l10n.syncConflictCount(status.conflictCount);
       color = veriSemantic(context, veriExpense);
-    } else if (status.pendingCount > 0) {
-      detail = l10n.syncPendingCount(status.pendingCount);
+    } else if (status != null && status.lastErrorCode != null) {
+      detail = l10n.syncStatusError;
+      color = veriSemantic(context, veriExpense);
+    } else if (status != null && status.hasPending) {
+      final count = [
+        status.pendingCount,
+        status.remotePendingCount,
+        status.outboxCount,
+      ].reduce((a, b) => a > b ? a : b);
+      detail = l10n.syncPendingCount(count);
       color = null;
+    } else if (controller.syncRunning) {
+      detail = l10n.syncStatusRunning;
+      color = null;
+    } else if (status == null || !status.hasAttempted) {
+      detail = l10n.syncStatusNever;
+      color = veriSemantic(context, veriExpense);
     } else {
       detail = l10n.syncStatusConnected;
       color = null;

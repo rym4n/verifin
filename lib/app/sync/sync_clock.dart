@@ -84,8 +84,8 @@ class SyncClock {
         'Cannot restore state from different device: $deviceId != ${state.deviceId}',
       );
     }
-    _nextSequence = state.nextSequence;
-    _knownVector = state.knownVector;
+    _nextSequence = max(_nextSequence, state.nextSequence);
+    _knownVector = _knownVector.merged(state.knownVector);
   }
 
   /// Get current state for persistence.

@@ -2824,6 +2824,12 @@ class AppLocalizationsZh extends AppLocalizations {
   String get syncStatusError => '同步出错';
 
   @override
+  String get syncStatusNever => '尚未同步成功';
+
+  @override
+  String get syncStatusRunning => '同步中';
+
+  @override
   String syncConflictCount(int count) {
     String _temp0 = intl.Intl.pluralLogic(
       count,

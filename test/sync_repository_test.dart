@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'package:verifin/app/sync/sync_models.dart';
@@ -180,6 +182,16 @@ void main() {
           record.relativePath,
           'events/dev-1/00000000000000000001-op-1.vfsync',
         );
+      });
+
+      test('outbox 记录返回完整事件，上传不依赖进程内缓存', () async {
+        final sync = open();
+        final batch = _batch('b1', <String>['op-1']);
+
+        await sync.enqueueBatch(batch);
+
+        final record = (await sync.loadOutbox()).single;
+        expect(record.event, batch.events.single);
       });
 
       test('扫描状态默认值：无连续序列、无 gap、无成功时间', () async {
@@ -538,11 +550,76 @@ void main() {
       });
     });
   }
+
+  test('SQLite outbox 关闭并重开数据库后仍能恢复完整事件', () async {
+    final directory = Directory.systemTemp.createTempSync(
+      'verifin_sync_outbox_',
+    );
+    final path = '${directory.path}/outbox.db';
+    final batch = _batch('restart-batch', <String>['restart-op']);
+
+    try {
+      final firstDatabase = await AppDatabase.open(
+        factory: databaseFactoryFfi,
+        path: path,
+      );
+      await SqliteLedgerRepository(firstDatabase).sync.enqueueBatch(batch);
+      await firstDatabase.close();
+
+      final reopenedDatabase = await AppDatabase.open(
+        factory: databaseFactoryFfi,
+        path: path,
+      );
+      final outbox = await SqliteLedgerRepository(
+        reopenedDatabase,
+      ).sync.loadOutbox();
+      expect(outbox, hasLength(1));
+      expect(outbox.single.event, batch.events.single);
+      await reopenedDatabase.close();
+    } finally {
+      await directory.delete(recursive: true);
+    }
+  });
 }
 
 /// SqliteLedgerRepository 需要真实异步建库；这里把「等待建库」的 Future 包装成
 /// [SyncRepository]，让契约测试的两条实现路径共用同一个同步的 open() 签名。
 class _DeferredSyncRepository implements SyncRepository {
+  @override
+  Future<String?> loadEnrollmentState() async =>
+      (await _ready).loadEnrollmentState();
+  @override
+  Future<void> saveEnrollmentState(String state) async =>
+      (await _ready).saveEnrollmentState(state);
+  @override
+  Future<void> saveConflictChoice(
+    String id,
+    String conflict,
+    SyncEvent? event,
+  ) async => (await _ready).saveConflictChoice(id, conflict, event);
+  @override
+  Future<void> finalizePreparedBatches() async =>
+      (await _ready).finalizePreparedBatches();
+  @override
+  Future<void> removePendingBatch(String id) async =>
+      (await _ready).removePendingBatch(id);
+  @override
+  Future<Map<SyncEntityKey, SyncEntityVersion>> loadEntityHeads(
+    Set<SyncEntityKey> keys,
+  ) async => (await _ready).loadEntityHeads(keys);
+  @override
+  Future<void> savePendingBatch(
+    String id,
+    List<SyncEvent> events,
+    String reason,
+  ) async => (await _ready).savePendingBatch(id, events, reason);
+  @override
+  Future<List<SyncPendingBatch>> loadPendingBatches() async =>
+      (await _ready).loadPendingBatches();
+  @override
+  Future<Map<String, String>> loadAppliedOperationHashes(
+    List<String> ids,
+  ) async => (await _ready).loadAppliedOperationHashes(ids);
   _DeferredSyncRepository(this._ready);
 
   final Future<SyncRepository> _ready;

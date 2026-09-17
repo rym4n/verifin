@@ -3,6 +3,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:verifin/app/sync/sync_models.dart';
+import 'package:verifin/app/sync/sync_projection.dart';
 import 'package:verifin/app/veri_fin_controller.dart';
 import 'package:verifin/app/veri_fin_scope.dart';
 import 'package:verifin/pages/sync_conflicts_page.dart';
@@ -69,6 +70,11 @@ void main() {
       await repository.sync.storeConflict(conflict);
     }
     final controller = await makeController(null, true, repository);
+    await repository.sync.saveShadow(
+      SyncProjection.fromExportData(
+        controller.exportDataForSync(),
+      ).payloadHashes,
+    );
     addTearDown(controller.dispose);
     await tester.pumpWidget(
       VeriFinScope(
@@ -107,8 +113,13 @@ void main() {
               'id': 'entry-1',
               'type': 'expense',
               'amount': 12.5,
+              'baseAmount': 12.5,
+              'currencyCode': 'CNY',
+              'conversionSource': 'legacy',
+              'bookId': 'default',
+              'occurredAt': '2026-09-16T00:00:00.000',
               'note': '本机备注',
-              'categoryId': '',
+              'categoryId': 'dining',
               'accountId': '',
             },
         deleted: localDeleted,
@@ -124,8 +135,13 @@ void main() {
               'id': 'entry-1',
               'type': 'expense',
               'amount': 30.0,
+              'baseAmount': 30.0,
+              'currencyCode': 'CNY',
+              'conversionSource': 'legacy',
+              'bookId': 'default',
+              'occurredAt': '2026-09-16T00:00:00.000',
               'note': '远端备注',
-              'categoryId': '',
+              'categoryId': 'dining',
               'accountId': '',
             },
         deleted: remoteDeleted,

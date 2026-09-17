@@ -20,6 +20,18 @@ abstract final class SyncKvProjection {
   /// 键名取自 `veri_fin_controller.dart` 的 `_xxxKey` 常量（此处用字面量而非引用，
   /// 避免本模块反向依赖控制器文件）。
   static const Map<String, String> storageKeys = <String, String>{
+    'activeBookId': 'verifin.active_book.v1',
+    'assetCoverUrl': 'verifin.asset_cover.v1',
+    'hapticsEnabled': 'verifin.haptics.v1',
+    'assetAccountViewMode': 'verifin.asset_view_mode.v1',
+    'collapsedAssetSections': 'verifin.asset_section_collapsed.v1',
+    'currencyFractionStyle': 'verifin.amount_format.v1',
+    'moneyUnitStyle': 'verifin.money_unit_style.v1',
+    'hideUnitInSingleCurrency': 'verifin.hide_single_currency_unit.v1',
+    'autoSuggestEnabled': 'verifin.auto_suggest.v1',
+    'showRunningBalance': 'verifin.entry_running_balance.v1',
+    'homeTrendConfig': 'verifin.home_metrics.v1',
+    'budgetCycleStartDays': 'verifin.budget_cycle.v1',
     'profile': 'verifin.profile.v1',
     'themePreference': 'verifin.theme.v1',
     'fabActionMode': 'verifin.fab_action.v1',
@@ -29,7 +41,7 @@ abstract final class SyncKvProjection {
     'assetAccountOrders': 'verifin.asset_account_order.v1',
     'assetSectionOrders': 'verifin.asset_section_order.v1',
     'defaultAccountIds': 'verifin.default_account.v1',
-    'budgetPeriodKinds': 'verifin.budget_period_kind.v1',
+    'budgetPeriodKinds': 'verifin.budget_period.v1',
     'userWidgetDefinitions': 'verifin.widget_definitions.v1',
   };
 
@@ -63,6 +75,28 @@ abstract final class SyncKvProjection {
   };
 
   static String? storageKeyFor(String entityType) => storageKeys[entityType];
+
+  static String encodeStorageValue(String type, Object? value) {
+    if (type == 'currencyFractionStyle') {
+      return (value == 'standard').toString();
+    }
+    if (const {
+      'profile',
+      'homePanels',
+      'reportPanels',
+      'assetAccountOrders',
+      'assetSectionOrders',
+      'defaultAccountIds',
+      'budgetPeriodKinds',
+      'budgetCycleStartDays',
+      'userWidgetDefinitions',
+      'collapsedAssetSections',
+      'homeTrendConfig',
+    }.contains(type)) {
+      return jsonEncode(value);
+    }
+    return value?.toString() ?? '';
+  }
 
   /// 是否是本模块认识的 KV 偏好类型（决定要不要为这条事件生成 journal 行）。
   static bool isKvPreferenceType(String entityType) =>

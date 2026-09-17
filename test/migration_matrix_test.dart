@@ -348,7 +348,7 @@ void main() {
     await app.close();
   });
 
-  test('v16 起步升级到 v17 后同步表结构与全新库一致', () async {
+  test('v16 起步升级到当前版本后同步表结构与全新库一致', () async {
     final path = '${tempDir.path}/v16_to_v17.db';
     final raw = await databaseFactoryFfi.openDatabase(path);
     for (final statement in _schemaV1) {
@@ -378,6 +378,79 @@ void main() {
     }
     // 老库升级不得丢数据。
     expect(await SqliteLedgerRepository(app).loadEntries(), hasLength(4));
+    await app.close();
+  });
+
+  test('v17 outbox 旧行升级后保留待传状态且不伪造事件正文', () async {
+    final path = '${tempDir.path}/v17_outbox.db';
+    final raw = await databaseFactoryFfi.openDatabase(path);
+    for (final statement in _schemaV1) {
+      await raw.execute(statement);
+    }
+    for (var version = 2; version <= 17; version++) {
+      await AppDatabase.migrations[version]!(raw);
+    }
+    await raw.insert('sync_outbox', <String, Object?>{
+      'batch_id': 'legacy-batch',
+      'operation_id': 'legacy-operation',
+      'relative_path':
+          'events/legacy-device/00000000000000000001-legacy-operation.vfsync',
+      'payload_hash': 'legacy-hash',
+      'retry_count': 2,
+      'uploaded': 0,
+    });
+    await raw.execute('PRAGMA user_version = 17');
+    await raw.close();
+
+    final app = await AppDatabase.open(factory: databaseFactoryFfi, path: path);
+    final columns = await app.db.rawQuery('PRAGMA table_info(sync_outbox)');
+    expect(columns.map((row) => row['name']), contains('event_json'));
+
+    final row = (await app.db.query('sync_outbox')).single;
+    expect(row['uploaded'], 0);
+    expect(row['retry_count'], 2);
+    expect(row['event_json'], isNull);
+
+    final record = (await SqliteLedgerRepository(app).sync.loadOutbox()).single;
+    expect(record.operationId, 'legacy-operation');
+    expect(record.event, isNull);
+    await app.close();
+  });
+
+  test('v20 升级分离冲突选择且不改写 prepared plan', () async {
+    final path = '${tempDir.path}/v20_choices.db';
+    final raw = await databaseFactoryFfi.openDatabase(path);
+    for (final statement in _schemaV1) {
+      await raw.execute(statement);
+    }
+    for (var version = 2; version <= 20; version++) {
+      await AppDatabase.migrations[version]!(raw);
+    }
+    const oldChoices = '{"conflict-1":{"operationId":"choice-1"}}';
+    const preparedPlan = '{"batchId":"prepared","operations":{"op":"hash"}}';
+    await raw.insert('sync_pending', {
+      'batch_id': 'conflict',
+      'events_json': '[]',
+      'received_at': 1,
+      'reason': 'conflict',
+      'plan_json': oldChoices,
+    });
+    await raw.insert('sync_pending', {
+      'batch_id': 'prepared',
+      'events_json': '[]',
+      'received_at': 2,
+      'reason': 'prepared',
+      'plan_json': preparedPlan,
+    });
+    await raw.execute('PRAGMA user_version = 20');
+    await raw.close();
+    final app = await AppDatabase.open(factory: databaseFactoryFfi, path: path);
+    final rows = await app.db.query('sync_pending', orderBy: 'received_at');
+    expect(rows.first['choices_json'], oldChoices);
+    expect(rows.first['plan_json'], isNull);
+    expect(rows.last['plan_json'], preparedPlan);
+    expect(rows.last['choices_json'], '{}');
+    expect(await _describeSchema(app.db), freshSchema);
     await app.close();
   });
 

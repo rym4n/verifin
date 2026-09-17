@@ -6,6 +6,7 @@ import 'package:sqflite_common/sqlite_api.dart';
 import '../app/account_icon_assets.dart';
 import '../app/models.dart';
 import '../app/sync/sync_store.dart';
+import '../app/sync/sync_models.dart';
 import 'app_database.dart';
 import 'sqlite_sync_store.dart';
 
@@ -112,6 +113,12 @@ abstract interface class LedgerRepository {
   /// 保证跨表一致——中途失败会整体回滚，不会留下「entries 已换、accounts 还是旧的」
   /// 这类孤儿引用状态。
   Future<void> replaceAllLedgerData(LedgerDataSnapshot snapshot);
+
+  /// Remote business rows and sync metadata commit or roll back together.
+  Future<void> applyRemoteLedgerData(
+    LedgerDataSnapshot snapshot,
+    RemoteApplyPlan plan,
+  );
 
   Future<bool> hasAnyData();
 }
@@ -449,6 +456,21 @@ class SqliteLedgerRepository implements LedgerRepository {
 
   @override
   Future<void> replaceAllLedgerData(LedgerDataSnapshot snapshot) {
+    return _replaceLedgerData(snapshot);
+  }
+
+  @override
+  Future<void> applyRemoteLedgerData(
+    LedgerDataSnapshot snapshot,
+    RemoteApplyPlan plan,
+  ) {
+    return _replaceLedgerData(snapshot, plan: plan);
+  }
+
+  Future<void> _replaceLedgerData(
+    LedgerDataSnapshot snapshot, {
+    RemoteApplyPlan? plan,
+  }) {
     return _enqueueWrite(() async {
       // 全部表在同一事务内清空重建：任一步失败即整体回滚，绝不留半新半旧状态。
       await _db.transaction((txn) async {
@@ -504,6 +526,12 @@ class SqliteLedgerRepository implements LedgerRepository {
           'exchange_rates',
           snapshot.exchangeRates.map(_exchangeRateToRow),
         );
+        if (plan != null) {
+          await (sync as SqliteSyncRepository).applyRemoteBatchInTransaction(
+            txn,
+            plan,
+          );
+        }
       });
       // 整替后重建各增量表基线，使后续单条 saveX 的差分有正确起点（否则会拿导入前
       // 的旧快照去 diff、误删或漏写）。附件/预算不走增量、无需重置。

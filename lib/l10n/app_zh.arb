@@ -1842,6 +1842,8 @@
     "description": "同步状态:有待重放的偏好变更"
   },
   "syncStatusError": "同步出错",
+  "syncStatusNever": "尚未同步成功",
+  "syncStatusRunning": "同步中",
   "@syncStatusError": {
     "description": "同步状态:存在冲突或写入失败"
   },

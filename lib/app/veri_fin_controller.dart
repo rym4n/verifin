@@ -34,6 +34,12 @@ import 'sync/sync_conflict.dart';
 import 'sync/sync_coordinator.dart';
 import 'sync/sync_engine.dart';
 import 'sync/sync_store.dart';
+import 'sync/sync_models.dart';
+import 'sync/sync_projection.dart';
+import 'sync/sync_ledger_reducer.dart';
+import 'sync/sync_kv_projection.dart';
+import 'sync/sync_runtime.dart';
+import 'sync/sync_clock.dart';
 import 'sync/webdav_sync_transport.dart';
 
 part 'veri_fin_controller_state.dart';
@@ -126,7 +132,7 @@ int _compareEntriesLatestFirst(LedgerEntry a, LedgerEntry b) {
 
 class VeriFinController extends ChangeNotifier
     with _ControllerState, _ControllerOps
-    implements SyncProjectionSource {
+    implements SyncProjectionSource, SyncRemoteApplyTarget {
   VeriFinController._(
     this._store,
     this._repository, {
@@ -170,7 +176,13 @@ class VeriFinController extends ChangeNotifier
       systemIsEnglish: systemIsEnglish,
     );
     await controller._loadFromRepository();
-    await controller.applySyncPreferenceJournal();
+    try {
+      await controller.applySyncPreferenceJournal();
+    } catch (_) {
+      // The journal remains pending and applySyncPreferenceJournal has logged
+      // the persistence failure. Keep local bookkeeping available; runtime
+      // retries the journal before any reconciliation or network scan.
+    }
     controller._syncAmountFormatContext();
     return controller;
   }
@@ -196,8 +208,166 @@ class VeriFinController extends ChangeNotifier
   @override
   Map<String, Object?> exportDataForSync() => exportDataSection();
 
+  Future<SyncRuntime> createSyncRuntime({
+    WebdavSyncTransport? transport,
+  }) async {
+    if (_syncRuntime != null) return _syncRuntime!;
+    final pending = _syncRuntimeCreation;
+    if (pending != null) return pending;
+    final creation = SyncRuntime.create(
+      controller: this,
+      repository: _repository.sync,
+      store: _store,
+      transport: transport ?? WebdavSyncTransportImpl(),
+    );
+    _syncRuntimeCreation = creation;
+    try {
+      return _syncRuntime = await creation;
+    } finally {
+      _syncRuntimeCreation = null;
+    }
+  }
+
+  @override
+  Future<void> applySyncRemoteBatch(RemoteApplyPlan plan) async {
+    await waitForPendingWrites();
+    await runRemoteApply(() async {
+      final data = SyncProjection.applyVersions(
+        exportDataForSync(),
+        plan.entityVersions,
+      );
+      final snapshot = SyncLedgerReducer.parse(data);
+      final kv = <String, String>{};
+      for (final version in plan.entityVersions) {
+        final type = version.entity.type;
+        final key = SyncKvProjection.storageKeyFor(type);
+        if (key != null) {
+          kv[key] = SyncKvProjection.encodeStorageValue(type, data[type]);
+        }
+      }
+      final materializedPlan = RemoteApplyPlan(
+        batchId: plan.batchId,
+        entityVersions: plan.entityVersions,
+        appliedOperationIds: plan.appliedOperationIds,
+        shadowHashes: plan.shadowHashes,
+        kvJournalValues: kv,
+        appliedPayloadHashes: plan.appliedPayloadHashes,
+        conflicts: plan.conflicts,
+        resolutionEvents: plan.resolutionEvents,
+        resolvedConflictIds: plan.resolvedConflictIds,
+        completedPendingIds: plan.completedPendingIds,
+        kvExpectedHashes: {
+          for (final key in kv.keys)
+            key: computeSyncPayloadHash(_store.read(key)),
+        },
+      );
+      await _repository.applyRemoteLedgerData(snapshot, materializedPlan);
+      await _reloadSyncLedgerData();
+      await applySyncPreferenceJournal();
+      themePreferenceListenable.value = _themePreference;
+      _syncAmountFormatContext();
+      onWidgetProjectionInvalidated?.call();
+      notifyListeners();
+    });
+  }
+
+  @override
+  Future<T> runSyncRemoteMerge<T>(
+    Future<T> Function() action, {
+    bool resolving = false,
+  }) => runRemoteApply(action, resolving: resolving);
+
+  Future<void> _recordSyncJournalConflict(KvJournalEntry journal) async {
+    final sync = _repository.sync;
+    final pending = (await sync.loadPendingBatches())
+        .where((p) => p.batchId == journal.batchId)
+        .firstOrNull;
+    if (pending == null) {
+      throw const SyncConflictException('preference_changed_after_prepare');
+    }
+    final current = SyncProjection.fromExportData(exportDataForSync());
+    final shadow = await sync.loadShadow();
+    final conflicts = await sync.loadConflicts();
+    final state = await sync.loadDeviceState();
+    final clock =
+        _syncChangeTracker?.clock ??
+        (state.deviceId.isEmpty
+            ? await SyncClock.create(_store)
+            : SyncClock.restore(
+                deviceId: state.deviceId,
+                nextSequence: state.nextSequence,
+                knownVector: state.knownVector,
+              ));
+    for (final remote in pending.events.where(
+      (e) => SyncKvProjection.storageKeyFor(e.entity.type) == journal.key,
+    )) {
+      final local = current.entity(remote.entity);
+      final hash = local?.payloadHash ?? computeSyncPayloadHash(null);
+      final conflictId = 'conflict-${remote.operationId}';
+      if (shadow[remote.entity] == hash &&
+          conflicts.any((c) => c.id == conflictId)) {
+        continue;
+      }
+      final event = SyncEvent(
+        protocolVersion: syncProtocolVersion,
+        operationId: clock.nextOperationId(),
+        version: clock.nextVersion(),
+        entity: remote.entity,
+        operation: local == null
+            ? SyncOperationKind.delete
+            : SyncOperationKind.upsert,
+        payloadHash: hash,
+        payload: local?.payload,
+        batchId: clock.nextOperationId(),
+        keyFingerprint: 'local',
+      );
+      await sync.saveDeviceState(clock.getState());
+      await sync.enqueueBatch(
+        SyncBatchRecord(
+          batchId: event.batchId,
+          events: [event],
+          manifest: SyncBatchManifest(
+            batchId: event.batchId,
+            operationIds: [event.operationId],
+            blobHashes: const [],
+            manifestHash: computeSyncPayloadHash([event.operationId]),
+          ),
+        ),
+      );
+      await sync.storeConflict(
+        SyncConflictRecord(
+          id: conflictId,
+          entity: remote.entity,
+          local: SyncEntityVersion(
+            entity: event.entity,
+            version: event.version,
+            payloadHash: hash,
+            payload: event.payload,
+            deleted: local == null,
+            operationId: event.operationId,
+          ),
+          remote: SyncEntityVersion(
+            entity: remote.entity,
+            version: remote.version,
+            payloadHash: remote.payloadHash,
+            payload: remote.payload,
+            deleted: remote.operation == SyncOperationKind.delete,
+            operationId: remote.operationId,
+          ),
+        ),
+      );
+      if (local == null) {
+        shadow.remove(remote.entity);
+      } else {
+        shadow[remote.entity] = hash;
+      }
+    }
+    await sync.saveShadow(shadow);
+  }
+
   @override
   void dispose() {
+    _syncRuntime?.dispose();
     _syncChangeTracker?.dispose();
     themePreferenceListenable.dispose();
     fontScaleListenable.dispose();

@@ -228,13 +228,7 @@ class _VeriFinAppState extends State<VeriFinApp> with WidgetsBindingObserver {
       l10n: l10nForPreference(_controller.localePreference),
     );
     // 同步协调器：自动同步模式下触发启动、恢复与本地变更同步。
-    _syncCoordinator = SyncCoordinator(
-      getTransportMode: () => _controller.backupTransportMode,
-      runSync: _controller.runSyncEngine,
-    );
-    _controller.syncCoordinator = _syncCoordinator;
-    _controller.onSyncChanged = _syncCoordinator!.onLocalMutation;
-    unawaited(_syncCoordinator!.onStartup());
+    unawaited(_bindSyncRuntime());
     BackupCoordinator.maybeBackupOnOpen(_controller);
     // 打开应用时刷新桌面小组件「今日支出」。
     pushWidgetData(_controller);
@@ -242,6 +236,16 @@ class _VeriFinAppState extends State<VeriFinApp> with WidgetsBindingObserver {
 
   void _handleEntryAdded() {
     BackupCoordinator.maybeBackupAfterEntry(_controller);
+  }
+
+  Future<void> _bindSyncRuntime() async {
+    final runtime = await _controller.createSyncRuntime();
+    if (!mounted) {
+      runtime.dispose();
+      return;
+    }
+    _syncCoordinator = runtime.coordinator;
+    await _syncCoordinator!.onStartup();
   }
 
   void _scheduleWidgetRefresh() {

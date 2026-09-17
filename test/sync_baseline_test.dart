@@ -1,213 +1,163 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:verifin/app/backup/webdav_config.dart';
-import 'package:verifin/app/sync/sync_clock.dart';
+import 'package:sqflite_common_ffi/sqflite_ffi.dart';
+import 'package:verifin/app/models.dart';
 import 'package:verifin/app/sync/sync_engine.dart';
-import 'package:verifin/app/sync/sync_models.dart';
 import 'package:verifin/app/sync/webdav_sync_transport_stub.dart';
 
-import 'support/in_memory_ledger_repository.dart';
+import 'support/sync_test_harness.dart';
 
-const testConfig = WebdavConfig(
-  url: 'https://test.example.com/dav',
-  username: 'test',
-  password: 'test',
-);
-
-/// 基线初始化与首次加入测试。
 void main() {
-  group('SyncEngine · 基线初始化', () {
-    test('空远端创建基线批次而不视为新用户编辑', () async {
-      final repo = InMemoryLedgerRepository();
-      final transport = StubWebdavSyncTransport();
-      final engine = SyncEngine(
-        repository: repo.sync,
+  setUpAll(sqfliteFfiInit);
+
+  group('SyncEngine · production baseline', () {
+    late StubWebdavSyncTransport transport;
+    late SyncTestDevice device;
+
+    setUp(() async {
+      transport = StubWebdavSyncTransport();
+      device = await SyncTestDevice.create(
+        deviceId: 'baseline-local',
         transport: transport,
-        controller: repo,
-        config: testConfig,
+        trackLocalChanges: false,
       );
-
-      // Populate local data.
-      repo.setProfile({'name': 'LocalUser'});
-      repo.addTestEntry({'id': 'entry-1', 'amount': 100});
-
-      // Initialize from restored data with empty remote.
-      await engine.initializeFromRestoredData();
-
-      // Should create a baseline batch.
-      final outbox = await repo.sync.loadOutbox();
-      expect(outbox, isNotEmpty);
-
-      // Upload the baseline.
-      final result = await engine.run(trigger: SyncTrigger.startup);
-      expect(result.uploaded, greaterThan(0));
-      expect(result.errorCode, isNull);
     });
 
-    test('非空远端重建远端状态并创建 join 冲突（本地哈希不同）', () async {
-      final repo = InMemoryLedgerRepository();
-      final transport = StubWebdavSyncTransport();
-      final engine = SyncEngine(
-        repository: repo.sync,
-        transport: transport,
-        controller: repo,
-        config: testConfig,
-      );
+    tearDown(() => device.dispose());
 
-      // Remote device already has data.
-      final clockRemote = SyncClock.createWithDeviceId('dev-remote');
-      final eventRemote = SyncEvent(
-        protocolVersion: syncProtocolVersion,
-        operationId: clockRemote.nextOperationId(),
-        version: clockRemote.nextVersion(),
-        entity: const SyncEntityKey(
-          scope: 'global',
-          type: 'profile',
-          id: 'singleton',
-        ),
-        operation: SyncOperationKind.upsert,
-        payloadHash: computeSyncPayloadHash({'name': 'RemoteUser'}),
-        payload: {'name': 'RemoteUser'},
-        batchId: 'batch-remote',
-        keyFingerprint: 'test-key',
-      );
-      await transport.simulateRemoteBatch('dev-remote', 1, [eventRemote]);
-
-      // Local has different data.
-      repo.setProfile({'name': 'LocalUser'});
-
-      // Initialize from restored data with non-empty remote.
-      await engine.initializeFromRestoredData();
-
-      // Should detect conflict.
-      final conflicts = await engine.conflicts();
-      expect(conflicts.length, 1);
-      expect(conflicts.first.entity.type, 'profile');
-    });
-
-    test('非空远端本地哈希相同不产生冲突', () async {
-      final repo = InMemoryLedgerRepository();
-      final transport = StubWebdavSyncTransport();
-      final engine = SyncEngine(
-        repository: repo.sync,
-        transport: transport,
-        controller: repo,
-        config: testConfig,
-      );
-
-      // Remote device has data.
-      final clockRemote = SyncClock.createWithDeviceId('dev-remote');
-      final profile = {'name': 'SameUser'};
-      final eventRemote = SyncEvent(
-        protocolVersion: syncProtocolVersion,
-        operationId: clockRemote.nextOperationId(),
-        version: clockRemote.nextVersion(),
-        entity: const SyncEntityKey(
-          scope: 'global',
-          type: 'profile',
-          id: 'default',
-        ),
-        operation: SyncOperationKind.upsert,
-        payloadHash: computeSyncPayloadHash(profile),
-        payload: profile,
-        batchId: 'batch-remote',
-        keyFingerprint: 'test-key',
-      );
-      await transport.simulateRemoteBatch('dev-remote', 1, [eventRemote]);
-
-      // Local has same data.
-      repo.setProfile(profile);
-
-      // Initialize from restored data.
-      await engine.initializeFromRestoredData();
-
-      // No conflict expected.
-      final conflicts = await engine.conflicts();
-      expect(conflicts, isEmpty);
-    });
-
-    test('初始化期间到达的事件在下次扫描处理', () async {
-      final repo = InMemoryLedgerRepository();
-      final transport = StubWebdavSyncTransport();
-      final engine = SyncEngine(
-        repository: repo.sync,
-        transport: transport,
-        controller: repo,
-        config: testConfig,
-      );
-
-      // Start with empty remote.
-      repo.setProfile({'name': 'LocalUser'});
-      await engine.initializeFromRestoredData();
-
-      // Remote device uploads during scan.
-      final clockRemote = SyncClock.createWithDeviceId('dev-remote');
-      final eventRemote = SyncEvent(
-        protocolVersion: syncProtocolVersion,
-        operationId: clockRemote.nextOperationId(),
-        version: clockRemote.nextVersion(),
-        entity: const SyncEntityKey(
-          scope: 'ledger',
-          type: 'entries',
-          id: 'entry-1',
-        ),
-        operation: SyncOperationKind.upsert,
-        payloadHash: computeSyncPayloadHash({'amount': 100}),
-        payload: {'amount': 100},
-        batchId: 'batch-remote',
-        keyFingerprint: 'test-key',
-      );
-      await transport.simulateRemoteBatch('dev-remote', 1, [eventRemote]);
-
-      // Next sync run should process it.
-      final result = await engine.run(trigger: SyncTrigger.manual);
-      expect(result.downloaded, 1);
-
-      final data = repo.exportDataForSync();
-      final entries = data['entries'] as List?;
-      expect(entries?.length, 1);
-    });
-
-    test('记录扫描前的设备高水位标记', () async {
-      final repo = InMemoryLedgerRepository();
-      final transport = StubWebdavSyncTransport();
-      final engine = SyncEngine(
-        repository: repo.sync,
-        transport: transport,
-        controller: repo,
-        config: testConfig,
-      );
-
-      // Remote has events up to sequence 5.
-      final clockRemote = SyncClock.createWithDeviceId('dev-remote');
-      for (var i = 1; i <= 5; i++) {
-        clockRemote.nextVersion();
-        final event = SyncEvent(
-          protocolVersion: syncProtocolVersion,
-          operationId: clockRemote.nextOperationId(),
-          version: SyncVersion(
-            dot: SyncDot(deviceId: 'dev-remote', sequence: i),
-            context: clockRemote.knownVector,
-            logicalTime: i,
-          ),
-          entity: SyncEntityKey(
-            scope: 'ledger',
-            type: 'entries',
-            id: 'entry-$i',
-          ),
-          operation: SyncOperationKind.upsert,
-          payloadHash: computeSyncPayloadHash({'amount': i * 100}),
-          payload: {'amount': i * 100},
-          batchId: 'batch-$i',
-          keyFingerprint: 'test-key',
+    test(
+      'empty remote uploads one complete baseline from real controller data',
+      () async {
+        await device.engine.initializeFromRestoredData();
+        final outbox = await device.repository.sync.loadOutbox();
+        expect(outbox, isNotEmpty);
+        expect(outbox.every((record) => record.event != null), isTrue);
+        expect(
+          outbox.any((record) => record.event!.entity.type == 'ledgerBook'),
+          isTrue,
         );
-        await transport.simulateRemoteBatch('dev-remote', i, [event]);
-      }
+        expect(
+          outbox.any((record) => record.event!.entity.type == 'categories'),
+          isTrue,
+        );
 
-      await engine.initializeFromRestoredData();
+        final result = await device.engine.run(trigger: SyncTrigger.startup);
+        expect(result.errorCode, isNull);
+        expect(result.uploaded, 1);
+        expect(await device.repository.sync.loadOutbox(), isEmpty);
+        expect(
+          transport.files.keys.where((path) => path.endsWith('.vfsync')).length,
+          outbox.length,
+        );
+        expect(
+          transport.files.keys
+              .where((path) => path.endsWith('.manifest'))
+              .length,
+          1,
+        );
+        expect(
+          transport.files.keys.where((path) => path.endsWith('.commit')).length,
+          1,
+        );
+      },
+    );
 
-      // Scan state should record high-water mark.
-      final scanState = await repo.sync.loadScanState();
-      expect(scanState.contiguousSequences['dev-remote'], 5);
-    });
+    test(
+      'non-empty remote with different entry hash creates a join conflict',
+      () async {
+        device.controller.addEntry(
+          LedgerEntry(
+            id: 'join-entry',
+            bookId: defaultLedgerBookId,
+            type: EntryType.expense,
+            amount: 10,
+            categoryId: 'dining',
+            accountId: '',
+            note: 'local join',
+            occurredAt: DateTime(2026, 9, 16),
+          ),
+        );
+        await device.controller.waitForPendingWrites();
+        final remote = SyncTestRemote('remote-join');
+        await transport.simulateRemoteBatch(remote.deviceId, 1, [
+          remote.expense('join-entry', 20, batchId: 'remote-join'),
+        ]);
+
+        await device.engine.initializeFromRestoredData();
+
+        final conflicts = await device.engine.conflicts();
+        expect(conflicts, hasLength(1));
+        expect(conflicts.single.entity.type, 'entries');
+        expect(device.entries.single.amount, 10);
+      },
+    );
+
+    test(
+      'non-empty remote with identical typed entry does not conflict',
+      () async {
+        device.controller.addEntry(
+          LedgerEntry(
+            id: 'same-entry',
+            bookId: defaultLedgerBookId,
+            type: EntryType.expense,
+            amount: 10,
+            categoryId: 'dining',
+            accountId: '',
+            note: 'remote sync test same-entry',
+            occurredAt: DateTime(2026, 9, 16),
+          ),
+        );
+        await device.controller.waitForPendingWrites();
+        final remote = SyncTestRemote('remote-same');
+        await transport.simulateRemoteBatch(remote.deviceId, 1, [
+          remote.expense('same-entry', 10, batchId: 'remote-same'),
+        ]);
+
+        await device.engine.initializeFromRestoredData();
+
+        expect(await device.engine.conflicts(), isEmpty);
+        expect(device.entries.single.amount, 10);
+      },
+    );
+
+    test(
+      'event that arrives after baseline is applied on the next scan',
+      () async {
+        await device.engine.initializeFromRestoredData();
+        final remote = SyncTestRemote('remote-late');
+        await transport.simulateRemoteBatch(remote.deviceId, 1, [
+          remote.expense('late-entry', 42, batchId: 'late-batch'),
+        ]);
+
+        final result = await device.engine.run(trigger: SyncTrigger.manual);
+
+        expect(result.errorCode, isNull);
+        expect(result.downloaded, 1);
+        expect(device.entries.single.id, 'late-entry');
+        expect((await device.repository.loadEntries()).single.id, 'late-entry');
+      },
+    );
+
+    test(
+      'records remote high-water mark after applying typed events',
+      () async {
+        final remote = SyncTestRemote('remote-high-water');
+        for (var sequence = 1; sequence <= 5; sequence++) {
+          await transport.simulateRemoteBatch(remote.deviceId, sequence, [
+            remote.expense(
+              'high-water-$sequence',
+              sequence.toDouble(),
+              batchId: 'high-water-$sequence',
+            ),
+          ]);
+        }
+
+        await device.engine.initializeFromRestoredData();
+
+        final scanState = await device.repository.sync.loadScanState();
+        expect(scanState.contiguousSequences[remote.deviceId], 5);
+        expect(device.entries, hasLength(5));
+        expect((await device.repository.loadEntries()), hasLength(5));
+      },
+    );
   });
 }

@@ -14,8 +14,39 @@ import 'sync_conflict.dart';
 import 'sync_kv_projection.dart';
 import 'sync_models.dart';
 import 'sync_projection.dart';
+import 'sync_ledger_reducer.dart';
+import 'sync_schema.dart';
+import 'sync_wire.dart';
 import 'sync_store.dart';
 import 'webdav_sync_transport.dart';
+
+/// Stable public status codes; exception detail belongs only in local logs.
+String syncErrorCode(Object error) {
+  final message = error.toString();
+  if (error is SyncCodecException) {
+    if (message.contains('protocol_version')) return 'protocol';
+    return message.contains('fingerprint') ||
+            message.contains('passphrase') ||
+            message.contains('Passphrase')
+        ? 'auth'
+        : 'decode';
+  }
+  if (error is WebdavFileCollision) return 'protocol';
+  if (error is WebdavException) {
+    return RegExp(r'\b(401|403)\b').hasMatch(message) ? 'auth' : 'network';
+  }
+  if (message.contains('outbox_event_missing')) return 'outbox_event_missing';
+  if (error is FormatException) {
+    if (message.contains('protocol_version') ||
+        message.contains('manifest_') ||
+        message.contains('commit_')) {
+      return 'protocol';
+    }
+    return message.contains('Invalid sync') ? 'validation' : 'decode';
+  }
+  if (error is SyncConflictException) return 'validation';
+  return 'apply';
+}
 
 /// Sync trigger reason.
 enum SyncTrigger {
@@ -56,6 +87,10 @@ class SyncEngine {
     WebdavSyncTransport? transport,
     required SyncProjectionSource controller,
     WebdavConfig? config,
+    SyncClock? clock,
+    String passphrase = '',
+    this.wireLimits = const SyncWireLimits(),
+    void Function(Object)? onError,
 
     /// Wrap remote-apply calls to suppress outbox echo (e.g.,
     /// `VeriFinController.runRemoteApply`). If null, calls applyRemoteBatch
@@ -65,9 +100,13 @@ class SyncEngine {
        _transport = transport,
        _controller = controller,
        _config = config,
-       _remoteApply = remoteApply;
+       _remoteApply = remoteApply,
+       _clock = clock,
+       _passphrase = passphrase,
+       _onError = onError;
 
   final SyncRepository _repository;
+  final SyncWireLimits wireLimits;
 
   /// 传输层可空：冲突决议（[resolveConflict]）只写本地 outbox，不碰网络。
   /// 决议 UI 因此在没有 WebDAV 配置时也能构造一个仅用于决议的引擎，
@@ -78,25 +117,20 @@ class SyncEngine {
   WebdavConfig? _config;
 
   SyncClock? _clock;
-
-  // _changeTracker is intentionally not used yet; reserved for future
-  // integration where the engine creates and disposes the tracker.
-  // ignore: unused_field
-  SyncChangeTracker? _changeTracker;
-
-  /// Holds full batch records between enqueueBatch and upload so event bytes
-  /// can be encoded for upload without a separate storage round-trip.
-  final Map<String, SyncBatchRecord> _pendingBatchCache = {};
+  String _passphrase;
+  final void Function(Object)? _onError;
+  void updatePassphrase(String passphrase) {
+    _passphrase = passphrase;
+  }
 
   /// Update the WebDAV config (e.g., after settings change).
   void updateConfig(WebdavConfig? config) {
     _config = config;
   }
 
-  /// Enqueue a local batch for upload. Caches the full record so event bytes
-  /// are available during the upload phase without a second encoding round-trip.
+  /// Enqueue a local batch for upload. The repository persists complete events,
+  /// so a later engine instance can resume the upload after process restart.
   Future<void> enqueueBatch(SyncBatchRecord batch) async {
-    _pendingBatchCache[batch.batchId] = batch;
     await _repository.enqueueBatch(batch);
   }
 
@@ -114,6 +148,17 @@ class SyncEngine {
     }
 
     try {
+      if (await _repository.loadEnrollmentState() == 'enrolling') {
+        await initializeFromRestoredData();
+        if (await _repository.loadEnrollmentState() == 'enrolling') {
+          return SyncRunResult(
+            uploaded: 0,
+            downloaded: 0,
+            conflicts: 0,
+            pending: (await _repository.loadPendingBatches()).length,
+          );
+        }
+      }
       // Ensure clock is initialized
       await _ensureClock();
 
@@ -133,12 +178,13 @@ class SyncEngine {
         pending: pending,
       );
     } catch (error) {
+      _onError?.call(error);
       return SyncRunResult(
         uploaded: 0,
         downloaded: 0,
         conflicts: 0,
         pending: 0,
-        errorCode: error.toString(),
+        errorCode: syncErrorCode(error),
       );
     }
   }
@@ -150,40 +196,43 @@ class SyncEngine {
       return;
     }
 
-    try {
-      await _ensureClock();
-
-      // Ensure sync tree exists
-      await transport.ensureSyncTree(_config!);
-
-      // Scan remote to determine if empty or not
-      final remoteFiles = await transport.listSyncFiles(_config!);
-      final remoteEvents = remoteFiles
-          .where((f) => f.kind == WebdavSyncFileKind.event)
-          .toList();
-
-      if (remoteEvents.isEmpty) {
-        // Empty remote: create baseline batch
-        await _createBaselineBatch();
-      } else {
-        // Non-empty remote: join-conflict flow
-        await _joinConflictFlow(remoteFiles);
-      }
-
-      // Save shadow from current state
-      final snapshot = SyncProjection.fromExportData(
-        _controller.exportDataForSync(),
-      );
-      await _repository.saveShadow(snapshot.payloadHashes);
-
-      // Save scan state
-      final scanState = await _buildScanState(remoteFiles);
-      await _repository.saveScanState(scanState);
-    } catch (error) {
-      // Initialization errors are logged but not thrown
-      // to avoid blocking app startup
+    final enrollment = await _repository.loadEnrollmentState();
+    final scan = await _repository.loadScanState();
+    if (enrollment == 'enrolled' ||
+        (enrollment == null && scan.lastSuccess != null)) {
       return;
     }
+    await _repository.saveEnrollmentState('enrolling');
+    await _ensureClock();
+
+    // Ensure sync tree exists
+    await transport.ensureSyncTree(_config!);
+
+    // Scan remote to determine if empty or not
+    final remoteFiles = await transport.listSyncFiles(_config!);
+    final hasRemoteHistory = remoteFiles.any(
+      (f) => f.kind != WebdavSyncFileKind.blob,
+    );
+
+    if (!hasRemoteHistory) {
+      // Empty remote: create baseline batch
+      await _createBaselineBatch();
+    } else {
+      // Non-empty remote: join-conflict flow
+      if (!await _joinConflictFlow(remoteFiles)) return;
+    }
+
+    // Save shadow from current state
+    final snapshot = SyncProjection.fromExportData(
+      _controller.exportDataForSync(),
+    );
+    await _repository.saveShadow(snapshot.payloadHashes);
+
+    // Save scan state
+    if (!hasRemoteHistory) {
+      await _repository.saveScanState(await _buildScanState(const []));
+    }
+    await _repository.saveEnrollmentState('enrolled');
   }
 
   /// Get all current conflicts.
@@ -194,6 +243,20 @@ class SyncEngine {
 
   /// Resolve a conflict by creating a resolve event.
   Future<void> resolveConflict(
+    String conflictId,
+    ConflictResolution resolution,
+  ) async {
+    final target = _controller;
+    if (target is SyncRemoteApplyTarget) {
+      return (target as SyncRemoteApplyTarget).runSyncRemoteMerge(
+        () => _resolveConflictUnderGate(conflictId, resolution),
+        resolving: true,
+      );
+    }
+    return _resolveConflictUnderGate(conflictId, resolution);
+  }
+
+  Future<void> _resolveConflictUnderGate(
     String conflictId,
     ConflictResolution resolution,
   ) async {
@@ -244,6 +307,27 @@ class SyncEngine {
     }
 
     // Create resolve event
+    final merged = conflict.local.version.context
+        .merged(
+          SyncVersionVector({
+            conflict.local.version.dot.deviceId:
+                conflict.local.version.dot.sequence,
+          }),
+        )
+        .merged(conflict.remote.version.context)
+        .merged(
+          SyncVersionVector({
+            conflict.remote.version.dot.deviceId:
+                conflict.remote.version.dot.sequence,
+          }),
+        );
+    _clock!.restoreState(
+      SyncDeviceState(
+        deviceId: _clock!.deviceId,
+        nextSequence: _clock!.nextSequence,
+        knownVector: merged,
+      ),
+    );
     final batchId = _clock!.nextOperationId();
     final event = SyncEvent(
       protocolVersion: syncProtocolVersion,
@@ -257,33 +341,223 @@ class SyncEngine {
       keyFingerprint: 'local',
     );
 
-    // Enqueue the resolve event
-    await _repository.enqueueBatch(
-      SyncBatchRecord(
-        batchId: batchId,
-        events: [event],
-        manifest: SyncBatchManifest(
-          batchId: batchId,
-          operationIds: [event.operationId],
-          blobHashes: const [],
-          manifestHash: 'resolve-manifest',
+    final pending = await _repository.loadPendingBatches();
+    Future<void> reserveSequence() async {
+      final persisted = await _repository.loadDeviceState();
+      await _repository.saveDeviceState(
+        SyncDeviceState(
+          deviceId: _clock!.deviceId,
+          nextSequence: _clock!.nextSequence,
+          knownVector: persisted.knownVector,
         ),
+      );
+    }
+
+    pending.sort(
+      (a, b) => (a.reason == 'join_conflict' ? 0 : 1).compareTo(
+        b.reason == 'join_conflict' ? 0 : 1,
       ),
     );
+    final aggregate = pending
+        .where(
+          (batch) => batch.events.any(
+            (e) => e.operationId == conflict.remote.operationId,
+          ),
+        )
+        .firstOrNull;
+    final candidates =
+        aggregate?.events ??
+        [
+          SyncEvent(
+            protocolVersion: syncProtocolVersion,
+            operationId: conflict.remote.operationId,
+            version: conflict.remote.version,
+            entity: conflict.entity,
+            operation: conflict.remote.deleted
+                ? SyncOperationKind.delete
+                : SyncOperationKind.upsert,
+            payloadHash: conflict.remote.payloadHash,
+            payload: conflict.remote.payload,
+            batchId: batchId,
+            keyFingerprint: 'local',
+          ),
+        ];
+    final latestHeads = await _repository.loadEntityHeads(
+      candidates.map((e) => e.entity).toSet(),
+    );
+    final invalidChoices = <String>{};
+    final supersededIds = <String>{};
+    var selectedStale = false;
+    for (final original in candidates) {
+      final head = latestHeads[original.entity];
+      final existing = conflicts
+          .where((c) => c.remote.operationId == original.operationId)
+          .firstOrNull;
+      if (existing == null &&
+          head != null &&
+          _determineCausality(original, head.payloadHash, head) ==
+              SyncCausality.before) {
+        supersededIds.add(original.operationId);
+        continue;
+      }
+      final changed =
+          existing != null &&
+          head != null &&
+          (head.payloadHash != existing.local.payloadHash ||
+              head.deleted != existing.local.deleted);
+      final newlyConcurrent =
+          existing == null &&
+          _determineCausality(original, head?.payloadHash, head) ==
+              SyncCausality.concurrent;
+      final choice = existing == null ? null : aggregate?.choices[existing.id];
+      final choiceStale =
+          choice != null &&
+          head != null &&
+          ![
+            SyncCausality.after,
+            SyncCausality.equal,
+          ].contains(choice.version.context.compare(_fullVector(head.version)));
+      if (changed || newlyConcurrent || choiceStale) {
+        final refreshed = await _buildConflict(original, localOverride: head);
+        await _repository.storeConflict(refreshed);
+        conflicts.removeWhere((c) => c.id == refreshed.id);
+        conflicts.add(refreshed);
+        invalidChoices.add(refreshed.id);
+        if (refreshed.id == conflictId) selectedStale = true;
+        if (aggregate != null) {
+          await _repository.saveConflictChoice(
+            aggregate.batchId,
+            refreshed.id,
+            null,
+          );
+        }
+      }
+    }
+    if (selectedStale) return;
+    final choices = <String, SyncEvent>{
+      for (final item
+          in aggregate?.choices.entries ??
+              const <MapEntry<String, SyncEvent>>[])
+        if (!invalidChoices.contains(item.key)) item.key: item.value,
+      conflictId: event,
+    };
+    final aggregateConflicts = aggregate == null
+        ? [conflict]
+        : conflicts
+              .where(
+                (c) => aggregate.events.any(
+                  (e) => e.operationId == c.remote.operationId,
+                ),
+              )
+              .toList();
+    if (aggregate != null &&
+        aggregateConflicts.any((c) => !choices.containsKey(c.id))) {
+      final tentative = [
+        for (final original in aggregate.events)
+          if (!supersededIds.contains(original.operationId))
+            choices.values
+                    .where((e) => e.entity == original.entity)
+                    .firstOrNull ??
+                original,
+      ];
+      SyncLedgerReducer.parse(
+        SyncProjection.applyVersions(_controller.exportDataForSync(), [
+          for (final e in tentative)
+            SyncEntityVersion(
+              entity: e.entity,
+              version: e.version,
+              payloadHash: e.payloadHash,
+              payload: e.payload,
+              deleted: e.operation == SyncOperationKind.delete,
+              operationId: e.operationId,
+            ),
+        ]),
+      );
+      await reserveSequence();
+      await _repository.saveConflictChoice(
+        aggregate.batchId,
+        conflictId,
+        event,
+      );
+      return;
+    }
+    final resolutionEvents = [
+      for (final choice in choices.values)
+        SyncEvent(
+          protocolVersion: choice.protocolVersion,
+          operationId: choice.operationId,
+          version: choice.version,
+          entity: choice.entity,
+          operation: choice.operation,
+          payloadHash: choice.payloadHash,
+          payload: choice.payload,
+          batchId: batchId,
+          keyFingerprint: choice.keyFingerprint,
+        ),
+    ];
+    final resolvedEvents = <SyncEvent>[
+      if (aggregate != null)
+        for (final prior in aggregate.events)
+          if (!supersededIds.contains(prior.operationId) &&
+              !resolutionEvents.any((e) => e.entity == prior.entity))
+            prior,
+      ...resolutionEvents,
+    ];
+    final target = _controller;
+    Future<void> commit() async {
+      final data =
+          SyncProjection.applyVersions(_controller.exportDataForSync(), [
+            for (final e in resolvedEvents)
+              SyncEntityVersion(
+                entity: e.entity,
+                version: e.version,
+                payloadHash: e.payloadHash,
+                payload: e.payload,
+                deleted: e.operation == SyncOperationKind.delete,
+                operationId: e.operationId,
+              ),
+          ]);
+      SyncLedgerReducer.parse(data);
+      await reserveSequence();
+      await _applyEvents(
+        resolvedEvents,
+        batchId: batchId,
+        resolutionEvents: resolutionEvents,
+        acknowledgedEvents: [
+          for (final e in candidates)
+            if (supersededIds.contains(e.operationId)) e,
+        ],
+        resolvedConflictIds: choices.keys.toList(),
+        completedPendingIds: [
+          if (aggregate != null) ...{
+            aggregate.batchId,
+            ...aggregate.events.map((e) => e.batchId),
+            if (aggregate.reason == 'join_conflict')
+              ...pending
+                  .where((p) => p.reason == 'join_dependency')
+                  .map((p) => p.batchId),
+          },
+        ],
+      );
+    }
 
-    // 决议事件已入队：用户已经做出选择，这条冲突不再需要出现在审阅列表里。
-    // 必须在 enqueue 成功之后删除——先删后写会在写失败时把用户的选择丢掉。
-    await _repository.removeConflict(conflictId);
-
-    // Apply locally through change tracker
-    // This would require updating the controller state
-    // For now, we'll rely on the next sync to propagate
+    if (target is SyncRemoteApplyTarget) {
+      await (target as SyncRemoteApplyTarget).runSyncRemoteMerge(commit);
+    } else {
+      await commit();
+    }
   }
 
   Future<void> _ensureClock() async {
-    if (_clock != null) return;
-
     final state = await _repository.loadDeviceState();
+    if (_clock != null) {
+      if (state.deviceId.isEmpty) {
+        await _repository.saveDeviceState(_clock!.getState());
+      } else {
+        _clock!.restoreState(state);
+      }
+      return;
+    }
     if (state.deviceId.isEmpty) {
       // First time: create device identity
       final deviceId = _generateDeviceId();
@@ -326,123 +600,249 @@ class SyncEngine {
     }
 
     var uploadedCount = 0;
-    String? lastUploadError;
-    final codec = SyncCodec(passphrase: '');
+    Object? lastUploadError;
+    final codec = SyncCodec(passphrase: _passphrase);
+    final existingFiles = {
+      for (final file in await _transport!.listSyncFiles(_config!))
+        _canonicalPath(file.relativePath): file,
+    };
 
     for (final entry in batches.entries) {
       final batchId = entry.key;
       final records = entry.value;
 
       try {
-        // Re-encode event files from the pending batch cache and upload.
+        final devices = records
+            .map((r) => r.event?.version.dot.deviceId)
+            .toSet();
+        if (devices.length != 1 || devices.single == null) {
+          throw StateError('outbox_event_missing_or_mixed_device');
+        }
+        final batchDevice = devices.single!;
+        final wireEvents = <SyncEvent>[];
+        final legacyInlineOperationIds = <String>{};
+        // Re-encode durable outbox events and upload them before the manifest.
         for (final record in records) {
-          final eventBytes = await _encodeEventForUpload(record, codec);
-          if (eventBytes != null) {
-            final hash = sha256.convert(eventBytes).toString();
-            await _transport!.putImmutable(
+          final existing = existingFiles[_canonicalPath(record.relativePath)];
+          final Uint8List eventBytes;
+          if (existing != null) {
+            eventBytes = await _transport.downloadSyncFile(
               _config!,
-              record.relativePath,
-              Stream.value(eventBytes),
-              eventBytes.length,
-              hash,
+              existing.relativePath,
+              maxBytes: wireLimits.maxEnvelopeBytes,
             );
+            final existingEvent = await _decodeEvent(eventBytes);
+            if (existingEvent != record.event &&
+                existingEvent !=
+                    syncEventForWire(record.event!, limits: wireLimits)) {
+              throw StateError('sync_event_collision');
+            }
+            wireEvents.add(existingEvent);
+            if (existingEvent.entity.type == 'attachments' &&
+                existingEvent.payload is Map &&
+                (existingEvent.payload as Map).containsKey('dataUrl')) {
+              legacyInlineOperationIds.add(existingEvent.operationId);
+            }
+          } else {
+            eventBytes = await _encodeEventForUpload(record, codec);
+            wireEvents.add(syncEventForWire(record.event!, limits: wireLimits));
           }
+          final hash = sha256.convert(eventBytes).toString();
+          await _transport.putImmutable(
+            _config!,
+            'verifin-sync/v1/${_canonicalPath(record.relativePath)}',
+            Stream.value(eventBytes),
+            eventBytes.length,
+            hash,
+          );
         }
 
         // Upload manifest.
-        await _uploadManifest(batchId, records);
+        final events = records.map((r) => r.event!).toList();
+        for (final blob in syncAttachmentBlobs(
+          events,
+          limits: wireLimits,
+          legacyInlineOperationIds: legacyInlineOperationIds,
+        ).entries) {
+          await _putDocument('verifin-sync/v1/blobs/${blob.key}.blob', {
+            'protocolVersion': syncProtocolVersion,
+            'hash': blob.key,
+            'data': base64Encode(blob.value),
+          });
+        }
+        final manifest = syncManifest(
+          batchId,
+          wireEvents,
+          limits: wireLimits,
+          eventsAreWire: true,
+        );
+        final manifestBytes = await _putDocument(
+          _manifestPath(batchId, batchDevice),
+          manifest,
+        );
 
         // Upload commit marker — only after manifest succeeds.
-        final commitPath = _commitPath(batchId);
-        await _uploadCommitMarker(commitPath);
+        final commitPath = _commitPath(batchId, batchDevice);
+        final commitBytes = syncJsonBytes(syncCommit(manifest, manifestBytes));
+        await _transport.putImmutable(
+          _config!,
+          commitPath,
+          Stream.value(commitBytes),
+          commitBytes.length,
+          sha256.convert(commitBytes).toString(),
+        );
 
         // Mark batch uploaded only after commit succeeds.
         await _repository.markBatchUploaded(batchId);
         uploadedCount++;
       } catch (error) {
         // Record error for propagation; continue trying remaining batches.
-        lastUploadError = error.toString();
+        lastUploadError = error;
         continue;
       }
     }
 
     // Surface the upload error through run() so callers can inspect it.
-    if (lastUploadError != null && uploadedCount == 0) {
-      throw Exception(lastUploadError);
+    if (lastUploadError != null) {
+      throw lastUploadError;
     }
 
     return uploadedCount;
   }
 
-  /// Encode an outbox record's event as upload bytes.
-  ///
-  /// Returns null if the event payload is not available (already uploaded or
-  /// not stored). In that case the upload step is skipped for that file.
-  Future<Uint8List?> _encodeEventForUpload(
+  Future<Uint8List> _encodeEventForUpload(
     SyncOutboxRecord record,
     SyncCodec codec,
   ) async {
-    // The outbox record holds the payloadHash but not the full event payload.
-    // Callers that need the full event bytes should supply the batch's events
-    // via the in-memory cache populated at enqueueBatch time.
-    // Without a pending-batch cache, we return null and skip the event file
-    // upload — the batch will then fail its commit-present check on the remote
-    // side and be deferred to sync_pending on the next scan.
-    final batch = _pendingBatchCache[record.batchId];
-    if (batch == null) return null;
-    try {
-      final event = batch.events.firstWhere(
-        (e) => e.operationId == record.operationId,
-      );
-      final envelope = await codec.encode(event, syncProtocolVersion);
-      final json = jsonEncode(envelope);
-      return Uint8List.fromList(utf8.encode(json));
-    } catch (_) {
-      return null;
+    if (record.event == null) throw StateError('outbox_event_missing');
+    final event = syncEventForWire(record.event!, limits: wireLimits);
+    final bytes = syncJsonBytes(
+      _passphrase.isEmpty
+          ? event.toJson()
+          : await codec.encodeValue(event.toJson(), syncProtocolVersion),
+    );
+    if (bytes.length > wireLimits.maxEnvelopeBytes) {
+      throw const FormatException('Invalid sync envelope size');
     }
+    return bytes;
   }
 
-  Future<void> _uploadManifest(
-    String batchId,
-    List<SyncOutboxRecord> records,
+  Future<SyncEvent> _decodeEvent(Uint8List bytes) async {
+    final json = Map<String, Object?>.from(
+      jsonDecode(utf8.decode(bytes)) as Map,
+    );
+    if (json['protocolVersion'] != syncProtocolVersion) {
+      throw const SyncCodecException('protocol_version');
+    }
+    if (json.containsKey('operationId')) {
+      if (_passphrase.isNotEmpty) {
+        throw const SyncCodecException('Passphrase plaintext forbidden');
+      }
+      return SyncEvent.fromJson(json);
+    }
+    final payload = await SyncCodec(passphrase: _passphrase).decode(json);
+    if (payload is! Map) {
+      throw const FormatException('sync_event_missing_metadata');
+    }
+    if (payload['protocolVersion'] != syncProtocolVersion) {
+      throw const SyncCodecException('protocol_version');
+    }
+    return SyncEvent.fromJson(Map<String, Object?>.from(payload));
+  }
+
+  static String _canonicalPath(String path) =>
+      path.startsWith('verifin-sync/v1/')
+      ? path.substring('verifin-sync/v1/'.length)
+      : path;
+
+  Future<Map<String, Object?>> _decodeDocument(Uint8List bytes) async {
+    final raw = Map<String, Object?>.from(
+      jsonDecode(utf8.decode(bytes)) as Map,
+    );
+    if (raw['protocolVersion'] != syncProtocolVersion) {
+      throw const SyncCodecException('protocol_version');
+    }
+    if (raw.containsKey('ciphertext')) {
+      final value = await SyncCodec(passphrase: _passphrase).decode(raw);
+      if (value is! Map) throw const FormatException('Invalid sync document');
+      if (value['protocolVersion'] != syncProtocolVersion) {
+        throw const SyncCodecException('protocol_version');
+      }
+      return Map<String, Object?>.from(value);
+    }
+    if (_passphrase.isNotEmpty) {
+      throw const SyncCodecException('Passphrase plaintext forbidden');
+    }
+    return raw;
+  }
+
+  Future<Uint8List> _putDocument(
+    String path,
+    Map<String, Object?> document,
   ) async {
-    final manifest = {
-      'batchId': batchId,
-      'operationIds': records.map((r) => r.operationId).toList(),
-      'blobHashes': <String>[],
-      'manifestHash': 'manifest-$batchId',
-    };
-    final bytes = utf8.encode(jsonEncode(manifest));
-    final hash = sha256.convert(bytes).toString();
-    final stream = Stream.value(bytes);
-    await _transport!.putImmutable(
-      _config!,
-      _manifestPath(batchId),
-      stream,
-      bytes.length,
-      hash,
+    final files = await _transport!.listSyncFiles(_config!);
+    final existing = files
+        .where((f) => _canonicalPath(f.relativePath) == _canonicalPath(path))
+        .firstOrNull;
+    if (existing != null) {
+      final bytes = await _transport.downloadSyncFile(
+        _config!,
+        existing.relativePath,
+        maxBytes: wireLimits.maxEnvelopeBytes,
+      );
+      if (computeSyncPayloadHash(await _decodeDocument(bytes)) !=
+          computeSyncPayloadHash(document)) {
+        throw const WebdavFileCollision('sync_document_collision');
+      }
+      return bytes;
+    }
+    final bytes = syncJsonBytes(
+      _passphrase.isEmpty
+          ? document
+          : await SyncCodec(
+              passphrase: _passphrase,
+            ).encodeValue(document, syncProtocolVersion),
     );
-  }
-
-  Future<void> _uploadCommitMarker(String commitPath) async {
-    final bytes = utf8.encode('committed');
-    final hash = sha256.convert(bytes).toString();
-    final stream = Stream.value(bytes);
-    await _transport!.putImmutable(
+    if (bytes.length > wireLimits.maxEnvelopeBytes) {
+      throw const FormatException('Invalid sync envelope size');
+    }
+    await _transport.putImmutable(
       _config!,
-      commitPath,
-      stream,
+      path,
+      Stream.value(bytes),
       bytes.length,
-      hash,
+      sha256.convert(bytes).toString(),
     );
+    return bytes;
   }
 
   Future<(int, int, int)> _scanAndApply() async {
+    final joins = (await _repository.loadPendingBatches())
+        .where((p) => p.reason == 'join_conflict' || p.reason == 'join_ready')
+        .toList();
+    for (final join in joins.where((p) => p.reason == 'join_ready')) {
+      final result = await _mergeAndApply(
+        join.events,
+        applyBatchId: join.batchId,
+      );
+      if (result.$2 > 0) {
+        await _repository.savePendingBatch(
+          join.batchId,
+          join.events,
+          'join_conflict',
+        );
+      } else {
+        await _repository.removePendingBatch(join.batchId);
+      }
+    }
+    final remainingJoins = (await _repository.loadPendingBatches())
+        .where((p) => p.reason == 'join_conflict' || p.reason == 'join_ready')
+        .length;
+    if (remainingJoins > 0) {
+      return (0, (await _repository.loadConflicts()).length, remainingJoins);
+    }
     final transport = _transport!;
     final remoteFiles = await transport.listSyncFiles(_config!);
-
-    // Build scan state
-    final scanState = await _buildScanState(remoteFiles);
 
     // Group files by batch — downloads each manifest to match events correctly.
     final batches = await _groupFilesByBatchAsync(remoteFiles);
@@ -450,93 +850,197 @@ class SyncEngine {
     var downloadedCount = 0;
     var conflictCount = 0;
     var pendingCount = 0;
+    var invalidReferences = false;
+    final completedFiles = <WebdavSyncFile>[];
 
-    for (final batch in batches.values) {
+    for (final batch in _causalBatchOrder(batches.values)) {
       if (!batch.isComplete) {
         pendingCount++;
+        await _repository.savePendingBatch(
+          batch.batchId,
+          batch.events,
+          batch.missingBlobs
+              ? 'missing_blob'
+              : batch.manifestFile == null
+              ? 'missing_manifest'
+              : batch.commitFile == null
+              ? 'missing_commit'
+              : 'missing_event',
+        );
         continue;
       }
 
       try {
+        await _repository.savePendingBatch(
+          batch.batchId,
+          batch.events,
+          'ready',
+        );
         // Download and decode events
-        final events = <SyncEvent>[];
-        for (final eventFile in batch.eventFiles) {
-          final bytes = await transport.downloadSyncFile(
-            _config!,
-            eventFile.relativePath,
-            maxBytes: syncMaxDownloadBytes,
-          );
-          final json = jsonDecode(utf8.decode(bytes)) as Map<String, Object?>;
-          final event = SyncEvent.fromJson(json);
-          events.add(event);
-        }
-
         // Merge and apply
-        final result = await _mergeAndApply(events);
+        final result = await _mergeAndApply(batch.events);
         downloadedCount += result.$1;
         conflictCount += result.$2;
-      } catch (error, stack) {
-        // Batch processing failed; record for diagnostics and skip.
-        assert(() {
-          // ignore: avoid_print
-          print('SyncEngine batch error: $error\n$stack');
-          return true;
-        }());
-        continue;
+        if (result.$2 > 0) {
+          await _repository.savePendingBatch(
+            batch.batchId,
+            batch.events,
+            'conflict',
+          );
+          pendingCount++;
+        } else {
+          final prepared = (await _repository.loadPendingBatches()).any(
+            (p) => p.batchId == batch.batchId && p.reason == 'prepared',
+          );
+          if (prepared) {
+            pendingCount++;
+          } else {
+            completedFiles.addAll(batch.eventFiles);
+            await _repository.removePendingBatch(batch.batchId);
+          }
+        }
+      } catch (error) {
+        if (error is FormatException &&
+            error.message.startsWith('Invalid sync')) {
+          await _repository.savePendingBatch(
+            batch.batchId,
+            batch.events,
+            'invalid_reference',
+          );
+          invalidReferences = true;
+          pendingCount++;
+          continue;
+        }
+        rethrow;
       }
     }
 
     // Save scan state
-    await _repository.saveScanState(scanState);
+    if (invalidReferences) {
+      throw const FormatException('Invalid sync pending references');
+    }
+    pendingCount = max(
+      pendingCount,
+      (await _repository.loadPendingBatches()).length,
+    );
+    if (pendingCount == 0) {
+      await _repository.saveScanState(await _buildScanState(completedFiles));
+    }
 
     return (downloadedCount, conflictCount, pendingCount);
   }
 
-  Future<(int, int)> _mergeAndApply(List<SyncEvent> events) async {
-    var appliedCount = 0;
-    var conflictCount = 0;
-
-    // Load known vector once for all events in this batch.
-    final state = await _repository.loadDeviceState();
-    final knownVector = state.knownVector;
-
+  Future<(int, int)> _mergeAndApply(
+    List<SyncEvent> events, {
+    String? applyBatchId,
+  }) async {
     for (final event in events) {
-      // Check if already applied via dot sequence.
-      final knownSeq = knownVector.values[event.version.dot.deviceId] ?? 0;
-      if (event.version.dot.sequence <= knownSeq) {
+      if (event.operation != SyncOperationKind.delete) {
+        SyncSchema.validateIncoming(event.entity.type, event.payload);
+      }
+    }
+    final target = _controller;
+    if (target is SyncRemoteApplyTarget) {
+      return (target as SyncRemoteApplyTarget).runSyncRemoteMerge(
+        () => _mergeUnderGate(events, applyBatchId: applyBatchId),
+      );
+    }
+    return _mergeUnderGate(events, applyBatchId: applyBatchId);
+  }
+
+  Future<(int, int)> _mergeUnderGate(
+    List<SyncEvent> events, {
+    String? applyBatchId,
+  }) async {
+    final heads = await _repository.loadEntityHeads(
+      events.map((e) => e.entity).toSet(),
+    );
+    final shadow = await _repository.loadShadow();
+    final applied = await _repository.loadAppliedOperationHashes(
+      events.map((e) => e.operationId).toList(),
+    );
+    final accepted = <SyncEvent>[];
+    final superseded = <SyncEvent>[];
+    final conflicts = <SyncConflictRecord>[];
+    for (final event in events) {
+      // A maximum observed sequence is not proof that a lower gap was applied.
+      final priorHash = applied[event.operationId];
+      if (priorHash != null) {
+        if (priorHash != event.payloadHash) {
+          throw const SyncConflictException('operation_payload_collision');
+        }
         continue;
       }
 
-      final shadow = await _repository.loadShadow();
-      final currentHash = shadow[event.entity];
+      final currentHash =
+          heads[event.entity]?.payloadHash ?? shadow[event.entity];
 
-      final causality = _determineCausality(event, currentHash, knownVector);
+      final causality = _determineCausality(
+        event,
+        currentHash,
+        heads[event.entity],
+      );
 
       if (causality == SyncCausality.before) {
-        // We already have a causally later version — discard.
+        superseded.add(event);
         continue;
       } else if (causality == SyncCausality.equal) {
-        // Identical payload already present — idempotent.
+        accepted.add(event);
         continue;
       } else if (causality == SyncCausality.concurrent) {
-        await _storeConflict(event);
-        conflictCount++;
+        conflicts.add(
+          await _buildConflict(event, localOverride: heads[event.entity]),
+        );
         continue;
       }
 
       // SyncCausality.after — incoming causally follows what we know.
-      await _applyEvent(event);
-      appliedCount++;
+      accepted.add(event);
+      heads[event.entity] = SyncEntityVersion(
+        entity: event.entity,
+        version: event.version,
+        payloadHash: event.payloadHash,
+        payload: event.payload,
+        deleted: event.operation == SyncOperationKind.delete,
+        operationId: event.operationId,
+      );
     }
-
-    return (appliedCount, conflictCount);
+    if (conflicts.isNotEmpty) {
+      await _applyEvents(
+        const [],
+        conflicts: conflicts,
+        batchId: applyBatchId ?? events.first.batchId,
+      );
+    } else if (accepted.isNotEmpty || superseded.isNotEmpty) {
+      await _applyEvents(
+        accepted,
+        acknowledgedEvents: superseded,
+        conflicts: conflicts,
+        batchId: applyBatchId ?? events.first.batchId,
+      );
+    }
+    return (
+      conflicts.isEmpty
+          ? accepted.where((e) => shadow[e.entity] != e.payloadHash).length
+          : 0,
+      conflicts.length,
+    );
   }
 
   SyncCausality _determineCausality(
     SyncEvent event,
     String? currentHash,
-    SyncVersionVector knownVector,
+    SyncEntityVersion? head,
   ) {
+    if (head != null) {
+      final incoming = _fullVector(event.version);
+      final existing = _fullVector(head.version);
+      if (incoming.compare(existing) == SyncCausality.before) {
+        return SyncCausality.before;
+      }
+      if (head.payloadHash == event.payloadHash) return SyncCausality.equal;
+      return incoming.compare(existing);
+    }
     if (currentHash == null) {
       // No current entity — incoming is definitely new.
       return SyncCausality.after;
@@ -546,104 +1050,107 @@ class SyncEngine {
       return SyncCausality.equal;
     }
 
-    // Entity exists with a different payload.
-    // Compare the event's causal context against this device's known vector.
-    //
-    //   after  — event was created knowing our entire state or more → apply it.
-    //   equal  — event's context matches our known vector exactly.
-    //            Sub-case A: device is known (knownSeq > 0) → direct successor, apply.
-    //            Sub-case B: device is unknown (knownSeq == 0) → first event from a
-    //            device we've never synced with; local entity already exists from a
-    //            different source → genuine join conflict.
-    //   before / concurrent — conflict.
-    final cmp = event.version.context.compare(knownVector);
-    if (cmp == SyncCausality.after) {
-      return SyncCausality.after;
-    }
-    if (cmp == SyncCausality.equal) {
-      final knownSeqForDevice =
-          knownVector.values[event.version.dot.deviceId] ?? 0;
-      if (knownSeqForDevice > 0) {
-        // We have already seen events from this device and our vectors are
-        // equal — this is a direct successor, apply it.
-        return SyncCausality.after;
-      }
-      // First-ever event from a previously unknown device.
-      // Local entity exists from a different origin → join conflict.
-      return SyncCausality.concurrent;
-    }
-    // before or concurrent → conflict.
+    // A restored local entity with no version is a first-join candidate.
+    // Remote history cannot establish causality with that local state.
     return SyncCausality.concurrent;
   }
 
-  Future<void> _applyEvent(SyncEvent event) async {
-    // Build apply plan
-    final entityVersion = SyncEntityVersion(
-      entity: event.entity,
-      version: event.version,
-      payloadHash: event.payloadHash,
-      payload: event.payload,
-      deleted: event.operation == SyncOperationKind.delete,
-      operationId: event.operationId,
-    );
+  static SyncVersionVector _fullVector(SyncVersion version) => version.context
+      .merged(SyncVersionVector({version.dot.deviceId: version.dot.sequence}));
 
+  Future<void> _applyEvents(
+    List<SyncEvent> events, {
+    List<SyncConflictRecord> conflicts = const [],
+    String? batchId,
+    List<SyncEvent> resolutionEvents = const [],
+    List<String> resolvedConflictIds = const [],
+    List<String> completedPendingIds = const [],
+    List<SyncEvent> acknowledgedEvents = const [],
+  }) async {
+    final currentHeads = await _repository.loadEntityHeads(
+      events.map((e) => e.entity).toSet(),
+    );
+    final versions = [
+      for (final event in events)
+        SyncEntityVersion(
+          entity: event.entity,
+          version: currentHeads[event.entity]?.payloadHash == event.payloadHash
+              ? SyncVersion(
+                  dot: event.version.dot,
+                  context: event.version.context.merged(
+                    _fullVector(currentHeads[event.entity]!.version),
+                  ),
+                  logicalTime: event.version.logicalTime,
+                )
+              : event.version,
+          payloadHash: event.payloadHash,
+          payload: event.payload,
+          deleted: event.operation == SyncOperationKind.delete,
+          operationId: event.operationId,
+        ),
+    ];
+    final folded = SyncProjection.applyVersions(
+      _controller.exportDataForSync(),
+      versions,
+    );
+    final kv = <String, String>{};
+    for (final version in versions) {
+      final type = version.entity.type;
+      final key = SyncKvProjection.storageKeyFor(type);
+      if (key != null) {
+        kv[key] = SyncKvProjection.encodeStorageValue(type, folded[type]);
+      }
+    }
     final plan = RemoteApplyPlan(
-      batchId: event.batchId,
-      entityVersions: [entityVersion],
-      appliedOperationIds: [event.operationId],
-      shadowHashes: {encodeSyncEntityKey(event.entity): event.payloadHash},
-      kvJournalValues: _kvJournalValuesFor(event),
-      appliedPayloadHashes: {event.operationId: event.payloadHash},
+      batchId: batchId ?? events.first.batchId,
+      entityVersions: versions,
+      appliedOperationIds: [
+        for (final event in [...events, ...acknowledgedEvents])
+          event.operationId,
+      ],
+      shadowHashes: {
+        for (final event in events)
+          encodeSyncEntityKey(event.entity): event.payloadHash,
+      },
+      kvJournalValues: kv,
+      appliedPayloadHashes: {
+        for (final event in [...events, ...acknowledgedEvents])
+          event.operationId: event.payloadHash,
+      },
+      conflicts: conflicts,
+      resolutionEvents: resolutionEvents,
+      resolvedConflictIds: resolvedConflictIds,
+      completedPendingIds: completedPendingIds,
     );
 
     // Route through the echo-suppression wrapper when provided.
     // Without it, a change tracker running on the same controller would
     // re-enqueue the just-applied remote data as a local mutation.
-    if (_remoteApply != null) {
+    final target = _controller;
+    if (target is SyncRemoteApplyTarget) {
+      await (target as SyncRemoteApplyTarget).applySyncRemoteBatch(plan);
+    } else if (_remoteApply != null) {
       await _remoteApply(() => _repository.applyRemoteBatch(plan));
     } else {
       await _repository.applyRemoteBatch(plan);
     }
+    _clock!.restoreState(await _repository.loadDeviceState());
   }
 
-  /// 若 [event] 命中 KV 偏好类型（profile/主题/面板/排序/默认账户/FAB/金额/
-  /// 小组件定义，见 [SyncKvProjection]），把它折算成一条「本地 KV 键 → 目标完整
-  /// 值」的 journal 行；否则返回空表——SQLite 落库的账目类实体（entries/
-  /// accounts/…）不经这条路径。
-  ///
-  /// 合并需要「当前完整值」打底（这些 KV 键各自只有一份整存的值，远端片段只是
-  /// 其中一角），取自 [_controller.exportDataForSync()] 而不是本地 KV 原始字符串：
-  /// 前者是控制器已解码好的内存视图，与 [SyncProjection.fromExportData] 拆分
-  /// 片段时用的是同一份数据，两边字段语义天然对齐。
-  Map<String, String> _kvJournalValuesFor(SyncEvent event) {
-    final entityType = event.entity.type;
-    final storageKey = SyncKvProjection.storageKeyFor(entityType);
-    if (storageKey == null) {
-      return const <String, String>{};
-    }
-    final current = _controller.exportDataForSync()[entityType];
-    final merged = SyncKvProjection.mergeToStorageValue(
-      entityType: entityType,
-      entityId: event.entity.id,
-      currentValue: current,
-      payload: event.payload,
-      deleted: event.operation == SyncOperationKind.delete,
-    );
-    if (merged == null) {
-      return const <String, String>{};
-    }
-    return <String, String>{storageKey: merged};
-  }
-
-  Future<void> _storeConflict(SyncEvent remoteEvent) async {
+  Future<SyncConflictRecord> _buildConflict(
+    SyncEvent remoteEvent, {
+    SyncEntityVersion? localOverride,
+  }) async {
     // Load the current shadow to find the locally-applied payload hash.
     final shadow = await _repository.loadShadow();
-    final localHash = shadow[remoteEvent.entity];
+    final heads = await _repository.loadEntityHeads({remoteEvent.entity});
+    final localHash =
+        localOverride?.payloadHash ??
+        heads[remoteEvent.entity]?.payloadHash ??
+        shadow[remoteEvent.entity];
 
     if (localHash == null) {
-      // No local entity in shadow — no real conflict, just apply.
-      await _applyEvent(remoteEvent);
-      return;
+      throw StateError('sync_conflict_without_local_version');
     }
 
     // Build a stub local version from the shadow hash.
@@ -651,14 +1158,31 @@ class SyncEngine {
     // for conflict storage we record the hash and leave payload as null
     // (resolveConflict will show both remote versions to the user).
     await _ensureClock();
-    final localVersion = SyncEntityVersion(
-      entity: remoteEvent.entity,
-      version: _clock!.nextVersion(),
-      payloadHash: localHash,
-      payload: null, // Reconstructed from sync_entity_versions on resolution.
-      deleted: false,
-      operationId: _clock!.nextOperationId(),
-    );
+    final localVersion =
+        localOverride ??
+        heads[remoteEvent.entity] ??
+        SyncEntityVersion(
+          entity: remoteEvent.entity,
+          version: SyncVersion(
+            dot: SyncDot(
+              deviceId: _clock!.deviceId,
+              sequence: max(1, _clock!.nextSequence - 1),
+            ),
+            context: _clock!.knownVector,
+            logicalTime: 0,
+          ),
+          payloadHash: localHash,
+          payload: SyncProjection.fromExportData(
+            _controller.exportDataForSync(),
+          ).entity(remoteEvent.entity)?.payload,
+          deleted:
+              SyncProjection.fromExportData(
+                _controller.exportDataForSync(),
+              ).entity(remoteEvent.entity) ==
+              null,
+          operationId:
+              'local-${computeSyncPayloadHash(remoteEvent.entity.toJson())}-$localHash',
+        );
 
     final remoteVersion = SyncEntityVersion(
       entity: remoteEvent.entity,
@@ -669,16 +1193,12 @@ class SyncEngine {
       operationId: remoteEvent.operationId,
     );
 
-    final conflictRecord = SyncConflictRecord(
+    return SyncConflictRecord(
       id: 'conflict-${remoteEvent.operationId}',
       entity: remoteEvent.entity,
       local: localVersion,
       remote: remoteVersion,
     );
-
-    // Store conflict directly, bypassing applyRemoteBatch validation which
-    // would reject a plan referencing operations not yet in sync_applied_ops.
-    await _repository.storeConflict(conflictRecord);
   }
 
   Future<void> _createBaselineBatch() async {
@@ -713,6 +1233,7 @@ class SyncEngine {
     }
 
     // Enqueue baseline batch
+    await _repository.saveDeviceState(_clock!.getState());
     await _repository.enqueueBatch(
       SyncBatchRecord(
         batchId: batchId,
@@ -727,7 +1248,7 @@ class SyncEngine {
     );
   }
 
-  Future<void> _joinConflictFlow(List<WebdavSyncFile> remoteFiles) async {
+  Future<bool> _joinConflictFlow(List<WebdavSyncFile> remoteFiles) async {
     // Seed the shadow from the current local state before scanning. Without
     // this, the first remote event for any locally-present entity would be
     // treated as "no current version" and applied silently instead of flagged
@@ -739,8 +1260,65 @@ class SyncEngine {
       await _repository.saveShadow(localSnapshot.payloadHashes);
     }
 
-    // Scan and download all remote events; differing hashes produce conflicts.
-    await _scanAndApply();
+    // Reconstruct the remote maximal versions before comparing to restored
+    // local data. Directory ordering is unrelated to causal ordering.
+    final batches = await _groupFilesByBatchAsync(remoteFiles);
+    if (batches.values.any((b) => !b.isComplete)) {
+      for (final batch in batches.values.where((b) => !b.isComplete)) {
+        await _repository.savePendingBatch(
+          batch.batchId,
+          batch.events,
+          'enrollment_missing_dependency',
+        );
+      }
+      return false;
+    }
+    final finalEvents = <SyncEntityKey, List<SyncEvent>>{};
+    for (final batch in batches.values) {
+      if (!batch.isComplete) {
+        await _repository.savePendingBatch(
+          batch.batchId,
+          batch.events,
+          'missing_dependency',
+        );
+        continue;
+      }
+      for (final event in batch.events) {
+        final versions = finalEvents.putIfAbsent(event.entity, () => []);
+        if (versions.any(
+          (v) =>
+              _fullVector(v.version).compare(_fullVector(event.version)) ==
+              SyncCausality.after,
+        )) {
+          continue;
+        }
+        versions.removeWhere(
+          (v) =>
+              _fullVector(v.version).compare(_fullVector(event.version)) ==
+              SyncCausality.before,
+        );
+        versions.add(event);
+      }
+    }
+    final finalList = finalEvents.values.expand((v) => v).toList();
+    if (finalList.isNotEmpty) {
+      final joinId =
+          'join-${computeSyncPayloadHash(finalList.map((e) => e.operationId).toList()..sort())}';
+      await _repository.savePendingBatch(joinId, finalList, 'join_ready');
+      final result = await _mergeAndApply(finalList, applyBatchId: joinId);
+      if (result.$2 > 0) {
+        await _repository.savePendingBatch(joinId, finalList, 'join_conflict');
+        for (final batch in batches.values.where((b) => b.isComplete)) {
+          await _repository.savePendingBatch(
+            batch.batchId,
+            batch.events,
+            'join_dependency',
+          );
+        }
+      }
+      if (result.$2 == 0) await _scanAndApply();
+    }
+    return true;
   }
 
   Future<SyncScanState> _buildScanState(
@@ -776,13 +1354,12 @@ class SyncEngine {
 
       for (final seq in sequences) {
         if (seq == expected) {
-          contiguous = seq;
+          if (deviceGaps.isEmpty) contiguous = seq;
           expected++;
         } else if (seq > expected) {
           for (var i = expected; i < seq; i++) {
             deviceGaps.add(i);
           }
-          contiguous = seq;
           expected = seq + 1;
         }
       }
@@ -817,67 +1394,159 @@ class SyncEngine {
       if (file.kind == WebdavSyncFileKind.manifest) {
         final batchId = _extractBatchId(file.relativePath);
         if (batchId != null) {
-          batches.putIfAbsent(batchId, _BatchFiles.new).manifestFile = file;
+          batches
+                  .putIfAbsent(batchId, () => _BatchFiles(batchId))
+                  .manifestFile =
+              file;
         }
       } else if (file.kind == WebdavSyncFileKind.commit) {
         final batchId = _extractBatchId(file.relativePath);
         if (batchId != null) {
-          batches.putIfAbsent(batchId, _BatchFiles.new).commitFile = file;
+          batches.putIfAbsent(batchId, () => _BatchFiles(batchId)).commitFile =
+              file;
         }
       }
     }
 
-    // Index all event files by deviceId.
-    final eventFilesByDevice = <String, List<WebdavSyncFile>>{};
+    // Index exact operation ids, including legacy numeric filenames by reading
+    // their complete event. Never infer batch membership from file counts.
+    final eventFilesByOperation = <String, WebdavSyncFile>{};
+    final eventsByOperation = <String, SyncEvent>{};
     for (final file in files) {
-      if (file.kind == WebdavSyncFileKind.event && file.deviceId != null) {
-        eventFilesByDevice.putIfAbsent(file.deviceId!, () => []).add(file);
+      if (file.kind == WebdavSyncFileKind.event) {
+        final bytes = await _transport!.downloadSyncFile(
+          _config!,
+          file.relativePath,
+          maxBytes: wireLimits.maxEnvelopeBytes,
+        );
+        final event = await _decodeEvent(bytes);
+        final pathParts = _canonicalPath(file.relativePath).split('/');
+        if (pathParts.length != 3 ||
+            pathParts[1] != event.version.dot.deviceId ||
+            (file.sequence != null &&
+                file.sequence != event.version.dot.sequence)) {
+          throw const FormatException('Invalid sync event path identity');
+        }
+        if (eventFilesByOperation.containsKey(event.operationId)) {
+          throw StateError('duplicate_remote_operation');
+        }
+        eventFilesByOperation[event.operationId] = file;
+        eventsByOperation[event.operationId] = event;
+        batches.putIfAbsent(event.batchId, () => _BatchFiles(event.batchId));
       }
     }
 
     // For each batch that has a manifest, download it to get the operationId
-    // list, then match event files by sequence to those operations.
+    // list, then match files by exact operation id.
     for (final entry in batches.entries) {
       final batchFiles = entry.value;
       final manifestFile = batchFiles.manifestFile;
-      if (manifestFile == null) continue;
-
-      try {
-        final bytes = await _transport!.downloadSyncFile(
-          _config!,
-          manifestFile.relativePath,
-          maxBytes: syncMaxDownloadBytes,
+      if (manifestFile == null) {
+        batchFiles.events.addAll(
+          eventsByOperation.values.where((e) => e.batchId == entry.key),
         );
-        final json = jsonDecode(utf8.decode(bytes)) as Map<String, Object?>;
-        final operationIds =
-            (json['operationIds'] as List<Object?>?)
-                ?.whereType<String>()
-                .toList() ??
-            <String>[];
-        batchFiles.operationIds.addAll(operationIds);
-
-        // Extract deviceId from manifest path: verifin-sync/v1/batches/{deviceId}/{batchId}.manifest
-        final parts = manifestFile.relativePath.split('/');
-        if (parts.length >= 5) {
-          final deviceId = parts[3];
-          final deviceEvents = eventFilesByDevice[deviceId] ?? [];
-          // The manifest tells us how many events this batch has; take the
-          // event files whose sequences fall within the batch. Since sequences
-          // are monotonically increasing per device, we select the N events
-          // with the lowest sequences that haven't been assigned to an earlier
-          // batch. For simplicity, sort device events by sequence and take
-          // exactly operationIds.length of them.
-          final sorted = [...deviceEvents]
-            ..sort((a, b) => (a.sequence ?? 0).compareTo(b.sequence ?? 0));
-          batchFiles.eventFiles.addAll(sorted.take(operationIds.length));
-          // Remove assigned events so they aren't re-used by another batch.
-          for (final assigned in batchFiles.eventFiles) {
-            deviceEvents.remove(assigned);
-          }
-        }
-      } catch (_) {
-        // Manifest unreadable — batch stays incomplete and deferred to pending.
         continue;
+      }
+
+      final bytes = await _transport!.downloadSyncFile(
+        _config!,
+        manifestFile.relativePath,
+        maxBytes: wireLimits.maxEnvelopeBytes,
+      );
+      final json = await _decodeDocument(bytes);
+      validateSyncManifest(json);
+      final operationIds =
+          (json['operationIds'] as List<Object?>?)
+              ?.whereType<String>()
+              .toList() ??
+          <String>[];
+      batchFiles.operationIds.addAll(operationIds);
+      final commitFile = batchFiles.commitFile;
+      if (commitFile != null) {
+        final commitBytes = await _transport.downloadSyncFile(
+          _config!,
+          commitFile.relativePath,
+          maxBytes: wireLimits.maxEnvelopeBytes,
+        );
+        final commit = jsonDecode(utf8.decode(commitBytes));
+        // The marker contains no ledger data. Its exact expected contents bind
+        // both the authenticated decrypted manifest hash and ciphertext hash.
+        // Editing a plaintext marker cannot replace the encrypted manifest or
+        // its event/blob commitments without failing these comparisons.
+        if (computeSyncPayloadHash(commit) !=
+            computeSyncPayloadHash(syncCommit(json, bytes))) {
+          throw const FormatException('commit_hash_mismatch');
+        }
+      }
+      if (json['batchId'] != entry.key ||
+          operationIds.toSet().length != operationIds.length) {
+        throw const FormatException('Invalid sync manifest');
+      }
+      for (final operationId in operationIds) {
+        final file = eventFilesByOperation[operationId];
+        if (file != null) {
+          final event = eventsByOperation[operationId]!;
+          final device = _canonicalPath(
+            manifestFile.relativePath,
+          ).split('/')[1];
+          if (event.batchId != entry.key ||
+              event.version.dot.deviceId != device) {
+            throw const FormatException('Invalid sync manifest event identity');
+          }
+          if ((json['payloadHashes'] as Map)[operationId] !=
+              event.payloadHash) {
+            throw const FormatException('manifest_payload_hash_mismatch');
+          }
+          batchFiles.eventFiles.add(file);
+          batchFiles.events.add(event);
+        }
+      }
+      final blobs = (json['blobHashes'] as List).cast<String>();
+      final decodedBlobs = <String, Uint8List>{};
+      for (final hash in blobs) {
+        final blob = files
+            .where((f) => _canonicalPath(f.relativePath) == 'blobs/$hash.blob')
+            .firstOrNull;
+        if (blob == null) {
+          batchFiles.missingBlobs = true;
+          continue;
+        }
+        final value = await _decodeDocument(
+          await _transport.downloadSyncFile(
+            _config!,
+            blob.relativePath,
+            maxBytes: wireLimits.maxEnvelopeBytes,
+          ),
+        );
+        final content = base64Decode(value['data'] as String);
+        if (value['hash'] != hash ||
+            sha256.convert(content).toString() != hash) {
+          await _repository.savePendingBatch(
+            batchFiles.batchId,
+            batchFiles.events,
+            'corrupt_blob',
+          );
+          throw const FormatException('blob_hash_mismatch');
+        }
+        decodedBlobs[hash] = content;
+      }
+      if (batchFiles.events.length == operationIds.length &&
+          computeSyncPayloadHash(
+                syncBlobHashes(batchFiles.events, limits: wireLimits).toList()
+                  ..sort(),
+              ) !=
+              computeSyncPayloadHash(blobs)) {
+        throw const FormatException('manifest_blob_reference_mismatch');
+      }
+      if (!batchFiles.missingBlobs) {
+        final materialized = batchFiles.events
+            .map(
+              (e) => materializeSyncEvent(e, decodedBlobs, limits: wireLimits),
+            )
+            .toList();
+        batchFiles.events
+          ..clear()
+          ..addAll(materialized);
       }
     }
 
@@ -885,33 +1554,69 @@ class SyncEngine {
   }
 
   String? _extractBatchId(String path) {
-    final parts = path.split('/');
-    if (parts.length >= 5 && parts[2] == 'batches') {
-      final filename = parts[4];
+    final parts = _canonicalPath(path).split('/');
+    if (parts.length == 3 && parts[0] == 'batches') {
+      final filename = parts[2];
       final match = RegExp(r'^(.+)\.(manifest|commit)$').firstMatch(filename);
       return match?.group(1);
     }
     return null;
   }
 
-  String _manifestPath(String batchId) {
-    return 'verifin-sync/v1/batches/${_clock!.deviceId}/$batchId.manifest';
+  static List<_BatchFiles> _causalBatchOrder(Iterable<_BatchFiles> input) {
+    final remaining = input.toList();
+    final ordered = <_BatchFiles>[];
+    while (remaining.isNotEmpty) {
+      final next =
+          remaining
+              .where(
+                (candidate) => !remaining.any(
+                  (prior) =>
+                      !identical(candidate, prior) &&
+                      candidate.events.any(
+                        (event) => prior.events.any(
+                          (before) =>
+                              (event.version.context.values[before
+                                      .version
+                                      .dot
+                                      .deviceId] ??
+                                  0) >=
+                              before.version.dot.sequence,
+                        ),
+                      ),
+                ),
+              )
+              .firstOrNull ??
+          remaining.first;
+      remaining.remove(next);
+      ordered.add(next);
+    }
+    return ordered;
   }
 
-  String _commitPath(String batchId) {
-    return 'verifin-sync/v1/batches/${_clock!.deviceId}/$batchId.commit';
+  String _manifestPath(String batchId, String deviceId) {
+    return 'verifin-sync/v1/batches/$deviceId/$batchId.manifest';
+  }
+
+  String _commitPath(String batchId, String deviceId) {
+    return 'verifin-sync/v1/batches/$deviceId/$batchId.commit';
   }
 }
 
 class _BatchFiles {
+  _BatchFiles(this.batchId);
+  final String batchId;
   WebdavSyncFile? manifestFile;
   WebdavSyncFile? commitFile;
   final List<WebdavSyncFile> eventFiles = [];
+  final List<SyncEvent> events = [];
   final List<String> operationIds = [];
+  bool missingBlobs = false;
 
   bool get isComplete =>
       manifestFile != null &&
       commitFile != null &&
+      !missingBlobs &&
       eventFiles.isNotEmpty &&
       eventFiles.length >= operationIds.length;
 }

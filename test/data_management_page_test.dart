@@ -4,6 +4,7 @@ import 'package:verifin/app/app_theme.dart';
 import 'package:verifin/app/backup/backup_settings.dart';
 import 'package:verifin/app/backup/webdav_config.dart';
 import 'package:verifin/app/common_widgets.dart';
+import 'package:verifin/app/models.dart';
 import 'package:verifin/app/sync/sync_models.dart';
 import 'package:verifin/app/veri_fin_controller.dart';
 import 'package:verifin/app/veri_fin_scope.dart';
@@ -26,14 +27,16 @@ SyncConflictRecord conflictRecord({required String id}) {
     required String note,
     required double amount,
   }) {
-    final payload = <String, Object?>{
-      'id': 'entry-1',
-      'type': 'expense',
-      'amount': amount,
-      'note': note,
-      'categoryId': '',
-      'accountId': '',
-    };
+    final payload = LedgerEntry(
+      id: 'entry-1',
+      bookId: 'default',
+      type: EntryType.expense,
+      amount: amount,
+      categoryId: 'dining',
+      accountId: '',
+      note: note,
+      occurredAt: DateTime(2026, 9, 16),
+    ).toJson();
     return SyncEntityVersion(
       entity: entity,
       version: SyncVersion(
@@ -171,11 +174,11 @@ void main() {
       expect(find.text('选择备份'), findsOneWidget);
     });
 
-    testWidgets('默认为手动模式，状态显示为已连接', (tester) async {
+    testWidgets('默认为手动模式，状态显示为尚未同步成功', (tester) async {
       final controller = await pumpPage(tester);
       expect(controller.backupTransportMode, BackupTransportMode.manual);
       expect(find.text('手动'), findsOneWidget);
-      expect(find.text('已连接'), findsOneWidget);
+      expect(find.text('尚未同步成功'), findsOneWidget);
     });
 
     testWidgets('选择自动同步并保存后落库，且自动上传被关掉', (tester) async {
@@ -342,10 +345,46 @@ void main() {
       expect(find.text('1 项待同步'), findsOneWidget);
     });
 
-    testWidgets('无待同步项时显示已连接', (tester) async {
+    testWidgets('无待同步项且从未成功时显示尚未同步成功', (tester) async {
       await pumpPage(tester);
-      expect(find.text('已连接'), findsOneWidget);
+      expect(find.text('尚未同步成功'), findsOneWidget);
       expect(find.text('无待同步项'), findsNothing);
+    });
+
+    testWidgets('有持久化成功记录且无待处理项时才显示已连接', (tester) async {
+      final repo = InMemoryLedgerRepository();
+      await repo.sync.saveScanState(
+        SyncScanState(
+          contiguousSequences: const <String, int>{},
+          gaps: const <String, List<int>>{},
+          lastSuccess: DateTime(2026, 9, 17),
+          lastErrorCode: null,
+          retryCount: 0,
+        ),
+      );
+
+      await pumpPage(tester, repository: repo);
+
+      expect(find.text('已连接'), findsOneWidget);
+      expect(find.text('尚未同步成功'), findsNothing);
+    });
+
+    testWidgets('持久化同步错误优先于历史成功记录', (tester) async {
+      final repo = InMemoryLedgerRepository();
+      await repo.sync.saveScanState(
+        SyncScanState(
+          contiguousSequences: const <String, int>{},
+          gaps: const <String, List<int>>{},
+          lastSuccess: DateTime(2026, 9, 16),
+          lastErrorCode: 'network_error',
+          retryCount: 1,
+        ),
+      );
+
+      await pumpPage(tester, repository: repo);
+
+      expect(find.text('同步出错'), findsOneWidget);
+      expect(find.text('已连接'), findsNothing);
     });
 
     testWidgets('存在未决冲突时显示冲突计数、错误色与进入箭头', (tester) async {
@@ -356,7 +395,7 @@ void main() {
       // 状态行本身还是「同步状态」，但右侧显示冲突计数而不是「已连接」。
       expect(find.text('同步状态'), findsOneWidget);
       expect(find.text('1 个冲突待处理'), findsOneWidget);
-      expect(find.text('已连接'), findsNothing);
+      expect(find.text('尚未同步成功'), findsNothing);
 
       // 有冲突时整行走错误色，并且给出进入箭头。
       final row = tester.widget<SettingsRow>(
@@ -389,7 +428,7 @@ void main() {
     testWidgets('无冲突时点击状态行只刷新状态，不进入冲突页', (tester) async {
       final repo = InMemoryLedgerRepository();
       await pumpPage(tester, repository: repo);
-      expect(find.text('已连接'), findsOneWidget);
+      expect(find.text('尚未同步成功'), findsOneWidget);
 
       // 刷新前先在仓储里放一条冲突：如果这次点击读了状态，它就该显示出来。
       await repo.sync.storeConflict(conflictRecord(id: 'conflict-late'));
@@ -399,7 +438,7 @@ void main() {
 
       expect(find.byType(SyncConflictsPage), findsNothing);
       expect(find.text('1 个冲突待处理'), findsOneWidget);
-      expect(find.text('已连接'), findsNothing);
+      expect(find.text('尚未同步成功'), findsNothing);
     });
 
     testWidgets('点击状态行进入冲突审阅页', (tester) async {
@@ -446,7 +485,8 @@ void main() {
 
       expect(find.byType(SyncConflictsPage), findsNothing);
       expect(find.text('1 个冲突待处理'), findsNothing);
-      expect(find.text('已连接'), findsOneWidget);
+      // 冲突决议本身会写入 outbox，等下一轮同步上传，不能伪装成无待处理项。
+      expect(find.textContaining('项待同步'), findsOneWidget);
       final row = tester.widget<SettingsRow>(
         find.widgetWithText(SettingsRow, '同步状态'),
       );

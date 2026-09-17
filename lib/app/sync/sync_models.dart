@@ -536,6 +536,7 @@ class SyncOutboxRecord {
     required this.relativePath,
     required this.payloadHash,
     required this.retryCount,
+    required this.event,
   });
 
   final String batchId;
@@ -543,6 +544,10 @@ class SyncOutboxRecord {
   final String relativePath;
   final String payloadHash;
   final int retryCount;
+
+  /// 待上传的完整事件。v18 起新入队记录始终非空；从 v17 升级的
+  /// 历史行没有可恢复的正文，保留为 null，由上传层报明确错误并保留记录。
+  final SyncEvent? event;
 }
 
 /// Batch record.
@@ -600,6 +605,10 @@ class RemoteApplyPlan {
     required this.kvJournalValues,
     this.appliedPayloadHashes = const <String, String>{},
     this.conflicts = const <SyncConflictRecord>[],
+    this.resolutionEvents = const <SyncEvent>[],
+    this.resolvedConflictIds = const <String>[],
+    this.completedPendingIds = const <String>[],
+    this.kvExpectedHashes = const <String, String>{},
   });
 
   final String batchId;
@@ -626,6 +635,10 @@ class RemoteApplyPlan {
 
   /// 本批产生的冲突记录，落库到 sync_conflicts。
   final List<SyncConflictRecord> conflicts;
+  final List<SyncEvent> resolutionEvents;
+  final List<String> resolvedConflictIds;
+  final List<String> completedPendingIds;
+  final Map<String, String> kvExpectedHashes;
 
   /// 某个已应用操作的 payload hash：优先取 [appliedPayloadHashes]，
   /// 缺失时回落到 [entityVersions]；两者都没有则返回空串。

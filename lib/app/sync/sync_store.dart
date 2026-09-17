@@ -7,10 +7,13 @@ import 'sync_models.dart';
 /// 语义约定：
 /// - [loadDeviceState] 在从未写入过时返回「空身份」（deviceId 为空、序列从 1 起）。
 ///   真正的设备身份由 `SyncClock` 持有并在初始化时写入，仓储不自行生成。
-/// - [loadOutbox] 只返回尚未标记上传的记录。
+/// - [loadOutbox] 只返回尚未标记上传的记录；v18 起新入队行包含完整
+///   [SyncOutboxRecord.event]，v17 升级遗留行的事件为 null，上传方必须拒绝清空。
 /// - [applyRemoteBatch] 在单个事务内写入 sync_entity_versions/sync_shadow/
 ///   sync_apply_journal/sync_conflicts 与 sync_applied_ops；任何校验失败都整批不落库。
 abstract interface class SyncRepository {
+  Future<String?> loadEnrollmentState();
+  Future<void> saveEnrollmentState(String state);
   Future<SyncDeviceState> loadDeviceState();
   Future<void> saveDeviceState(SyncDeviceState state);
 
@@ -19,6 +22,25 @@ abstract interface class SyncRepository {
   Future<void> markBatchUploaded(String batchId);
 
   Future<void> applyRemoteBatch(RemoteApplyPlan plan);
+  Future<Map<String, String>> loadAppliedOperationHashes(
+    List<String> operationIds,
+  );
+  Future<void> savePendingBatch(
+    String batchId,
+    List<SyncEvent> events,
+    String reason,
+  );
+  Future<List<SyncPendingBatch>> loadPendingBatches();
+  Future<Map<SyncEntityKey, SyncEntityVersion>> loadEntityHeads(
+    Set<SyncEntityKey> keys,
+  );
+  Future<void> finalizePreparedBatches();
+  Future<void> removePendingBatch(String batchId);
+  Future<void> saveConflictChoice(
+    String batchId,
+    String conflictId,
+    SyncEvent? event,
+  );
 
   Future<SyncScanState> loadScanState();
   Future<void> saveScanState(SyncScanState state);
@@ -79,6 +101,7 @@ class KvJournalEntry {
     required this.key,
     required this.value,
     required this.targetHash,
+    this.expectedHash,
   });
 
   /// 行自增 id（SQLite `sync_apply_journal.id`），标记已应用时按它定位。
@@ -87,6 +110,20 @@ class KvJournalEntry {
   final String key;
   final String value;
   final String targetHash;
+  final String? expectedHash;
+}
+
+class SyncPendingBatch {
+  const SyncPendingBatch({
+    required this.batchId,
+    required this.events,
+    required this.reason,
+    this.choices = const {},
+  });
+  final String batchId;
+  final List<SyncEvent> events;
+  final String reason;
+  final Map<String, SyncEvent> choices;
 }
 
 /// 远端批次与本地已落库状态互斥时抛出。调用方据此保留 pending 并提示用户，

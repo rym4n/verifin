@@ -245,6 +245,82 @@ class SyncProjection {
     return SyncProjectionSnapshot(entities: entities);
   }
 
+  /// Inverse of the whitelist projection. Fold a complete batch before parsing
+  /// references: a transaction may reference an account created later in it.
+  static Map<String, Object?> applyVersions(
+    Map<String, Object?> current,
+    Iterable<SyncEntityVersion> versions,
+  ) {
+    final data = Map<String, Object?>.from(_dataSection(current));
+    final entities = Map<SyncEntityKey, SyncProjectedEntity>.of(
+      fromExportData(data).entities,
+    );
+    final changedTypes = <String>{};
+    for (final version in versions) {
+      final key = version.entity;
+      final exportKey = key.type == 'ledgerBook' ? 'ledgerBooks' : key.type;
+      if (!exportKeys.contains(exportKey)) {
+        throw FormatException('Unsupported sync entity type: ${key.type}');
+      }
+      changedTypes.add(exportKey);
+      if (version.deleted) {
+        entities.remove(key);
+      } else {
+        if (_listEntityTypes.containsKey(exportKey) &&
+            (version.payload is! Map ||
+                (version.payload as Map)['id'] != key.id)) {
+          throw const FormatException('Sync entity identity mismatch');
+        }
+        entities[key] = SyncProjectedEntity(
+          key: key,
+          payload: version.payload,
+          payloadHash: version.payloadHash,
+        );
+      }
+    }
+    for (final exportKey in changedTypes) {
+      final type = _listEntityTypes[exportKey] ?? exportKey;
+      final items = entities.values.where((e) => e.key.type == type).toList();
+      if (_listEntityTypes.containsKey(exportKey)) {
+        data[exportKey] = items.map((e) => e.payload).toList();
+      } else if (_mapPerKeyKeys.contains(exportKey)) {
+        data[exportKey] = <String, Object?>{
+          for (final e in items) e.key.id: e.payload,
+        };
+      } else if (_orderKeys.contains(exportKey)) {
+        final containers = <String, Map<int, Object?>>{};
+        for (final item in items) {
+          final payload = item.payload;
+          if (payload is! Map ||
+              payload['container'] is! String ||
+              payload['position'] is! int ||
+              payload['id'] is! String ||
+              (payload['position'] as int) < 0 ||
+              item.key.id != '${payload['container']}:${payload['position']}') {
+            throw const FormatException('Invalid sync order');
+          }
+          containers.putIfAbsent(
+            payload['container'] as String,
+            () => {},
+          )[payload['position'] as int] = payload['id'];
+        }
+        data[exportKey] = <String, Object?>{
+          for (final entry in containers.entries)
+            entry.key: (entry.value.keys.toList()..sort())
+                .map((position) => entry.value[position])
+                .toList(),
+        };
+      } else {
+        if (items.isEmpty) {
+          data.remove(exportKey);
+        } else {
+          data[exportKey] = items.single.payload;
+        }
+      }
+    }
+    return data;
+  }
+
   /// 比较两份投影，产出本地变更。
   ///
   /// 顺序确定：先 upsert（按实体键排序）后 delete（按实体键排序）。删除排在后面
