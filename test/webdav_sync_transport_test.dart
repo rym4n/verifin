@@ -270,6 +270,125 @@ void main() {
   });
 
   group('WebdavSyncTransportImpl with a real HTTP server', () {
+    test('follows a GET redirect when downloading a sync file', () async {
+      const relativePath = 'blobs/redirected.blob';
+      final content = utf8.encode('redirected sync content');
+      var redirectedRequestHadAuthorization = false;
+      final server = await _TestWebdavServer.start((request) async {
+        await request.drain<void>();
+        if (request.uri.path.endsWith(
+              '/verifin-sync/v1/blobs/redirected.blob',
+            ) &&
+            request.uri.queryParameters['download'] != '1') {
+          request.response.statusCode = HttpStatus.found;
+          request.response.headers.set(
+            HttpHeaders.locationHeader,
+            '${request.uri.path}?download=1',
+          );
+          await request.response.close();
+          return;
+        }
+        if (request.uri.queryParameters['download'] == '1') {
+          redirectedRequestHadAuthorization =
+              request.headers.value(HttpHeaders.authorizationHeader) != null;
+          request.response.statusCode = HttpStatus.ok;
+          request.response.add(content);
+          await request.response.close();
+          return;
+        }
+        await _respond(request, HttpStatus.notFound);
+      });
+
+      final downloaded = await WebdavSyncTransportImpl().downloadSyncFile(
+        server.config,
+        relativePath,
+        maxBytes: syncMaxDownloadBytes,
+      );
+
+      expect(downloaded, content);
+      expect(redirectedRequestHadAuthorization, isTrue);
+    });
+
+    test('does not forward authorization across redirect origins', () async {
+      final content = utf8.encode('cross-origin sync content');
+      String? redirectedAuthorization;
+      final target = await _TestWebdavServer.start((request) async {
+        await request.drain<void>();
+        redirectedAuthorization = request.headers.value(
+          HttpHeaders.authorizationHeader,
+        );
+        request.response.statusCode = HttpStatus.ok;
+        request.response.add(content);
+        await request.response.close();
+      });
+      final targetUri = Uri.parse(target.config.url).resolve('download');
+      final source = await _TestWebdavServer.start((request) async {
+        await request.drain<void>();
+        request.response.statusCode = HttpStatus.found;
+        request.response.headers.set(
+          HttpHeaders.locationHeader,
+          targetUri.toString(),
+        );
+        await request.response.close();
+      });
+
+      final downloaded = await WebdavSyncTransportImpl().downloadSyncFile(
+        source.config,
+        'blobs/redirected.blob',
+        maxBytes: syncMaxDownloadBytes,
+      );
+
+      expect(downloaded, content);
+      expect(redirectedAuthorization, isNull);
+    });
+
+    test(
+      'follows a GET redirect when checking an existing file hash',
+      () async {
+        final content = utf8.encode('existing sync content');
+        var putCalled = false;
+        final server = await _TestWebdavServer.start((request) async {
+          await request.drain<void>();
+          if (request.method == 'MKCOL') {
+            await _respond(request, HttpStatus.methodNotAllowed);
+            return;
+          }
+          if (request.method == 'GET' &&
+              request.uri.queryParameters['download'] != '1') {
+            request.response.statusCode = HttpStatus.found;
+            request.response.headers.set(
+              HttpHeaders.locationHeader,
+              '${request.uri.path}?download=1',
+            );
+            await request.response.close();
+            return;
+          }
+          if (request.method == 'GET') {
+            request.response.statusCode = HttpStatus.ok;
+            request.response.add(content);
+            await request.response.close();
+            return;
+          }
+          if (request.method == 'PUT') {
+            putCalled = true;
+            await _respond(request, HttpStatus.created);
+            return;
+          }
+          await _respond(request, HttpStatus.methodNotAllowed);
+        });
+
+        await WebdavSyncTransportImpl().putImmutable(
+          server.config,
+          'blobs/existing.blob',
+          Stream.value(content),
+          content.length,
+          sha256.convert(content).toString(),
+        );
+
+        expect(putCalled, isFalse);
+      },
+    );
+
     test(
       'normalizes absolute and collection-prefixed hrefs and parses canonical event names',
       () async {

@@ -80,6 +80,7 @@ class WebdavException implements Exception {
 
 const Duration _connectTimeout = Duration(seconds: 30);
 const Duration _responseTimeout = Duration(seconds: 60);
+const int _maxGetRedirects = 5;
 
 const String _propfindBody =
     '<?xml version="1.0" encoding="utf-8"?>'
@@ -105,6 +106,78 @@ Future<HttpClientRequest> _open(
   request.followRedirects = false;
   return request;
 }
+
+Future<HttpClientResponse> _getFollowingRedirects(
+  HttpClient client,
+  Uri initialUri,
+  WebdavConfig config,
+) async {
+  final credentialOrigin = _collectionUri(config);
+  final visited = <Uri>{initialUri};
+  var currentUri = initialUri;
+  var redirectsFollowed = 0;
+
+  while (true) {
+    final request = await client.openUrl('GET', currentUri);
+    if (_sameOrigin(currentUri, credentialOrigin)) {
+      request.headers.set(HttpHeaders.authorizationHeader, _authHeader(config));
+    }
+    request.followRedirects = false;
+    final response = await request.close().timeout(_responseTimeout);
+    if (!_isGetRedirect(response.statusCode)) {
+      return response;
+    }
+
+    if (redirectsFollowed >= _maxGetRedirects) {
+      _abortResponse(client);
+      throw const WebdavException('Too many download redirects');
+    }
+    final location = response.headers.value(HttpHeaders.locationHeader);
+    if (location == null || location.trim().isEmpty) {
+      _abortResponse(client);
+      throw const WebdavException('Download redirect has no location');
+    }
+
+    late final Uri nextUri;
+    try {
+      nextUri = currentUri.resolve(location);
+    } on FormatException {
+      _abortResponse(client);
+      throw const WebdavException('Download redirect is invalid');
+    }
+    if (!_isHttpUri(nextUri) || nextUri.userInfo.isNotEmpty) {
+      _abortResponse(client);
+      throw const WebdavException('Download redirect is invalid');
+    }
+    if (currentUri.scheme == 'https' && nextUri.scheme != 'https') {
+      _abortResponse(client);
+      throw const WebdavException('Download redirect cannot downgrade HTTPS');
+    }
+    if (!visited.add(nextUri)) {
+      _abortResponse(client);
+      throw const WebdavException('Download redirect loop detected');
+    }
+
+    await response.drain<void>().timeout(_responseTimeout);
+    currentUri = nextUri;
+    redirectsFollowed++;
+  }
+}
+
+bool _isGetRedirect(int statusCode) =>
+    statusCode == HttpStatus.movedPermanently ||
+    statusCode == HttpStatus.found ||
+    statusCode == HttpStatus.seeOther ||
+    statusCode == HttpStatus.temporaryRedirect ||
+    statusCode == HttpStatus.permanentRedirect;
+
+bool _isHttpUri(Uri uri) =>
+    uri.hasAuthority && (uri.scheme == 'http' || uri.scheme == 'https');
+
+bool _sameOrigin(Uri left, Uri right) =>
+    left.scheme == right.scheme &&
+    left.host == right.host &&
+    left.port == right.port;
 
 Never _fail(Object error) {
   if (error is WebdavException || error is WebdavFileCollision) {
@@ -517,8 +590,7 @@ class WebdavSyncTransportImpl implements WebdavSyncTransport {
     Uri uri,
     WebdavConfig config,
   ) async {
-    final request = await _open(client, 'GET', uri, config);
-    final response = await request.close().timeout(_responseTimeout);
+    final response = await _getFollowingRedirects(client, uri, config);
 
     if (response.statusCode == 404) {
       await response.drain<void>();
@@ -716,8 +788,7 @@ class WebdavSyncTransportImpl implements WebdavSyncTransport {
     final client = _newClient();
     try {
       final uri = _syncFileUri(config, relativePath);
-      final request = await _open(client, 'GET', uri, config);
-      final response = await request.close().timeout(_responseTimeout);
+      final response = await _getFollowingRedirects(client, uri, config);
 
       if (response.statusCode < HttpStatus.ok || response.statusCode >= 300) {
         _abortResponse(client);
