@@ -83,7 +83,7 @@ verifin-sync-v2-4f8c19e6d7134be39c25820b2f55a912-00000000000000000042-20260918T0
     }
   ],
   "attachmentBlobs": [
-    {"attachmentId": "...", "byteLength": 123, "dataUrlPrefix": "data:image/jpeg;base64,", "chunks": ["完整SHA256"]}
+    {"attachmentId": "...", "byteLength": 123, "dataUrlPrefix": "data:image/jpeg;base64,", "chunks": [{"rawHash": "...", "fileHash": "..."}]}
   ],
   "conflicts": []
 }
@@ -99,10 +99,11 @@ verifin-sync-v2-4f8c19e6d7134be39c25820b2f55a912-00000000000000000042-20260918T0
 - 文档按稳定键序与实体键排序编码，便于得到确定 hash 和编写黄金测试。
 - 配置备份口令时，完整逻辑文档继续使用现有 `SyncCodec` 加密为 JSON 信封；未配置口令时为明文 JSON。两种格式都必须带协议版本和不可逆 key fingerprint，禁止密钥不匹配时回退明文。
 - 结构化快照明文上限固定为 16 MiB，最终加密 JSON 信封上限固定为 24 MiB。编码前根据稳定 JSON 编码累计字节并在超过上限时停止；下载按流累计，超过上限立即断开，分别返回 `snapshot_plaintext_too_large` / `snapshot_envelope_too_large`，不得把半份数据交给 `jsonDecode`。该边界不包含独立 blob 的字节。
-- 附件原始总量继续受现有备份/导入边界约束；单个原始附件不超过 25 MiB。附件按当前 `SyncWireLimits.chunkBytes` 切块，每块加密后仍须小于 32 MiB，文件名取最终上传密文字节 hash。快照只保存附件 ID、原始长度、data URL 前缀和按顺序排列的块 hash。
-- 下载附件时逐块校验文件 hash、解密、校验原始块 hash并写入临时文件；全部块齐全且累计长度正确后才重建 data URL。临时文件无论成功或失败都必须删除，不能同时在内存保留原始字节、Base64 字符串、密文和完整 JSON 四份副本。
+- 附件原始总量继续受现有备份/导入边界约束；单个原始附件不超过 25 MiB。附件按当前 `SyncWireLimits.chunkBytes` 切块，每块加密后仍须小于 32 MiB。`rawHash` 是原始分块 SHA-256，继续作为 `syncEventForWire.blobChunks` / `materializeSyncEvent` 的稳定内容键；`fileHash` 是最终加密信封字节 SHA-256，用于远端文件名和下载前完整性校验。二者不得混用。
+- `attachmentBlobs` 明确保存 `rawHash -> fileHash` 映射。相同 rawHash 已有已验证映射时复用原文件，不重新加密；没有映射时允许不同设备因随机 salt/nonce 生成不同 fileHash，合并映射后选择字典序最小的已验证 fileHash 作为后续发布值，其他文件成为安全冗余。
+- 下载附件时先按 fileHash 校验密文字节，再验证 AES-GCM、信封内 rawHash 和解密后的原始块 hash，随后写入临时文件；全部块齐全且累计长度正确后才重建 data URL。临时文件无论成功或失败都必须删除，不能同时在内存保留原始字节、Base64 字符串、密文和完整 JSON 四份副本。
 
-v2 的「完整 JSON」指全部结构化业务数据和版本元数据集中在一个快照；图片二进制继续采用内容寻址 blob，以避免 Base64 与 AES-GCM 在 Android 内存中反复复制。附件 head 在进入 wire 快照前必须复用 `syncEventForWire` 去掉 `dataUrl` 并写入 blob chunk 引用，接收端复用 `materializeSyncEvent` 还原并校验原始 payload hash。`sync_snapshot_members.payload_hash` 始终保存 outbox 的原始 materialized hash，而不是 wire payload hash。附件只随新增内容产生少量分块文件，不再为每个账目、账户、分类或批次创建远端碎片。首版不清理远端 blob；没有全设备确认机制前，误删 blob 的数据风险高于节省空间的收益。
+v2 的「完整 JSON」指全部结构化业务数据和版本元数据集中在一个快照；图片二进制继续采用内容寻址 blob，以避免 Base64 与 AES-GCM 在 Android 内存中反复复制。附件 head 在进入 wire 快照前必须复用 `syncEventForWire` 去掉 `dataUrl` 并写入 raw blob chunk 引用，快照的 `attachmentBlobs` 再补充每个 rawHash 对应的 encrypted fileHash；接收端完成双 hash 校验后复用 `materializeSyncEvent` 还原并校验原始 payload hash。`sync_snapshot_members.payload_hash` 始终保存 outbox 的原始 materialized hash，而不是 wire payload hash。附件只随新增内容产生少量分块文件，不再为每个账目、账户、分类或批次创建远端碎片。首版不清理远端 blob；没有全设备确认机制前，误删 blob 的数据风险高于节省空间的收益。
 
 ## 本地状态
 
@@ -115,6 +116,8 @@ v2 的「完整 JSON」指全部结构化业务数据和版本元数据集中在
 - `next_snapshot_sequence`：下一个待保留的本机快照序号；序号在开始编码/上传前持久化保留，崩溃允许留 gap，但绝不复用。
 - `last_published_sequence`、`last_published_hash`、`last_published_at`：最近成功发布的本机快照。
 - `v1_import_completed`：是否完成一次 v1 只读迁移。
+- `v1_migration_state`：`not_started`、`needs_upgrade_confirmation`、`ready_to_cutover`、`cutover_complete`；发现 v1 历史后默认进入 `needs_upgrade_confirmation`，不能把 v2 运行结果显示为成功。
+- `v1_last_seen_fingerprint`：最近一次只读 v1 扫描得到的设备/最高 sequence 摘要，用于检测旧设备在用户确认后又继续写入。
 
 ### `sync_snapshot_cursors`
 
@@ -138,7 +141,7 @@ v2 的「完整 JSON」指全部结构化业务数据和版本元数据集中在
 
 PUT 成功后，`markSnapshotPublished(snapshotSequence, filename, hash)` 在单个事务内：
 
-1. 校验 publication 仍为 `prepared` 且文件名/hash 一致；
+1. 校验 publication 仍为 `blobs_ready` 且文件名/hash 一致；
 2. 只把 `sync_snapshot_members` 明确列出的 operationId 标记为 uploaded；
 3. 更新 last published；
 4. 把 publication 改为 `published`。
@@ -146,6 +149,18 @@ PUT 成功后，`markSnapshotPublished(snapshotSequence, filename, hash)` 在单
 现有按 `batchId` 整批确认的 `markBatchUploaded` 不用于 v2。实现新增按 operationId 精确确认的仓储接口；即使一个旧批次中的部分 operation 在快照准备后又发生变化，也不能误清另一部分。准备事务提交后产生的新 outbox 不属于该快照，必然留待下一轮。
 
 编码、加密或上传失败时 publication 保持/转为 `abandoned`，members 不触碰 outbox。若远端 PUT 成功但应用在本地发布事务前崩溃，下次启动不猜测远端结果：废弃旧 prepared 记录、保留 outbox、用更高序号发布新的完整快照。重复远端内容按 operationId 幂等，序号允许出现 gap。
+
+### `sync_snapshot_blobs` 与 `sync_snapshot_blob_members`
+
+附件双 hash 映射必须有本地持久化真相，不能只存在于某次下载的快照内：
+
+- `sync_snapshot_blobs` 以 `(raw_hash, file_hash)` 为主键，保存原始块长度、`verified_at`、`source`（`local_upload` / `remote_download`）和验证状态。同一 rawHash 可以对应多个因随机加密参数产生的 fileHash。
+- 本机 blob PUT 返回成功后，或远端 blob 完成 fileHash、AES-GCM、信封 rawHash 与原始块 hash 四层校验后，才把映射标记为 verified。校验失败的映射标记 invalid，不再用于新快照。
+- `sync_snapshot_blob_members(snapshot_sequence, raw_hash, file_hash)` 固化某次 publication 实际引用的映射；同一 sequence + rawHash 只能选择一个 fileHash。快照编码必须读取这张冻结表，不能临时重选。
+- 发布阶段优先选择“本地 verified 且本轮根目录列表仍存在”的映射，因此正常重启后无需重新 GET 或 PUT。同一 rawHash 有多个 verified 候选时按 fileHash 字典序选择。接收端下载首选文件校验失败时标记 invalid，并从本地已知映射或本轮其他已校验快照携带的映射中依序尝试下一候选，全部失败才返回缺块错误。
+- 没有可用映射时才从本地原始块生成新的加密信封并 PUT；成功后先持久化 verified 映射，再写入 publication 的 blob member。远端 PUT 与本地事务无法原子提交，极窄的进程崩溃窗口允许留下一个未建立映射的远端冗余 blob，但不得误确认 outbox 或发布引用不完整的快照。
+
+publication 的生命周期细分为 `prepared`、`blobs_ready`、`published` / `abandoned`：`prepared` 固化业务 heads、冲突和 outbox 成员；解析或上传所需 blob 后，在事务中写入全部 blob members 并转为 `blobs_ready`；只有 `blobs_ready` 才能编码和 PUT 快照。重启发现未完成 publication 时仍按既定策略废弃并使用更高序号，但已持久化的 verified blob 映射可以直接复用。
 
 现有 `sync_shadow`、`sync_entity_versions`、`sync_entity_heads`、`sync_outbox`、`sync_applied_ops`、`sync_pending`、`sync_apply_journal` 和 `sync_conflicts` 继续承担变更捕获、版本保存、原子应用与冲突决议。v2 是传输格式替换，不另造第二套业务合并真相。
 
@@ -156,19 +171,19 @@ PUT 成功后，`markSnapshotPublished(snapshotSequence, filename, hash)` 在单
 所有触发继续由 `SyncCoordinator` 串行化。一次 v2 同步按以下顺序执行：
 
 1. 重放未完成 KV journal，等待本地业务写入完成。
-2. 执行 `SyncChangeTracker.reconcile()`，把当前本地变化持久化为实体版本和 outbox。远端应用期间仍抑制回声。
-3. 对 WebDAV 根目录执行一次 `PROPFIND Depth:1`，解析所有合法 v2 文件；不执行 `MKCOL`。
+2. 执行 `SyncChangeTracker.reconcile()`，把当前本地变化持久化为实体版本和 outbox。远端应用期间仍抑制回声。若 `v1_migration_state == needs_upgrade_confirmation`，本轮只允许检查 v1 fingerprint，并在发现新增完整批次时读取、校验和应用这些批次，随后返回 `legacy_client_upgrade_required`；不推进 v2 cursor、不上传 v2 快照、不显示成功。只有用户确认写入 `ready_to_cutover` 后才进入最终切换流程。
+3. 对 WebDAV 根目录执行一次 `PROPFIND Depth:1`，解析所有合法 v2 文件；不执行 `MKCOL`。存在 v1 历史时，在处理 v2 前额外执行下文定义的只读 v1 bridge fingerprint 检查。
 4. 按设备分组。对每个远端设备选择序号高于本地游标的最新候选；同一 deviceId + sequence 出现多个文件时，先比较文件名完整 hash，hash 不同立即报 `snapshot_sequence_collision`，相同才去重。
 5. 只下载选中的候选。若最新文件损坏，可按序号倒序尝试仍高于游标的保留版本；没有有效候选时失败且不推进游标。成功后游标只能写入**实际通过校验并完成合并**的 fallback 序号和完整 hash，不能写最初选中的损坏序号；更高的损坏文件下一轮仍会重试。
 6. 校验并解密快照，将 heads 和冲突版本转成现有实体版本模型；按根目录列表检查引用的 blob，下载本机缺少的块并完成附件 hash/长度校验。缺块时本快照保持 pending，不提交半份业务状态。
 7. 逐快照规划实体级 merge：因果后继覆盖前序；真正并发写入冲突表；删除保持 tombstone。所有可接受实体共同折叠后通过 `SyncLedgerReducer` 做完整引用和金额校验。
 8. 在现有远端应用事务中一次写入业务表、实体版本、完整 shadow、applied 信息、冲突和 KV journal。无冲突实体可以正常应用；冲突实体保持当前本地值并保存两侧版本，不得因为一条冲突阻止同一快照内其他独立实体合并。该事务同时写入实际成功候选的 cursor sequence/hash。
 9. 成功提交后推进该远端设备游标。任一阶段失败都保留原游标，下次重试同一快照。
-10. 如果本机 outbox 非空、尚未发布过 v2 基线，或本轮生成了本机冲突决议事件，则调用事务化 `prepareSnapshotPublication` 固化 heads、冲突、outbox 成员和新快照序号。先上传根目录列表中尚不存在的附件 blob，再执行一次快照 PUT；blob 上传成功而快照失败是安全的未引用冗余，下轮按 hash 复用。
+10. 如果本机 outbox 非空、尚未发布过 v2 基线，或本轮生成了本机冲突决议事件，则调用事务化 `prepareSnapshotPublication` 固化 heads、冲突、outbox 成员和新快照序号。根据 `sync_snapshot_blobs` 与本轮根目录列表解析或上传所需附件 blob，在事务中冻结 `sync_snapshot_blob_members` 后再执行一次快照 PUT；blob 上传成功而快照失败是安全的未引用冗余，下轮按持久化映射复用。
 11. PUT 成功后通过 `markSnapshotPublished` 按 `sync_snapshot_members` 的 operationId 精确确认 outbox 并记录发布状态；上传准备事务之后产生的新 outbox 不在成员表中，保留到下一轮。
 12. best-effort 删除本机第 4 份及更旧快照，更新同步状态和结构化日志。
 
-这相当于 pull-before-push。无远端新序号且本地 outbox 为空时，一轮同步只有一次 `PROPFIND`，不执行 GET 或 PUT。
+这相当于 pull-before-push。对全新 v2 目录，无远端新序号且本地 outbox 为空时，一轮同步只有一次 `PROPFIND`，不执行 GET 或 PUT；存在 v1 历史的升级目录会额外执行只读 bridge fingerprint 检查。
 
 ## 合并与冲突
 
@@ -227,14 +242,16 @@ sha256(encodeSyncEntityKey(entity) + "\n" + min(operationA, operationB) + "\n" +
 
 升级后的首次 v2 同步执行一次迁移：
 
-1. 读取并应用远端已完整提交的 v1 批次，不再上传任何 v1 文件。
+1. 读取并应用远端已完整提交的 v1 批次，不再上传任何 v1 文件。只读扫描在根目录列出 `verifin-sync/v1/` 的完整批次并记录每个旧设备的最高 sequence。
 2. v1 中缺 manifest/commit/blob 的半批不视为权威数据；记录迁移日志，但不覆盖本地状态。
 3. 当前本地未版本化的数据生成基线实体版本；现有 v1 outbox 的完整事件直接并入本机 heads。
-4. 完成远端 v1 合并后发布本机首个 v2 完整快照。
-5. 只有首个 v2 快照 PUT 成功后，才标记 `v1_import_completed` 并把已包含的旧 outbox 标为已上传。
-6. 后续日常同步只扫描根目录 v2 文件，不再递归扫描 v1 树。
+4. 完成首次远端 v1 合并后立即进入 `needs_upgrade_confirmation`，此时**不发布**首个 v2 快照。设置页列出仍写入 v1 的设备指纹和“所有设备升级后继续”的确认按钮；确认前不允许把 v2 轮次报告为同步成功。
+5. 用户确认只把状态推进到 `ready_to_cutover`。下一轮先执行最终 v1 只读扫描；若发现首次提示后新增的完整批次，先应用这些批次、更新 fingerprint，并重新回到 `needs_upgrade_confirmation`，不得上传 v2。只有 fingerprint 稳定，才准备并 PUT 包含全部已导入 v1 状态的首个 v2 快照。
+6. 首个 v2 快照 PUT 和本地 `markSnapshotPublished` 都成功后，才原子标记 `v1_import_completed` / `cutover_complete` 并按 snapshot members 精确确认 outbox。这样最终 v1 扫描必然发生在首个 v2 PUT 之前。
+7. 存在 v1 历史的目录在 `cutover_complete` 后仍保留只读 bridge 检查：每轮在 v2 merge 前，以 v1 已提交 manifest/commit 的设备与最高 sequence 计算 fingerprint，不下载未变化事件/blob。fingerprint 变化时读取并应用新增完整批次，状态退回 `needs_upgrade_confirmation`，本轮不推进 v2 cursor/outbox、不显示成功；扫描失败也必须阻断，不能静默跳过旧设备写入。该额外检查只适用于检测到 v1 历史的升级目录，全新 v2 目录仍保持一次根目录 PROPFIND 的快路径。
+8. 确认对话框必须明确说明：用户应先升级或停用所有共享该目录的旧设备。旧客户端在最终扫描后抢写的极端竞态会被下一轮 bridge fingerprint 检出并重新阻断，不会被当作同步成功或永久忽略。旧 v1 目录不自动删除；首版为保证安全不提供关闭 bridge 检查的开关。
 
-v1 客户端无法读取 v2 快照。升级发布说明和设置页需要明确：参与同一 WebDAV 同步的设备应全部升级到支持 v2 的版本；仍停留在 v1 的设备写入不会被 v2 设备持续监听。为避免隐藏的双向不兼容，首次发现 v1 历史但没有其他 v2 设备快照时，在同步状态中记录迁移提示。
+v1 客户端无法读取 v2 快照。升级发布说明和设置页需要明确：参与同一 WebDAV 同步的设备应全部升级到支持 v2 的版本。仍停留在 v1 的设备写入会触发阻断状态，而不是被静默忽略；用户必须升级它们或明确停止共享该 WebDAV 目录后，才能完成 v2 切换。
 
 普通 `verifin-auto-*` / `verifin-backup-*` 文件完全不参与同步 merge。旧 `verifin-sync/v1/` 目录不自动删除，作为迁移恢复依据保留。
 
@@ -272,6 +289,7 @@ v1 客户端无法读取 v2 快照。升级发布说明和设置页需要明确�
 - 快照从一次 SQLite 一致性读取获得完整 heads/冲突。
 - 上传成功按 `sync_snapshot_members.operation_id` 只清理实际包含或被证明因果覆盖的 outbox，上传期间新增变更继续待传。
 - 本机 A 入队后被后继 B 覆盖时，快照成员同时记录 A/B，发布后两者都精确确认；同批次存在未包含 operation 时不得按 batch 清空。
+- publication 严格经过 `prepared -> blobs_ready -> PUT -> published`；无附件也必须进入 `blobs_ready`。PUT 前崩溃保留 outbox，PUT 后本地确认前崩溃按更高序号重发，任何恢复路径都不得重复确认或误清成员表外的 operation。
 - canonical conflict key 在两台设备方向相反时相同；三个并发版本按实体聚合，决议事件覆盖并清除所有已决 conflict pair。
 
 ### 真实本地 HTTP WebDAV
@@ -290,6 +308,9 @@ v1 客户端无法读取 v2 快照。升级发布说明和设置页需要明确�
 - 无远端更新且无 outbox 时第二轮只 PROPFIND，不 GET/PUT。
 - 冷启动、回前台、本地修改去抖和手动同步均走同一运行时。
 - v1 完整批次迁移一次，半批不应用，首个 v2 PUT 失败时迁移状态不推进。
+- 迁移首次合并后不发布 v2；用户确认、最终 v1 扫描稳定、首个 v2 PUT 成功并完成本地发布事务后才允许切换完成。
+- 迁移后旧 v1 设备继续写入时，bridge fingerprint 必须发现并应用新增完整批次，然后返回 `legacy_client_upgrade_required`、不推进 v2 cursor/outbox、UI 不显示「已连接/同步成功」；最终扫描与首个 PUT 之间发生的续写也能在下一轮重新阻断。
+- 同一 raw attachment chunk 跨两次快照及一次正常应用重启只上传一次；重启后直接复用持久化 verified 映射，不额外 GET。加密 envelope 的 fileHash 错误、rawHash 错误或映射缺失均拒绝 materialize；首选映射损坏时尝试另一条 verified 映射。
 - v2 快照 PUT 成功后、`markSnapshotPublished` 前模拟崩溃：重启后不得清空旧 outbox，发布更高序号后最终收敛且远端重复 operation 不产生重复业务行。
 - 软件日志可以直接复制定位，并确认不含地址、路径、凭证和 payload。
 - 结构化 JSON 接近 16 MiB、加密信封接近 24 MiB、单附件接近 25 MiB 及多附件场景均不 OOM；超限返回稳定错误、游标/outbox 不推进、临时文件被删除。
@@ -298,7 +319,7 @@ v1 客户端无法读取 v2 快照。升级发布说明和设置页需要明确�
 
 ## 交付边界
 
-- 同步 v2 上线后不再通过 v1 碎片文件执行日常上传或扫描。
+- 同步 v2 上线后不再通过 v1 碎片文件执行日常上传或业务同步；存在 v1 历史的升级目录只保留只读 fingerprint 扫描，用于阻断旧客户端续写造成的静默分叉。
 - 不保留「v1 写入失败则悄悄改用普通备份覆盖」的降级路径。
 - 不要求用户清除应用数据；升级必须迁移已有 SQLite 同步元数据。
 - `docs/dev/tech-decisions.md`、`docs/dev/known-limitations.md`、`docs/acceptance-checklist.md`、README 和 CHANGELOG 随实现同步更新。
