@@ -6,6 +6,7 @@ import 'package:crypto/crypto.dart';
 
 import '../backup/webdav_config.dart';
 import 'sync_models.dart';
+import 'sync_wire.dart';
 import 'webdav_sync_transport.dart';
 
 // Re-export for test convenience
@@ -99,27 +100,33 @@ class StubWebdavSyncTransport implements WebdavSyncTransport {
     // so the engine can decode it with SyncEvent.fromJson.
     for (var i = 0; i < events.length; i++) {
       final event = events[i];
+      final eventSequence = (sequence + i).toString().padLeft(20, '0');
       final eventPath =
-          'verifin-sync/v1/events/$deviceId/${sequence + i}.vfsync';
-      final eventBytes = utf8.encode(jsonEncode(event.toJson()));
+          'verifin-sync/v1/events/$deviceId/'
+          '$eventSequence-${event.operationId}.vfsync';
+      final eventBytes = utf8.encode(
+        jsonEncode(syncEventForWire(event).toJson()),
+      );
       _files[eventPath] = Uint8List.fromList(eventBytes);
     }
 
     // Upload manifest
     final manifestPath = 'verifin-sync/v1/batches/$deviceId/$batchId.manifest';
-    final manifest = {
-      'batchId': batchId,
-      'operationIds': events.map((e) => e.operationId).toList(),
-      'blobHashes': <String>[],
-      'manifestHash': 'stub-manifest-hash',
-    };
+    final manifest = syncManifest(batchId, events);
     final manifestBytes = utf8.encode(jsonEncode(manifest));
     _files[manifestPath] = Uint8List.fromList(manifestBytes);
+    for (final blob in syncAttachmentBlobs(events).entries) {
+      _files['verifin-sync/v1/blobs/${blob.key}.blob'] = syncJsonBytes({
+        'protocolVersion': syncProtocolVersion,
+        'hash': blob.key,
+        'data': base64Encode(blob.value),
+      });
+    }
 
     // Upload commit marker
     if (includeCommit) {
       final commitPath = 'verifin-sync/v1/batches/$deviceId/$batchId.commit';
-      _files[commitPath] = Uint8List.fromList(utf8.encode('committed'));
+      _files[commitPath] = syncJsonBytes(syncCommit(manifest, manifestBytes));
     }
   }
 
@@ -189,7 +196,11 @@ class StubWebdavSyncTransport implements WebdavSyncTransport {
         parts[2] == 'events') {
       final deviceId = parts[3];
       final filename = parts[4];
-      final match = RegExp(r'^(\d+)\.vfsync$').firstMatch(filename);
+      // Production event paths carry the immutable operation id after the
+      // sequence. Keep accepting the legacy numeric form for old fixtures.
+      final match = RegExp(
+        r'^(\d+)(?:-[A-Za-z0-9._~-]+)?\.vfsync$',
+      ).firstMatch(filename);
       if (match != null) {
         final sequence = int.tryParse(match.group(1)!);
         return (deviceId, sequence);

@@ -68,6 +68,37 @@ class _BlockingRecordingSyncRepository extends RecordingSyncRepository {
 
 /// 记录调用、可注入失败的 [SyncRepository]，其余方法委托给内存镜像。
 class RecordingSyncRepository implements SyncRepository {
+  @override
+  Future<String?> loadEnrollmentState() => _inner.loadEnrollmentState();
+  @override
+  Future<void> saveEnrollmentState(String state) =>
+      _inner.saveEnrollmentState(state);
+  @override
+  Future<void> saveConflictChoice(
+    String id,
+    String conflict,
+    SyncEvent? event,
+  ) => _inner.saveConflictChoice(id, conflict, event);
+  @override
+  Future<void> finalizePreparedBatches() => _inner.finalizePreparedBatches();
+  @override
+  Future<void> removePendingBatch(String id) => _inner.removePendingBatch(id);
+  @override
+  Future<Map<SyncEntityKey, SyncEntityVersion>> loadEntityHeads(
+    Set<SyncEntityKey> keys,
+  ) => _inner.loadEntityHeads(keys);
+  @override
+  Future<void> savePendingBatch(
+    String id,
+    List<SyncEvent> events,
+    String reason,
+  ) => _inner.savePendingBatch(id, events, reason);
+  @override
+  Future<List<SyncPendingBatch>> loadPendingBatches() =>
+      _inner.loadPendingBatches();
+  @override
+  Future<Map<String, String>> loadAppliedOperationHashes(List<String> ids) =>
+      _inner.loadAppliedOperationHashes(ids);
   RecordingSyncRepository(this._inner);
 
   final SyncRepository _inner;
@@ -171,9 +202,9 @@ void main() {
   useTestDatabases();
 
   group('reconcile', () {
-    test('首次 reconcile 建立 shadow 基线，不上传本地既有数据', () async {
+    test('显式 enrollment 对齐 shadow 基线，不上传本地既有数据', () async {
       final t = await buildTracker();
-      await t.tracker.reconcile();
+      await t.tracker.reconcile(alignShadowOnly: true);
 
       expect(t.repo.enqueued, isEmpty);
       expect(t.repo.saveShadowCalls, 1);
@@ -183,7 +214,7 @@ void main() {
 
     test('内容变化后 reconcile 产生 upsert 事件并推进 shadow', () async {
       final t = await buildTracker();
-      await t.tracker.reconcile();
+      await t.tracker.reconcile(alignShadowOnly: true);
       final baseline = await t.repo.loadShadow();
 
       t.controller.setThemePreference(ThemePreference.dark);
@@ -240,7 +271,7 @@ void main() {
           hidden: false,
         ),
       );
-      await t.tracker.reconcile();
+      await t.tracker.reconcile(alignShadowOnly: true);
       t.repo.enqueued.clear();
 
       await t.controller.deleteAccount('acct');
@@ -259,7 +290,7 @@ void main() {
 
     test('事件序列在同一设备上单调递增且不复用', () async {
       final t = await buildTracker();
-      await t.tracker.reconcile();
+      await t.tracker.reconcile(alignShadowOnly: true);
       t.controller.setThemePreference(ThemePreference.dark);
       await t.tracker.reconcile();
       t.controller.setHapticsEnabled(false);
@@ -276,7 +307,7 @@ void main() {
 
     test('凭证类数据不在白名单，不产生任何事件', () async {
       final t = await buildTracker();
-      await t.tracker.reconcile();
+      await t.tracker.reconcile(alignShadowOnly: true);
       t.controller
         ..setBackupPassphrase('hunter2')
         ..setWebdavAutoUpload(true);
@@ -289,7 +320,7 @@ void main() {
     test('防抖后自动 reconcile，多次标记只跑一次', () async {
       final t = await buildTracker(debounce: const Duration(milliseconds: 20));
       // 先建立基线（同步引擎在启动时做这件事），否则第一次比较只写 shadow。
-      await t.tracker.reconcile();
+      await t.tracker.reconcile(alignShadowOnly: true);
 
       t.tracker.markLocalMutation();
       t.controller.setThemePreference(ThemePreference.dark);
@@ -305,7 +336,7 @@ void main() {
 
     test('远端应用期间抑制 outbox 生成', () async {
       final t = await buildTracker();
-      await t.tracker.reconcile();
+      await t.tracker.reconcile(alignShadowOnly: true);
 
       t.tracker.markRemoteApply();
       expect(t.tracker.remoteApplyActive, isTrue);
@@ -339,7 +370,7 @@ void main() {
 
     test('markRemoteApply/clearRemoteApply 必须成对，嵌套计数不提前放行', () async {
       final t = await buildTracker();
-      await t.tracker.reconcile();
+      await t.tracker.reconcile(alignShadowOnly: true);
 
       t.tracker.markRemoteApply();
       t.tracker.markRemoteApply();
@@ -360,7 +391,7 @@ void main() {
   group('崩溃恢复', () {
     test('outbox 落库失败时 shadow 不推进，下次 reconcile 补发', () async {
       final t = await buildTracker();
-      await t.tracker.reconcile();
+      await t.tracker.reconcile(alignShadowOnly: true);
       final baseline = await t.repo.loadShadow();
 
       t.repo.failEnqueue = true;
@@ -389,7 +420,7 @@ void main() {
       );
 
       // 建立基线（同步引擎启用时做的事）。
-      await tracker.reconcile();
+      await tracker.reconcile(alignShadowOnly: true);
       expect(repo.enqueued, isEmpty);
 
       // 模拟「本地写成功，但进程在 reconcile 之前被杀」：只改业务数据，
@@ -414,7 +445,7 @@ void main() {
   group('复入与并发', () {
     test('reconcile 进行中再次调用不会重复入队', () async {
       final t = await buildTracker();
-      await t.tracker.reconcile();
+      await t.tracker.reconcile(alignShadowOnly: true);
       t.controller.setThemePreference(ThemePreference.dark);
 
       await Future.wait(<Future<void>>[
@@ -426,7 +457,7 @@ void main() {
 
     test('reconcile 进行中到达的本地变更不会被吞掉', () async {
       final t = await buildTracker();
-      await t.tracker.reconcile();
+      await t.tracker.reconcile(alignShadowOnly: true);
       t.controller.setThemePreference(ThemePreference.dark);
 
       final first = t.tracker.reconcile();
@@ -458,7 +489,7 @@ void main() {
       );
 
       // 建立基线：shadow 与当前投影一致，之后的差异才会真正触发入队路径。
-      await tracker.reconcile();
+      await tracker.reconcile(alignShadowOnly: true);
 
       // 变更 A（真实的本地变更，发生在第一轮开始之前）：第一轮理应把它当成
       // 一次合法的本地变更提交，这是预期行为，不受本次修复影响。
@@ -533,7 +564,7 @@ void main() {
         clock: clock,
       );
 
-      await tracker.reconcile();
+      await tracker.reconcile(alignShadowOnly: true);
       controller.setThemePreference(ThemePreference.dark);
 
       final gate = Completer<void>();

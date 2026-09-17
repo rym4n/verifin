@@ -2879,6 +2879,12 @@ class AppLocalizationsEn extends AppLocalizations {
   String get syncStatusError => 'Sync error';
 
   @override
+  String get syncStatusNever => 'Not synced successfully yet';
+
+  @override
+  String get syncStatusRunning => 'Syncing';
+
+  @override
   String syncConflictCount(int count) {
     String _temp0 = intl.Intl.pluralLogic(
       count,

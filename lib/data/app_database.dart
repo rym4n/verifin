@@ -14,7 +14,7 @@ class AppDatabase {
   final Database db;
 
   static const String defaultDatabaseName = 'verifin.db';
-  static const int schemaVersion = 17;
+  static const int schemaVersion = 21;
 
   /// 打开（或创建）数据库。测试通过 [factory]/[path] 注入 ffi 与内存路径；
   /// 真实平台留空则由 [resolveDatabaseFactory]/[resolveDatabasePath] 决定。
@@ -70,6 +70,10 @@ class AppDatabase {
         15: _migrateToV15,
         16: _migrateToV16,
         17: _migrateToV17,
+        18: _migrateToV18,
+        19: _migrateToV19,
+        20: _migrateToV20,
+        21: _migrateToV21,
       };
 
   /// 只读暴露迁移注册表，供迁移矩阵测试把库推进到任意中间版本。生产代码勿用。
@@ -342,6 +346,62 @@ class AppDatabase {
     }
   }
 
+  /// v17 → v18：outbox 持久化完整事件 JSON，使进程重启后仍可上传。
+  ///
+  /// 旧行无法从 hash 反推事件，因此保留 NULL；上传层必须报错并保留
+  /// outbox，不得仅上传 manifest/commit 后标记成功。
+  static Future<void> _migrateToV18(Database db) async {
+    if (!await _columnsExist(db, 'sync_outbox', const <String>['event_json'])) {
+      await db.execute('ALTER TABLE sync_outbox ADD COLUMN event_json TEXT');
+    }
+  }
+
+  static Future<void> _migrateToV19(Database db) async {
+    if (!await _columnsExist(db, 'sync_pending', const <String>['reason'])) {
+      await db.execute(
+        "ALTER TABLE sync_pending ADD COLUMN reason TEXT NOT NULL DEFAULT 'unknown'",
+      );
+    }
+    if (!await _columnsExist(db, 'sync_pending', const ['plan_json'])) {
+      await db.execute('ALTER TABLE sync_pending ADD COLUMN plan_json TEXT');
+    }
+    await db.execute(_syncEntityHeadsTable);
+    // Recover heads only from operations that actually committed. Unresolved
+    // conflict versions are audit rows and must never become live heads.
+    await db.execute('''
+      INSERT OR IGNORE INTO sync_entity_heads(scope, type, id, operation_id)
+      SELECT v.scope, v.type, v.id, v.operation_id
+      FROM sync_entity_versions v JOIN sync_applied_ops a ON a.operation_id = v.operation_id
+      WHERE v.operation_id = (
+        SELECT v2.operation_id FROM sync_entity_versions v2
+        JOIN sync_applied_ops a2 ON a2.operation_id = v2.operation_id
+        WHERE v2.scope = v.scope AND v2.type = v.type AND v2.id = v.id
+        ORDER BY a2.applied_at DESC, v2.rowid DESC LIMIT 1
+      )
+    ''');
+  }
+
+  static Future<void> _migrateToV20(Database db) async {
+    if (!await _columnsExist(db, 'sync_apply_journal', const [
+      'expected_hash',
+    ])) {
+      await db.execute(
+        'ALTER TABLE sync_apply_journal ADD COLUMN expected_hash TEXT',
+      );
+    }
+  }
+
+  static Future<void> _migrateToV21(Database db) async {
+    if (!await _columnsExist(db, 'sync_pending', const ['choices_json'])) {
+      await db.execute(
+        "ALTER TABLE sync_pending ADD COLUMN choices_json TEXT NOT NULL DEFAULT '{}'",
+      );
+      await db.execute(
+        "UPDATE sync_pending SET choices_json = plan_json, plan_json = NULL WHERE reason != 'prepared' AND plan_json IS NOT NULL",
+      );
+    }
+  }
+
   static Future<bool> _tableExists(Database db, String name) async {
     final rows = await db.rawQuery(
       "SELECT name FROM sqlite_master WHERE type='table' AND name = ?",
@@ -514,7 +574,7 @@ class AppDatabase {
     _syncShadowTable,
     _syncEntityVersionsTable,
     _syncEntityVersionsEntityIndex,
-    _syncOutboxTable,
+    _syncOutboxTableV17,
     _syncOutboxUploadedIndex,
     _syncAppliedOpsTable,
     _syncPendingTable,
@@ -562,7 +622,7 @@ class AppDatabase {
       'CREATE INDEX IF NOT EXISTS idx_sync_entity_versions_entity '
       'ON sync_entity_versions (scope, type, id)';
 
-  static const String _syncOutboxTable = '''
+  static const String _syncOutboxTableV17 = '''
     CREATE TABLE IF NOT EXISTS sync_outbox (
       batch_id TEXT NOT NULL,
       operation_id TEXT NOT NULL,
@@ -573,6 +633,35 @@ class AppDatabase {
       PRIMARY KEY (batch_id, operation_id)
     )
     ''';
+
+  static const String _syncOutboxTableCurrent = '''
+    CREATE TABLE IF NOT EXISTS sync_outbox (
+      batch_id TEXT NOT NULL,
+      operation_id TEXT NOT NULL,
+      relative_path TEXT NOT NULL,
+      payload_hash TEXT NOT NULL,
+      retry_count INTEGER NOT NULL DEFAULT 0,
+      uploaded INTEGER NOT NULL DEFAULT 0,
+      event_json TEXT,
+      PRIMARY KEY (batch_id, operation_id)
+    )
+    ''';
+
+  static const List<String> _schemaCurrentSync = <String>[
+    _syncDeviceTable,
+    _syncShadowTable,
+    _syncEntityVersionsTable,
+    _syncEntityVersionsEntityIndex,
+    _syncOutboxTableCurrent,
+    _syncOutboxUploadedIndex,
+    _syncAppliedOpsTable,
+    _syncPendingTableCurrent,
+    _syncEntityHeadsTable,
+    _syncScanStateTable,
+    _syncApplyJournalTableCurrent,
+    _syncApplyJournalPendingIndex,
+    _syncConflictsTable,
+  ];
 
   /// 上传进度按批次标记，故批次列为高频过滤条件。
   static const String _syncOutboxUploadedIndex =
@@ -599,6 +688,25 @@ class AppDatabase {
     )
     ''';
 
+  static const String _syncPendingTableCurrent = '''
+    CREATE TABLE IF NOT EXISTS sync_pending (
+      batch_id TEXT PRIMARY KEY,
+      events_json TEXT NOT NULL,
+      received_at INTEGER NOT NULL,
+      reason TEXT NOT NULL DEFAULT 'unknown',
+      plan_json TEXT,
+      choices_json TEXT NOT NULL DEFAULT '{}'
+    )
+  ''';
+
+  static const String _syncEntityHeadsTable = '''
+    CREATE TABLE IF NOT EXISTS sync_entity_heads (
+      scope TEXT NOT NULL, type TEXT NOT NULL, id TEXT NOT NULL,
+      operation_id TEXT NOT NULL,
+      PRIMARY KEY (scope, type, id)
+    )
+  ''';
+
   static const String _syncScanStateTable = '''
     CREATE TABLE IF NOT EXISTS sync_scan_state (
       key TEXT PRIMARY KEY DEFAULT 'singleton',
@@ -620,6 +728,18 @@ class AppDatabase {
       applied INTEGER NOT NULL DEFAULT 0
     )
     ''';
+
+  static const String _syncApplyJournalTableCurrent = '''
+    CREATE TABLE IF NOT EXISTS sync_apply_journal (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      batch_id TEXT NOT NULL,
+      kv_key TEXT NOT NULL,
+      kv_value TEXT NOT NULL,
+      target_hash TEXT NOT NULL,
+      applied INTEGER NOT NULL DEFAULT 0,
+      expected_hash TEXT
+    )
+  ''';
 
   /// 重放未完成 journal 时按批次取行，故批次列为过滤条件。
   static const String _syncApplyJournalPendingIndex =
@@ -746,6 +866,6 @@ class AppDatabase {
     _recurringRulesTableCurrent,
     _exchangeRatesTable,
     _exchangeRatesLookupIndex,
-    ..._schemaV17Sync,
+    ..._schemaCurrentSync,
   ];
 }

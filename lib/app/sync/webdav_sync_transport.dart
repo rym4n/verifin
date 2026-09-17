@@ -4,6 +4,7 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart';
+import 'package:xml/xml.dart';
 
 import '../backup/webdav_config.dart';
 
@@ -101,7 +102,7 @@ Future<HttpClientRequest> _open(
 ) async {
   final request = await client.openUrl(method, uri);
   request.headers.set(HttpHeaders.authorizationHeader, _authHeader(config));
-  request.followRedirects = true;
+  request.followRedirects = false;
   return request;
 }
 
@@ -129,13 +130,82 @@ Uri _collectionUri(WebdavConfig config) {
   return uri;
 }
 
+String _rootedSyncPath(String relativePath) {
+  final segments = _logicalPathSegments(relativePath);
+  if (segments.first == 'verifin-sync') {
+    if (segments.length == 1 || segments[1] == 'v1') {
+      return segments.join('/');
+    }
+    throw const WebdavException('Sync path is outside the v1 root');
+  }
+  return <String>['verifin-sync', 'v1', ...segments].join('/');
+}
+
 /// Join base collection URL with relative sync path, encoding each segment.
 Uri _syncFileUri(WebdavConfig config, String relativePath) {
   final base = _collectionUri(config);
-  // Split path, encode each segment individually, then join
-  final segments = relativePath.split('/');
+  final segments = _rootedSyncPath(relativePath).split('/');
   final encodedPath = segments.map((s) => Uri.encodeComponent(s)).join('/');
-  return base.resolve(encodedPath);
+  final uri = base.resolve(encodedPath);
+  _validateSyncUri(base, uri, segments);
+  return uri;
+}
+
+List<String> _logicalPathSegments(String value) {
+  if (value.isEmpty) {
+    throw const WebdavException('Sync path is empty');
+  }
+  return value.split('/').map(_validatePathSegment).toList(growable: false);
+}
+
+String _validatePathSegment(String raw) {
+  if (raw.isEmpty || raw == '.' || raw == '..' || raw.contains('\\')) {
+    throw const WebdavException('Unsafe sync path segment');
+  }
+  final decoded = _decodePathSegment(raw);
+  if (decoded.isEmpty ||
+      decoded == '.' ||
+      decoded == '..' ||
+      decoded.contains('/') ||
+      decoded.contains('\\') ||
+      RegExp(r'[\x00-\x1F\x7F]').hasMatch(decoded)) {
+    throw const WebdavException('Unsafe sync path segment');
+  }
+  return decoded;
+}
+
+String _decodePathSegment(String raw) {
+  try {
+    return Uri.decodeComponent(raw);
+  } on FormatException {
+    throw const WebdavException('Malformed sync path segment');
+  }
+}
+
+void _validateSyncUri(Uri base, Uri uri, List<String> syncSegments) {
+  if (uri.scheme != base.scheme ||
+      uri.host != base.host ||
+      uri.port != base.port) {
+    throw const WebdavException('Sync URI escapes configured collection');
+  }
+  final collectionSegments = base.pathSegments
+      .where((segment) => segment.isNotEmpty)
+      .toList(growable: false);
+  final expected = <String>[...collectionSegments, ...syncSegments];
+  if (uri.pathSegments.length != expected.length ||
+      !_sameSegments(uri.pathSegments, expected) ||
+      syncSegments.first != 'verifin-sync' ||
+      (syncSegments.length > 1 && syncSegments[1] != 'v1')) {
+    throw const WebdavException('Sync URI escapes configured collection');
+  }
+}
+
+bool _sameSegments(List<String> left, List<String> right) {
+  if (left.length != right.length) return false;
+  for (var index = 0; index < left.length; index++) {
+    if (left[index] != right[index]) return false;
+  }
+  return true;
 }
 
 /// Parse sync file kind from extension.
@@ -148,16 +218,17 @@ WebdavSyncFileKind? _parseSyncFileKind(String name) {
 }
 
 /// Extract deviceId and sequence from event file path.
-/// Format: verifin-sync/v1/events/{deviceId}/{sequence}.vfsync
+/// Format: verifin-sync/v1/events/{deviceId}/{20-digit-sequence}-{operationId}.vfsync
 (String?, int?) _parseEventPath(String relativePath) {
   final parts = relativePath.split('/');
-  if (parts.length >= 5 &&
+  if (parts.length == 5 &&
       parts[0] == 'verifin-sync' &&
       parts[1] == 'v1' &&
-      parts[2] == 'events') {
+      parts[2] == 'events' &&
+      parts[3].isNotEmpty) {
     final deviceId = parts[3];
     final filename = parts[4];
-    final match = RegExp(r'^(\d+)\.vfsync$').firstMatch(filename);
+    final match = RegExp(r'^(\d{20})-([^.]+)\.vfsync$').firstMatch(filename);
     if (match != null) {
       final sequence = int.tryParse(match.group(1)!);
       return (deviceId, sequence);
@@ -166,30 +237,134 @@ WebdavSyncFileKind? _parseSyncFileKind(String name) {
   return (null, null);
 }
 
+String? _normalizeSyncPath(String href, WebdavConfig config) {
+  final reference = Uri.tryParse(href);
+  if (reference == null || reference.hasQuery || reference.hasFragment) {
+    return null;
+  }
+  final collectionUri = _collectionUri(config);
+  if (reference.hasScheme &&
+      (reference.scheme != collectionUri.scheme ||
+          reference.host != collectionUri.host ||
+          reference.port != collectionUri.port)) {
+    return null;
+  }
+  if (!reference.hasScheme && reference.hasAuthority) {
+    return null;
+  }
+
+  final resolved = collectionUri.resolveUri(reference);
+  if (resolved.scheme != collectionUri.scheme ||
+      resolved.host != collectionUri.host ||
+      resolved.port != collectionUri.port) {
+    return null;
+  }
+
+  final collectionSegments = collectionUri.pathSegments
+      .where((segment) => segment.isNotEmpty)
+      .toList(growable: false);
+  final requiredPrefix = <String>[...collectionSegments, 'verifin-sync', 'v1'];
+  final resolvedSegments = <String>[];
+  for (final rawSegment in resolved.path.split('/')) {
+    if (rawSegment.isEmpty) continue;
+    resolvedSegments.add(_validatePathSegment(rawSegment));
+  }
+  if (resolvedSegments.length < requiredPrefix.length ||
+      !_sameSegments(
+        resolvedSegments.sublist(0, requiredPrefix.length),
+        requiredPrefix,
+      )) {
+    return null;
+  }
+  return resolvedSegments.sublist(collectionSegments.length).join('/');
+}
+
+class _PropfindEntry {
+  const _PropfindEntry({
+    required this.href,
+    required this.isCollection,
+    required this.sizeBytes,
+  });
+
+  final String href;
+  final bool isCollection;
+  final int sizeBytes;
+}
+
+List<_PropfindEntry> _parsePropfindEntries(String xml) {
+  try {
+    final document = XmlDocument.parse(xml);
+    if (document.rootElement.name.local != 'multistatus') {
+      throw const WebdavException('Malformed PROPFIND response');
+    }
+    final responseElements = document.rootElement.children
+        .whereType<XmlElement>()
+        .where((element) => element.name.local == 'response');
+    return responseElements
+        .map((response) {
+          final hrefs = response.children
+              .whereType<XmlElement>()
+              .where((element) => element.name.local == 'href')
+              .toList(growable: false);
+          final resourceTypes = response.descendants
+              .whereType<XmlElement>()
+              .where((element) => element.name.local == 'resourcetype')
+              .toList(growable: false);
+          if (hrefs.length != 1 ||
+              hrefs.single.innerText.trim().isEmpty ||
+              resourceTypes.length != 1) {
+            throw const WebdavException('Malformed PROPFIND response entry');
+          }
+          final sizeElements = response.descendants
+              .whereType<XmlElement>()
+              .where((element) => element.name.local == 'getcontentlength')
+              .toList(growable: false);
+          final sizeBytes = sizeElements.isEmpty
+              ? 0
+              : int.tryParse(sizeElements.first.innerText.trim()) ?? 0;
+          final isCollection = resourceTypes.single.descendants
+              .whereType<XmlElement>()
+              .any((element) => element.name.local == 'collection');
+          return _PropfindEntry(
+            href: hrefs.single.innerText.trim(),
+            isCollection: isCollection,
+            sizeBytes: sizeBytes,
+          );
+        })
+        .toList(growable: false);
+  } on WebdavException {
+    rethrow;
+  } on XmlException {
+    throw const WebdavException('Malformed PROPFIND response');
+  }
+}
+
 /// Parse PROPFIND response for sync files (without extension filter).
-List<WebdavSyncFile> _parseSyncPropfind(String xml, String basePath) {
+List<WebdavSyncFile> _parseSyncPropfind(
+  String xml,
+  String basePath,
+  WebdavConfig config,
+) {
   final files = <WebdavSyncFile>[];
-  final allFiles = parsePropfindResponse(xml);
+  final entries = _parsePropfindEntries(xml);
 
-  for (final file in allFiles) {
-    final kind = _parseSyncFileKind(file.name);
+  for (final entry in entries) {
+    final relativePath = _normalizeSyncPath(entry.href, config);
+    if (relativePath == null) {
+      throw const WebdavException('PROPFIND href is outside sync root');
+    }
+    _validatePropfindDepth(relativePath, basePath);
+
+    final kind = _parseSyncFileKind(relativePath);
     if (kind == null) continue;
-
-    // Build relative path from href
-    var relativePath = Uri.decodeFull(file.href);
-    if (relativePath.startsWith('/')) {
-      relativePath = relativePath.substring(1);
-    }
-
-    // Extract base path from href to get relative portion
-    final baseNormalized = basePath.endsWith('/') ? basePath : '$basePath/';
-    if (relativePath.startsWith(baseNormalized)) {
-      relativePath = relativePath.substring(baseNormalized.length);
-    }
 
     final (deviceId, sequence) = kind == WebdavSyncFileKind.event
         ? _parseEventPath(relativePath)
         : (null, null);
+    if (kind == WebdavSyncFileKind.event &&
+        (deviceId == null || sequence == null)) {
+      throw const WebdavException('Malformed sync event path');
+    }
 
     files.add(
       WebdavSyncFile(
@@ -197,13 +372,54 @@ List<WebdavSyncFile> _parseSyncPropfind(String xml, String basePath) {
         kind: kind,
         deviceId: deviceId,
         sequence: sequence,
-        sizeBytes: file.sizeBytes,
-        modifiedAt: file.modifiedAt ?? DateTime.now(),
+        sizeBytes: entry.sizeBytes,
+        modifiedAt: DateTime.now(),
       ),
     );
   }
 
   return files;
+}
+
+void _abortResponse(HttpClient client) => client.close(force: true);
+
+Future<Uint8List> _readResponseWithLimit(
+  HttpClient client,
+  HttpClientResponse response, {
+  required int maxBytes,
+  required String errorMessage,
+}) async {
+  if (response.contentLength > maxBytes) {
+    _abortResponse(client);
+    throw WebdavException(errorMessage);
+  }
+
+  final builder = BytesBuilder(copy: false);
+  var totalBytes = 0;
+  final iterator = StreamIterator<List<int>>(response);
+  try {
+    while (await iterator.moveNext()) {
+      final chunk = iterator.current;
+      totalBytes += chunk.length;
+      if (totalBytes > maxBytes) {
+        _abortResponse(client);
+        throw WebdavException(errorMessage);
+      }
+      builder.add(chunk);
+    }
+    return builder.toBytes();
+  } finally {
+    unawaited(iterator.cancel());
+  }
+}
+
+void _validatePropfindDepth(String relativePath, String basePath) {
+  if (relativePath == basePath) return;
+  final prefix = '$basePath/';
+  if (!relativePath.startsWith(prefix) ||
+      relativePath.substring(prefix.length).contains('/')) {
+    throw const WebdavException('PROPFIND href is outside requested path');
+  }
 }
 
 /// Real WebDAV sync transport implementation.
@@ -212,8 +428,6 @@ class WebdavSyncTransportImpl implements WebdavSyncTransport {
   Future<void> ensureSyncTree(WebdavConfig config) async {
     final client = _newClient();
     try {
-      final base = _collectionUri(config);
-
       // Create directories level by level
       final paths = [
         'verifin-sync',
@@ -224,7 +438,7 @@ class WebdavSyncTransportImpl implements WebdavSyncTransport {
       ];
 
       for (final path in paths) {
-        await _mkcolIfNeeded(client, base.resolve(path), config);
+        await _mkcolIfNeeded(client, _syncFileUri(config, path), config);
       }
     } catch (error) {
       _fail(error);
@@ -238,13 +452,12 @@ class WebdavSyncTransportImpl implements WebdavSyncTransport {
     Uri uri,
     WebdavConfig config,
   ) async {
-    try {
-      final request = await _open(client, 'MKCOL', uri, config);
-      final response = await request.close().timeout(_responseTimeout);
-      await response.drain<void>();
-      // 201: created, 405/301: already exists (ignore)
-    } catch (_) {
-      // Directory creation failure is non-fatal
+    final request = await _open(client, 'MKCOL', uri, config);
+    final response = await request.close().timeout(_responseTimeout);
+    await response.drain<void>();
+    if (response.statusCode != HttpStatus.created &&
+        response.statusCode != HttpStatus.methodNotAllowed) {
+      throw WebdavException('MKCOL failed: ${response.statusCode}');
     }
   }
 
@@ -259,6 +472,8 @@ class WebdavSyncTransportImpl implements WebdavSyncTransport {
     final client = _newClient();
     try {
       final uri = _syncFileUri(config, relativePath);
+
+      await _ensureParentDirectories(client, config, relativePath);
 
       // Check if file exists
       final existing = await _getFileHash(client, uri, config);
@@ -285,7 +500,9 @@ class WebdavSyncTransportImpl implements WebdavSyncTransport {
       final response = await request.close();
       await response.drain<void>();
 
-      if (response.statusCode >= 400) {
+      if (response.statusCode != HttpStatus.ok &&
+          response.statusCode != HttpStatus.created &&
+          response.statusCode != HttpStatus.noContent) {
         throw WebdavException('Upload failed: ${response.statusCode}');
       }
     } catch (error) {
@@ -300,28 +517,40 @@ class WebdavSyncTransportImpl implements WebdavSyncTransport {
     Uri uri,
     WebdavConfig config,
   ) async {
-    try {
-      final request = await _open(client, 'GET', uri, config);
-      final response = await request.close().timeout(_responseTimeout);
+    final request = await _open(client, 'GET', uri, config);
+    final response = await request.close().timeout(_responseTimeout);
 
-      if (response.statusCode == 404) {
-        return null;
-      }
-
-      if (response.statusCode >= 400) {
-        throw WebdavException('HEAD failed: ${response.statusCode}');
-      }
-
-      final builder = BytesBuilder(copy: false);
-      await for (final chunk in response) {
-        builder.add(chunk);
-      }
-
-      final bytes = builder.toBytes();
-      final hash = sha256.convert(bytes);
-      return hash.toString();
-    } catch (_) {
+    if (response.statusCode == 404) {
+      await response.drain<void>();
       return null;
+    }
+
+    if (response.statusCode < HttpStatus.ok || response.statusCode >= 300) {
+      _abortResponse(client);
+      throw WebdavException('GET failed: ${response.statusCode}');
+    }
+    final bytes = await _readResponseWithLimit(
+      client,
+      response,
+      maxBytes: syncMaxDownloadBytes,
+      errorMessage: 'Existing file exceeds sync size limit',
+    );
+    final hash = sha256.convert(bytes);
+    return hash.toString();
+  }
+
+  Future<void> _ensureParentDirectories(
+    HttpClient client,
+    WebdavConfig config,
+    String relativePath,
+  ) async {
+    final segments = _rootedSyncPath(relativePath).split('/');
+    if (segments.length < 2) {
+      throw const WebdavException('Sync file path has no parent directory');
+    }
+    for (var count = 1; count < segments.length; count++) {
+      final directoryPath = segments.sublist(0, count).join('/');
+      await _mkcolIfNeeded(client, _syncFileUri(config, directoryPath), config);
     }
   }
 
@@ -329,24 +558,23 @@ class WebdavSyncTransportImpl implements WebdavSyncTransport {
   Future<List<WebdavSyncFile>> listSyncFiles(WebdavConfig config) async {
     final client = _newClient();
     try {
-      final base = _collectionUri(config);
       final files = <WebdavSyncFile>[];
 
       // List events/*/
-      files.addAll(await _listEventsRecursive(client, base, config));
+      files.addAll(await _listEventsRecursive(client, config));
 
       // List blobs/
       files.addAll(
         await _listDirectory(
           client,
-          base.resolve('verifin-sync/v1/blobs'),
+          _syncFileUri(config, 'verifin-sync/v1/blobs'),
           'verifin-sync/v1/blobs',
           config,
         ),
       );
 
       // List batches/*/
-      files.addAll(await _listBatchesRecursive(client, base, config));
+      files.addAll(await _listBatchesRecursive(client, config));
 
       return files;
     } catch (error) {
@@ -358,25 +586,24 @@ class WebdavSyncTransportImpl implements WebdavSyncTransport {
 
   Future<List<WebdavSyncFile>> _listEventsRecursive(
     HttpClient client,
-    Uri base,
     WebdavConfig config,
   ) async {
     final files = <WebdavSyncFile>[];
-    final eventsUri = base.resolve('verifin-sync/v1/events');
+    final eventsPath = 'verifin-sync/v1/events';
+    final eventsUri = _syncFileUri(config, eventsPath);
 
     // List device directories
-    final deviceDirs = await _listDirectories(client, eventsUri, config);
+    final deviceDirs = await _listDirectories(
+      client,
+      eventsUri,
+      eventsPath,
+      config,
+    );
 
     for (final deviceDir in deviceDirs) {
-      final deviceUri = base.resolve('verifin-sync/v1/events/$deviceDir');
-      files.addAll(
-        await _listDirectory(
-          client,
-          deviceUri,
-          'verifin-sync/v1/events/$deviceDir',
-          config,
-        ),
-      );
+      final devicePath = '$eventsPath/$deviceDir';
+      final deviceUri = _syncFileUri(config, devicePath);
+      files.addAll(await _listDirectory(client, deviceUri, devicePath, config));
     }
 
     return files;
@@ -384,25 +611,24 @@ class WebdavSyncTransportImpl implements WebdavSyncTransport {
 
   Future<List<WebdavSyncFile>> _listBatchesRecursive(
     HttpClient client,
-    Uri base,
     WebdavConfig config,
   ) async {
     final files = <WebdavSyncFile>[];
-    final batchesUri = base.resolve('verifin-sync/v1/batches');
+    final batchesPath = 'verifin-sync/v1/batches';
+    final batchesUri = _syncFileUri(config, batchesPath);
 
     // List device directories
-    final deviceDirs = await _listDirectories(client, batchesUri, config);
+    final deviceDirs = await _listDirectories(
+      client,
+      batchesUri,
+      batchesPath,
+      config,
+    );
 
     for (final deviceDir in deviceDirs) {
-      final deviceUri = base.resolve('verifin-sync/v1/batches/$deviceDir');
-      files.addAll(
-        await _listDirectory(
-          client,
-          deviceUri,
-          'verifin-sync/v1/batches/$deviceDir',
-          config,
-        ),
-      );
+      final devicePath = '$batchesPath/$deviceDir';
+      final deviceUri = _syncFileUri(config, devicePath);
+      files.addAll(await _listDirectory(client, deviceUri, devicePath, config));
     }
 
     return files;
@@ -411,74 +637,44 @@ class WebdavSyncTransportImpl implements WebdavSyncTransport {
   Future<List<String>> _listDirectories(
     HttpClient client,
     Uri uri,
+    String basePath,
     WebdavConfig config,
   ) async {
-    try {
-      final request = await _open(client, 'PROPFIND', uri, config);
-      request.headers.set('Depth', '1');
-      request.headers.contentType = ContentType(
-        'application',
-        'xml',
-        charset: 'utf-8',
-      );
-      request.write(_propfindBody);
+    final request = await _open(client, 'PROPFIND', uri, config);
+    request.headers.set('Depth', '1');
+    request.headers.contentType = ContentType(
+      'application',
+      'xml',
+      charset: 'utf-8',
+    );
+    request.write(_propfindBody);
 
-      final response = await request.close().timeout(_responseTimeout);
-      final body = await response
-          .transform(utf8.decoder)
-          .join()
-          .timeout(_responseTimeout);
+    final response = await request.close().timeout(_responseTimeout);
+    final body = await response
+        .transform(utf8.decoder)
+        .join()
+        .timeout(_responseTimeout);
 
-      if (response.statusCode == 404) {
-        return [];
-      }
-
-      if (response.statusCode >= 400) {
-        throw WebdavException('PROPFIND failed: ${response.statusCode}');
-      }
-
-      // Parse for collections only
-      final dirs = <String>[];
-      final responses = RegExp(
-        r'<[^>]*?response[^>]*?>(.*?)</[^>]*?response[^>]*?>',
-        dotAll: true,
-        caseSensitive: false,
-      ).allMatches(body);
-
-      for (final response in responses) {
-        final inner = response.group(1) ?? '';
-        final href = _stripTag(inner, 'href');
-        if (href.isEmpty) continue;
-
-        final isCollection = RegExp(
-          r'<[^>]*?collection[^>]*?/?>',
-          caseSensitive: false,
-        ).hasMatch(inner);
-
-        if (isCollection) {
-          final decodedHref = Uri.decodeFull(href);
-          var name = decodedHref;
-          if (name.endsWith('/')) {
-            name = name.substring(0, name.length - 1);
-          }
-          final slash = name.lastIndexOf('/');
-          if (slash >= 0) {
-            name = name.substring(slash + 1);
-          }
-          if (name.isNotEmpty &&
-              !name.contains('v1') &&
-              !name.contains('events') &&
-              !name.contains('blobs') &&
-              !name.contains('batches')) {
-            dirs.add(name);
-          }
-        }
-      }
-
-      return dirs;
-    } catch (_) {
+    if (response.statusCode == HttpStatus.notFound) {
       return [];
     }
+    if (response.statusCode != HttpStatus.multiStatus) {
+      throw WebdavException('PROPFIND failed: ${response.statusCode}');
+    }
+
+    final dirs = <String>[];
+    for (final entry in _parsePropfindEntries(body)) {
+      final normalized = _normalizeSyncPath(entry.href, config);
+      if (normalized == null) {
+        throw const WebdavException('PROPFIND href is outside sync root');
+      }
+      _validatePropfindDepth(normalized, basePath);
+      if (normalized == basePath) continue;
+      if (entry.isCollection) {
+        dirs.add(normalized.substring(basePath.length + 1));
+      }
+    }
+    return dirs;
   }
 
   Future<List<WebdavSyncFile>> _listDirectory(
@@ -487,34 +683,28 @@ class WebdavSyncTransportImpl implements WebdavSyncTransport {
     String basePath,
     WebdavConfig config,
   ) async {
-    try {
-      final request = await _open(client, 'PROPFIND', uri, config);
-      request.headers.set('Depth', '1');
-      request.headers.contentType = ContentType(
-        'application',
-        'xml',
-        charset: 'utf-8',
-      );
-      request.write(_propfindBody);
+    final request = await _open(client, 'PROPFIND', uri, config);
+    request.headers.set('Depth', '1');
+    request.headers.contentType = ContentType(
+      'application',
+      'xml',
+      charset: 'utf-8',
+    );
+    request.write(_propfindBody);
 
-      final response = await request.close().timeout(_responseTimeout);
-      final body = await response
-          .transform(utf8.decoder)
-          .join()
-          .timeout(_responseTimeout);
+    final response = await request.close().timeout(_responseTimeout);
+    final body = await response
+        .transform(utf8.decoder)
+        .join()
+        .timeout(_responseTimeout);
 
-      if (response.statusCode == 404) {
-        return [];
-      }
-
-      if (response.statusCode >= 400) {
-        throw WebdavException('PROPFIND failed: ${response.statusCode}');
-      }
-
-      return _parseSyncPropfind(body, basePath);
-    } catch (_) {
+    if (response.statusCode == HttpStatus.notFound) {
       return [];
     }
+    if (response.statusCode != HttpStatus.multiStatus) {
+      throw WebdavException('PROPFIND failed: ${response.statusCode}');
+    }
+    return _parseSyncPropfind(body, basePath, config);
   }
 
   @override
@@ -529,38 +719,20 @@ class WebdavSyncTransportImpl implements WebdavSyncTransport {
       final request = await _open(client, 'GET', uri, config);
       final response = await request.close().timeout(_responseTimeout);
 
-      if (response.statusCode >= 400) {
+      if (response.statusCode < HttpStatus.ok || response.statusCode >= 300) {
+        _abortResponse(client);
         throw WebdavException('Download failed: ${response.statusCode}');
       }
-
-      final builder = BytesBuilder(copy: false);
-      var totalBytes = 0;
-
-      await for (final chunk in response) {
-        totalBytes += chunk.length;
-        if (totalBytes > maxBytes) {
-          throw WebdavException(
-            'File exceeds maxBytes limit: $totalBytes > $maxBytes',
-          );
-        }
-        builder.add(chunk);
-      }
-
-      final bytes = builder.toBytes();
-      return bytes;
+      return await _readResponseWithLimit(
+        client,
+        response,
+        maxBytes: maxBytes,
+        errorMessage: 'File exceeds maxBytes limit',
+      );
     } catch (error) {
       _fail(error);
     } finally {
       client.close(force: true);
     }
   }
-}
-
-String _stripTag(String inner, String localName) {
-  final match = RegExp(
-    '<[^>]*?$localName[^>]*?>(.*?)</[^>]*?$localName[^>]*?>',
-    dotAll: true,
-    caseSensitive: false,
-  ).firstMatch(inner);
-  return match?.group(1)?.trim() ?? '';
 }

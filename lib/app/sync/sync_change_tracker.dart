@@ -22,6 +22,14 @@ abstract interface class SyncProjectionSource {
   Future<void> waitForPendingWrites();
 }
 
+abstract interface class SyncRemoteApplyTarget {
+  Future<void> applySyncRemoteBatch(RemoteApplyPlan plan);
+  Future<T> runSyncRemoteMerge<T>(
+    Future<T> Function() action, {
+    bool resolving = false,
+  });
+}
+
 /// 本地变更捕获：把「当前投影」与最后一次已知投影（`sync_shadow`）比较，
 /// 把差异写进 outbox。
 ///
@@ -55,7 +63,7 @@ class SyncChangeTracker {
   final SyncClock _clock;
   final Duration _debounce;
 
-  /// 远端同步引擎（Task 5）会读它来标注事件来源；这里保证它是可用且唯一的钟。
+  /// 与进程内引擎共享的持久因果时钟。
   SyncClock get clock => _clock;
 
   Timer? _debounceTimer;
@@ -74,7 +82,6 @@ class SyncChangeTracker {
   int _remoteApplyDepth = 0;
 
   /// 首次比较只建立基线、不入队。见 [_reconcileOnce] 的说明。
-  bool _baselinePending = true;
 
   /// 是否处于「远端批次应用」窗口内。窗口内 [reconcile] 直接返回，不产生 outbox。
   bool get remoteApplyActive => _remoteApplyDepth > 0;
@@ -147,7 +154,6 @@ class SyncChangeTracker {
     if (changedKeys.isEmpty && deletedKeys.isEmpty) {
       // 无差异也要落一次 shadow：首次启动需要建立基线，否则每次启动都要重跑一次
       // 全量比较；两边都空时这也是唯一的落库时机。
-      _baselinePending = false;
       await _repository.saveShadow(currentHashes);
       return;
     }
@@ -155,20 +161,6 @@ class SyncChangeTracker {
     if (alignShadowOnly) {
       // 远端批次应用期间的对齐：业务数据已被远端结果改写，差异**不是**本地变更。
       // 推进 shadow 让窗口关闭后不再把它当成本地新变更回传。
-      await _repository.saveShadow(currentHashes);
-      return;
-    }
-
-    if (_baselinePending) {
-      // 本进程的第一次比较：此刻的本地数据是**当前状态**而非「待上传的变更」。
-      // 整库上传既不是协议要求（首次启用由 `initializeFromRestoredData()` 生成基线
-      // 批次），远端非空时还会造成覆盖。故只建立基线。
-      //
-      // 判定用进程内标志位而不是「shadow 是否为空」：tracker 由同步引擎创建，
-      // 只在同步启用后才存在，因此进程内的第一次比较必然等于基线那次；而
-      // 「shadow 空」在正常后续运行中已不可能出现（每次都写全量），用标志位表述的是
-      // 同一件事且不依赖存储内容做控制流。
-      _baselinePending = false;
       await _repository.saveShadow(currentHashes);
       return;
     }
@@ -198,7 +190,7 @@ class SyncChangeTracker {
       manifest: SyncBatchManifest(
         batchId: batchId,
         operationIds: <String>[for (final event in events) event.operationId],
-        // 附件 blob 的上传清单由 Task 4/5 的传输层补齐；变更捕获只负责事件。
+        // 引擎在上传时从完整附件事件生成内容寻址的 blob 清单。
         blobHashes: const <String>[],
         manifestHash: _manifestHash(batchId, events),
       ),
@@ -206,6 +198,9 @@ class SyncChangeTracker {
 
     // 入队失败时不推进 shadow（下方 saveShadow 不会执行）：下次比较会重新发现
     // 同一批差异并重试。
+    // Reserve sequences durably before exposing an event. A crash may leave a
+    // gap, but can never reuse a published dot.
+    await _repository.saveDeviceState(_clock.getState());
     await _repository.enqueueBatch(batch);
     await _repository.saveShadow(currentHashes);
   }

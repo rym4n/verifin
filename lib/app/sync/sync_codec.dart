@@ -53,9 +53,13 @@ class SyncCodec {
   Future<Map<String, Object?>> encode(
     SyncEvent event,
     String protocolVersion,
+  ) => encodeValue(event.payload, protocolVersion);
+
+  Future<Map<String, Object?>> encodeValue(
+    Object? payload,
+    String protocolVersion,
   ) async {
-    final payload = event.payload;
-    final payloadHash = event.payloadHash;
+    final payloadHash = computeSyncPayloadHash(payload);
     final keyFingerprint = passphrase.isEmpty
         ? 'none'
         : _computeKeyFingerprint(passphrase);
@@ -86,6 +90,7 @@ class SyncCodec {
         'salt': base64Encode(salt),
         'nonce': base64Encode(box.nonce),
         'ciphertext': base64Encode(box.cipherText),
+        'mac': base64Encode(box.mac.bytes),
         'payloadHash': payloadHash,
       };
     }
@@ -94,14 +99,20 @@ class SyncCodec {
   /// Decode a JSON envelope to extract payload.
   /// If encrypted, decrypts with the passphrase; otherwise extracts plaintext payload.
   Future<Object?> decode(Map<String, Object?> envelope) async {
+    if (envelope['protocolVersion'] != syncProtocolVersion) {
+      throw const SyncCodecException('protocol_version');
+    }
     final keyFingerprint = envelope['keyFingerprint'] as String?;
     if (keyFingerprint == null) {
       throw const SyncCodecException('Missing keyFingerprint in envelope');
     }
 
     if (keyFingerprint == 'none') {
+      if (passphrase.isNotEmpty) {
+        throw const SyncCodecException('Passphrase plaintext forbidden');
+      }
       // Plaintext envelope.
-      return envelope['payload'];
+      return _verifyHash(envelope, envelope['payload']);
     } else {
       // Encrypted envelope.
       if (passphrase.isEmpty) {
@@ -121,10 +132,11 @@ class SyncCodec {
         final ciphertext = base64Decode(envelope['ciphertext'] as String);
 
         final key = await _deriveKey(passphrase, salt, _pbkdf2Iterations);
-        final box = SecretBox(ciphertext, nonce: nonce, mac: Mac.empty);
+        final mac = base64Decode(envelope['mac'] as String);
+        final box = SecretBox(ciphertext, nonce: nonce, mac: Mac(mac));
         final decrypted = await _aesGcm.decrypt(box, secretKey: key);
         final payloadJson = utf8.decode(decrypted);
-        return jsonDecode(payloadJson);
+        return _verifyHash(envelope, jsonDecode(payloadJson));
       } on SecretBoxAuthenticationError {
         throw const SyncCodecException(
           'Decryption failed: wrong passphrase or corrupted data',
@@ -133,6 +145,13 @@ class SyncCodec {
         throw SyncCodecException('Decryption error: $e');
       }
     }
+  }
+
+  Object? _verifyHash(Map<String, Object?> envelope, Object? payload) {
+    if (computeSyncPayloadHash(payload) != envelope['payloadHash']) {
+      throw const SyncCodecException('payload_hash_mismatch');
+    }
+    return payload;
   }
 
   /// Compute a fingerprint of the passphrase for key identification.

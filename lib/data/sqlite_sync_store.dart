@@ -4,6 +4,7 @@ import 'package:sqflite_common/sqlite_api.dart';
 
 import '../app/sync/sync_models.dart';
 import '../app/sync/sync_store.dart';
+import '../app/sync/sync_plan_codec.dart';
 
 /// [SyncRepository] 的 SQLite 实现，与业务表共享同一个 [_database] 连接与写队列。
 ///
@@ -12,6 +13,21 @@ import '../app/sync/sync_store.dart';
 /// 两个并发批次可能都基于同一份旧状态通过校验。排队后与既有 saveX 共用同一条
 /// 串行链，本地记账与远端应用不会互相插队。
 class SqliteSyncRepository implements SyncRepository {
+  static const _enrollmentId = '__sync_enrollment__';
+  @override
+  Future<String?> loadEnrollmentState() async {
+    final rows = await _database.query(
+      'sync_pending',
+      columns: ['reason'],
+      where: 'batch_id = ?',
+      whereArgs: [_enrollmentId],
+    );
+    return rows.firstOrNull?['reason'] as String?;
+  }
+
+  @override
+  Future<void> saveEnrollmentState(String state) =>
+      savePendingBatch(_enrollmentId, const [], state);
   SqliteSyncRepository({
     required Database database,
     required Future<void> Function(Future<void> Function()) enqueue,
@@ -88,6 +104,7 @@ class SqliteSyncRepository implements SyncRepository {
           relativePath: row['relative_path'] as String,
           payloadHash: row['payload_hash'] as String,
           retryCount: (row['retry_count'] as int?) ?? 0,
+          event: _decodeOutboxEvent(row['event_json'] as String?),
         ),
     ];
   }
@@ -98,11 +115,24 @@ class SqliteSyncRepository implements SyncRepository {
       await _database.transaction((txn) async {
         final statement = txn.batch();
         for (final event in batch.events) {
+          await _writeVersion(
+            txn,
+            SyncEntityVersion(
+              entity: event.entity,
+              version: event.version,
+              payloadHash: event.payloadHash,
+              payload: event.payload,
+              deleted: event.operation == SyncOperationKind.delete,
+              operationId: event.operationId,
+            ),
+            head: true,
+          );
           statement.insert('sync_outbox', <String, Object?>{
             'batch_id': batch.batchId,
             'operation_id': event.operationId,
             'relative_path': _relativePathFor(event),
             'payload_hash': event.payloadHash,
+            'event_json': jsonEncode(event.toJson()),
             'retry_count': 0,
             'uploaded': 0,
           }, conflictAlgorithm: ConflictAlgorithm.replace);
@@ -121,6 +151,17 @@ class SqliteSyncRepository implements SyncRepository {
         '$sequence-${event.operationId}.vfsync';
   }
 
+  static SyncEvent? _decodeOutboxEvent(String? encoded) {
+    if (encoded == null) {
+      return null;
+    }
+    final decoded = jsonDecode(encoded);
+    if (decoded is! Map) {
+      throw const FormatException('sync_outbox.event_json must be an object');
+    }
+    return SyncEvent.fromJson(decoded.cast<String, Object?>());
+  }
+
   @override
   Future<void> markBatchUploaded(String batchId) {
     return _enqueue(() async {
@@ -135,6 +176,247 @@ class SqliteSyncRepository implements SyncRepository {
 
   // ---- 远端批次应用 ----
 
+  @override
+  Future<Map<String, String>> loadAppliedOperationHashes(
+    List<String> operationIds,
+  ) => _loadAppliedHashes(_database, operationIds);
+
+  @override
+  Future<void> savePendingBatch(
+    String batchId,
+    List<SyncEvent> events,
+    String reason,
+  ) => _enqueue(() async {
+    final existing = await _database.query(
+      'sync_pending',
+      where: 'batch_id = ?',
+      whereArgs: [batchId],
+      limit: 1,
+    );
+    if (existing.firstOrNull?['reason'] == 'prepared') return;
+    await _database.insert('sync_pending', {
+      'batch_id': batchId,
+      'events_json': jsonEncode(events.map((e) => e.toJson()).toList()),
+      'reason': reason,
+      'plan_json': existing.firstOrNull?['plan_json'],
+      'choices_json': existing.firstOrNull?['choices_json'] ?? '{}',
+      'received_at': DateTime.now().millisecondsSinceEpoch,
+    }, conflictAlgorithm: ConflictAlgorithm.replace);
+  });
+
+  @override
+  Future<List<SyncPendingBatch>> loadPendingBatches() async {
+    final rows = await _database.query(
+      'sync_pending',
+      where: 'batch_id != ?',
+      whereArgs: [_enrollmentId],
+      orderBy: 'received_at ASC',
+    );
+    return [
+      for (final row in rows)
+        SyncPendingBatch(
+          batchId: row['batch_id'] as String,
+          events: [
+            for (final item
+                in (jsonDecode(row['events_json'] as String) as List))
+              SyncEvent.fromJson(Map<String, Object?>.from(item as Map)),
+          ],
+          reason: row['reason'] as String? ?? 'unknown',
+          choices: {
+            for (final entry in _decodeObject(
+              row['choices_json'] as String,
+            ).entries)
+              entry.key: SyncEvent.fromJson(
+                Map<String, Object?>.from(entry.value as Map),
+              ),
+          },
+        ),
+    ];
+  }
+
+  @override
+  Future<void> saveConflictChoice(
+    String batchId,
+    String conflictId,
+    SyncEvent? event,
+  ) => _enqueue(() async {
+    await _database.transaction((txn) async {
+      final rows = await txn.query(
+        'sync_pending',
+        where: 'batch_id = ?',
+        whereArgs: [batchId],
+      );
+      if (rows.isEmpty) {
+        throw StateError('pending_conflict_missing');
+      }
+      final choices = _decodeObject(rows.single['choices_json'] as String);
+      if (event == null) {
+        choices.remove(conflictId);
+      } else {
+        choices[conflictId] = event.toJson();
+      }
+      await txn.update(
+        'sync_pending',
+        {'choices_json': jsonEncode(choices)},
+        where: 'batch_id = ?',
+        whereArgs: [batchId],
+      );
+    });
+  });
+
+  @override
+  Future<Map<SyncEntityKey, SyncEntityVersion>> loadEntityHeads(
+    Set<SyncEntityKey> keys,
+  ) async {
+    final result = <SyncEntityKey, SyncEntityVersion>{};
+    for (final key in keys) {
+      final rows = await _database.rawQuery(
+        'SELECT v.* FROM sync_entity_versions v JOIN sync_entity_heads h ON v.operation_id = h.operation_id WHERE h.scope = ? AND h.type = ? AND h.id = ?',
+        [key.scope, key.type, key.id],
+      );
+      for (final row in rows) {
+        final version = SyncEntityVersion(
+          entity: key,
+          version: SyncVersion.fromJson(
+            _decodeObject(row['version_json'] as String),
+          ),
+          payloadHash: row['payload_hash'] as String,
+          payload: row['payload_envelope'] == null
+              ? null
+              : jsonDecode(row['payload_envelope'] as String),
+          deleted: (row['deleted'] as int) != 0,
+          operationId: row['operation_id'] as String,
+        );
+        final prior = result[key];
+        if (prior == null ||
+            version.version.logicalTime > prior.version.logicalTime) {
+          result[key] = version;
+        }
+      }
+    }
+    return result;
+  }
+
+  @override
+  Future<void> removePendingBatch(String id) => _enqueue(() async {
+    await _database.delete(
+      'sync_pending',
+      where: 'batch_id = ?',
+      whereArgs: [id],
+    );
+  });
+
+  static Future<void> _writeVersion(
+    Transaction txn,
+    SyncEntityVersion version, {
+    required bool head,
+  }) async {
+    await txn.insert('sync_entity_versions', {
+      'operation_id': version.operationId,
+      'scope': version.entity.scope,
+      'type': version.entity.type,
+      'id': version.entity.id,
+      'version_json': jsonEncode(version.version.toJson()),
+      'payload_hash': version.payloadHash,
+      'payload_envelope': version.payload == null
+          ? null
+          : jsonEncode(version.payload),
+      'deleted': version.deleted ? 1 : 0,
+    }, conflictAlgorithm: ConflictAlgorithm.ignore);
+    if (head) {
+      await txn.insert('sync_entity_heads', {
+        'scope': version.entity.scope,
+        'type': version.entity.type,
+        'id': version.entity.id,
+        'operation_id': version.operationId,
+      }, conflictAlgorithm: ConflictAlgorithm.replace);
+    }
+  }
+
+  @override
+  Future<void> finalizePreparedBatches() => _enqueue(() async {
+    await _database.transaction((txn) async {
+      final prepared = await txn.query(
+        'sync_pending',
+        where: "reason = 'prepared'",
+      );
+      for (final row in prepared) {
+        final outstanding = await txn.query(
+          'sync_apply_journal',
+          where: 'batch_id = ? AND applied = 0',
+          whereArgs: [row['batch_id']],
+          limit: 1,
+        );
+        if (outstanding.isNotEmpty) continue;
+        await _finalizePlan(txn, _decodeObject(row['plan_json'] as String));
+      }
+    });
+  });
+
+  static Future<void> _finalizePlan(
+    Transaction txn,
+    Map<String, Object?> plan,
+  ) async {
+    final id = plan['batchId'] as String;
+    final hashes = Map<String, Object?>.from(plan['operations'] as Map);
+    for (final item in hashes.entries) {
+      await txn.insert('sync_applied_ops', {
+        'operation_id': item.key,
+        'batch_id': id,
+        'payload_hash': item.value,
+        'applied_at': DateTime.now().millisecondsSinceEpoch,
+      }, conflictAlgorithm: ConflictAlgorithm.ignore);
+    }
+    final states = await txn.query('sync_device', limit: 1);
+    if (states.isNotEmpty) {
+      var known = SyncVersionVector.fromJson(
+        _decodeObject(states.single['known_vector'] as String),
+      );
+      for (final raw in plan['versions'] as List) {
+        final version = SyncVersion.fromJson(
+          Map<String, Object?>.from(raw as Map),
+        );
+        known = known
+            .merged(version.context)
+            .merged(
+              SyncVersionVector({version.dot.deviceId: version.dot.sequence}),
+            );
+      }
+      await txn.update('sync_device', {
+        'known_vector': jsonEncode(known.toJson()),
+      });
+    }
+    for (final raw in plan['resolutionEvents'] as List) {
+      final event = SyncEvent.fromJson(Map<String, Object?>.from(raw as Map));
+      await txn.insert('sync_outbox', {
+        'batch_id': event.batchId,
+        'operation_id': event.operationId,
+        'relative_path': _relativePathFor(event),
+        'payload_hash': event.payloadHash,
+        'event_json': jsonEncode(event.toJson()),
+        'retry_count': 0,
+        'uploaded': 0,
+      }, conflictAlgorithm: ConflictAlgorithm.ignore);
+    }
+    for (final conflictId in plan['resolvedConflictIds'] as List) {
+      await txn.delete(
+        'sync_conflicts',
+        where: 'id = ?',
+        whereArgs: [conflictId],
+      );
+    }
+    for (final pendingId in <Object?>[
+      id,
+      ...plan['completedPendingIds'] as List,
+    ]) {
+      await txn.delete(
+        'sync_pending',
+        where: 'batch_id = ?',
+        whereArgs: [pendingId],
+      );
+    }
+  }
+
   /// 校验与写入在同一事务内完成。
   ///
   /// 事务内先读「已应用 hash」与该批涉及实体的当前版本，交给共享的
@@ -142,89 +424,136 @@ class SqliteSyncRepository implements SyncRepository {
   /// 事务回滚、零副作用。校验通过后依次写 sync_entity_versions（含冲突两侧的历史行，
   /// 不覆盖既有版本）、sync_apply_journal、sync_shadow、sync_applied_ops。
   ///
-  /// 业务表写入不在本任务范围：Task 5 会把实体变更路由到对应业务表，届时仍在本
-  /// 事务内追加，保持「远端账目与同步元数据同一次提交」的承诺。
+  /// 生产业务应用由 LedgerRepository 在同一事务先写业务表，再调用事务内 helper。
+  /// 含 KV journal 的批次保持 prepared，直到 finalizePreparedBatches 完成登记。
   @override
   Future<void> applyRemoteBatch(RemoteApplyPlan plan) {
     return _enqueue(() async {
       await _database.transaction((txn) async {
-        final operationIds = plan.appliedOperationIds;
-        final appliedHashes = await _loadAppliedHashes(txn, operationIds);
-        final knownVersions = await _loadKnownVersions(
-          txn,
-          plan.entityVersions.map((version) => version.entity).toSet(),
-        );
-
-        SyncPlanValidator.validate(
-          plan: plan,
-          appliedHashes: appliedHashes,
-          knownVersions: knownVersions,
-        );
-
-        final appliedAt = DateTime.now().millisecondsSinceEpoch;
-
-        // 实体版本：按 operation_id 插入，已存在则忽略——同一操作重放不应改写
-        // 既有版本行（历史版本要留给冲突决议审计）。
-        final versionStatement = txn.batch();
-        for (final version in plan.entityVersions) {
-          versionStatement.insert('sync_entity_versions', <String, Object?>{
-            'operation_id': version.operationId,
-            'scope': version.entity.scope,
-            'type': version.entity.type,
-            'id': version.entity.id,
-            'version_json': jsonEncode(version.version.toJson()),
-            'payload_hash': version.payloadHash,
-            'payload_envelope': version.payload == null
-                ? null
-                : jsonEncode(version.payload),
-            'deleted': version.deleted ? 1 : 0,
-          }, conflictAlgorithm: ConflictAlgorithm.ignore);
-        }
-        await versionStatement.commit(noResult: true);
-
-        // KV journal：偏好写不进 SQLite 事务，先落盘待应用值，由上层按批次刷盘后
-        // 标记 applied。重放是幂等的（按目标值覆盖）。
-        final journalStatement = txn.batch();
-        for (final entry in plan.kvJournalValues.entries) {
-          journalStatement.insert('sync_apply_journal', <String, Object?>{
-            'batch_id': plan.batchId,
-            'kv_key': entry.key,
-            'kv_value': entry.value,
-            'target_hash': computeSyncPayloadHash(entry.value),
-            'applied': 0,
-          });
-        }
-        await journalStatement.commit(noResult: true);
-
-        // shadow：把远端结果记成「已知投影」，否则下一次本地投影比较会把刚应用的
-        // 远端变更误判成本地新变更、再上传一遍。
-        final shadowStatement = txn.batch();
-        for (final row in shadowRowsOf(plan)) {
-          shadowStatement.insert('sync_shadow', <String, Object?>{
-            'scope': row.key.scope,
-            'type': row.key.type,
-            'id': row.key.id,
-            'payload_hash': row.payloadHash,
-            'version_json': jsonEncode(
-              _versionOf(plan, row.key)?.toJson() ?? const <String, Object?>{},
-            ),
-          }, conflictAlgorithm: ConflictAlgorithm.replace);
-        }
-        await shadowStatement.commit(noResult: true);
-
-        // 最后登记已应用：这是去重的唯一依据，必须与本批其他写入同事务可见。
-        final appliedStatement = txn.batch();
-        for (final operationId in plan.appliedOperationIds) {
-          appliedStatement.insert('sync_applied_ops', <String, Object?>{
-            'operation_id': operationId,
-            'batch_id': plan.batchId,
-            'payload_hash': plan.payloadHashForOperation(operationId),
-            'applied_at': appliedAt,
-          }, conflictAlgorithm: ConflictAlgorithm.ignore);
-        }
-        await appliedStatement.commit(noResult: true);
+        await applyRemoteBatchInTransaction(txn, plan);
       });
     });
+  }
+
+  /// Called by the owning ledger repository inside its business transaction.
+  Future<void> applyRemoteBatchInTransaction(
+    Transaction txn,
+    RemoteApplyPlan plan,
+  ) async {
+    final operationIds = plan.appliedOperationIds;
+    final appliedHashes = await _loadAppliedHashes(txn, operationIds);
+    final knownVersions = await _loadKnownVersions(
+      txn,
+      plan.entityVersions.map((version) => version.entity).toSet(),
+    );
+
+    SyncPlanValidator.validate(
+      plan: plan,
+      appliedHashes: appliedHashes,
+      knownVersions: knownVersions,
+    );
+
+    final appliedAt = DateTime.now().millisecondsSinceEpoch;
+
+    // 实体版本：按 operation_id 插入，已存在则忽略——同一操作重放不应改写
+    // 既有版本行（历史版本要留给冲突决议审计）。
+    for (final version in plan.entityVersions) {
+      await _writeVersion(txn, version, head: true);
+    }
+
+    // KV journal：偏好写不进 SQLite 事务，先落盘待应用值，由上层按批次刷盘后
+    // 标记 applied。重放是幂等的（按目标值覆盖）。
+    final journalStatement = txn.batch();
+    for (final id in plan.completedPendingIds) {
+      await txn.delete(
+        'sync_apply_journal',
+        where: 'batch_id = ?',
+        whereArgs: [id],
+      );
+    }
+    for (final entry in plan.kvJournalValues.entries) {
+      journalStatement.insert('sync_apply_journal', <String, Object?>{
+        'batch_id': plan.batchId,
+        'kv_key': entry.key,
+        'kv_value': entry.value,
+        'target_hash': computeSyncPayloadHash(entry.value),
+        'expected_hash':
+            plan.kvExpectedHashes[entry.key] ?? computeSyncPayloadHash(null),
+        'applied': 0,
+      });
+    }
+    await journalStatement.commit(noResult: true);
+
+    // shadow：把远端结果记成「已知投影」，否则下一次本地投影比较会把刚应用的
+    // 远端变更误判成本地新变更、再上传一遍。
+    final shadowStatement = txn.batch();
+    for (final row in shadowRowsOf(plan)) {
+      shadowStatement.insert('sync_shadow', <String, Object?>{
+        'scope': row.key.scope,
+        'type': row.key.type,
+        'id': row.key.id,
+        'payload_hash': row.payloadHash,
+        'version_json': jsonEncode(
+          _versionOf(plan, row.key)?.toJson() ?? const <String, Object?>{},
+        ),
+      }, conflictAlgorithm: ConflictAlgorithm.replace);
+    }
+    await shadowStatement.commit(noResult: true);
+
+    // KV writes form a recoverable prepared commit. Applied ids and vector
+    // stay invisible until every journal row has been durably flushed.
+    final prepared = encodePreparedPlan(plan);
+    if (plan.kvJournalValues.isEmpty && plan.conflicts.isEmpty) {
+      await _finalizePlan(txn, prepared);
+    } else if (plan.kvJournalValues.isNotEmpty) {
+      await txn.insert('sync_pending', {
+        'batch_id': plan.batchId,
+        'events_json': jsonEncode([
+          for (final v in plan.entityVersions)
+            SyncEvent(
+              protocolVersion: syncProtocolVersion,
+              operationId: v.operationId,
+              version: v.version,
+              entity: v.entity,
+              operation: v.deleted
+                  ? SyncOperationKind.delete
+                  : SyncOperationKind.upsert,
+              payloadHash: v.payloadHash,
+              payload: v.payload,
+              batchId: plan.batchId,
+              keyFingerprint: 'local',
+            ).toJson(),
+        ]),
+        'received_at': appliedAt,
+        'reason': 'prepared',
+        'plan_json': jsonEncode(prepared),
+      }, conflictAlgorithm: ConflictAlgorithm.replace);
+    }
+    for (final conflict in plan.conflicts) {
+      for (final version in [conflict.local, conflict.remote]) {
+        await txn.insert('sync_entity_versions', {
+          'operation_id': version.operationId,
+          'scope': version.entity.scope,
+          'type': version.entity.type,
+          'id': version.entity.id,
+          'version_json': jsonEncode(version.version.toJson()),
+          'payload_hash': version.payloadHash,
+          'payload_envelope': version.payload == null
+              ? null
+              : jsonEncode(version.payload),
+          'deleted': version.deleted ? 1 : 0,
+        }, conflictAlgorithm: ConflictAlgorithm.ignore);
+      }
+      await txn.insert('sync_conflicts', {
+        'id': conflict.id,
+        'scope': conflict.entity.scope,
+        'type': conflict.entity.type,
+        'entity_id': conflict.entity.id,
+        'local_operation_id': conflict.local.operationId,
+        'remote_operation_id': conflict.remote.operationId,
+        'created_at': appliedAt,
+      }, conflictAlgorithm: ConflictAlgorithm.ignore);
+    }
   }
 
   /// 计划中该实体对应的版本（用于给 shadow 行记下版本上下文）。
@@ -244,11 +573,26 @@ class SqliteSyncRepository implements SyncRepository {
   /// 查询范围取 [RemoteApplyPlan.appliedOperationIds]（而非本批的实体版本），
   /// 因为「已应用」的判定必须覆盖计划声称的每一个操作。
   static Future<Map<String, String>> _loadAppliedHashes(
-    Transaction txn,
+    DatabaseExecutor txn,
     List<String> operationIds,
   ) async {
     if (operationIds.isEmpty) {
       return <String, String>{};
+    }
+    if (operationIds.length > 500) {
+      final result = <String, String>{};
+      for (var offset = 0; offset < operationIds.length; offset += 500) {
+        result.addAll(
+          await _loadAppliedHashes(
+            txn,
+            operationIds.sublist(
+              offset,
+              (offset + 500).clamp(0, operationIds.length),
+            ),
+          ),
+        );
+      }
+      return result;
     }
     final placeholders = List<String>.filled(
       operationIds.length,
@@ -274,10 +618,9 @@ class SqliteSyncRepository implements SyncRepository {
   ) async {
     final result = <SyncEntityKey, KnownSyncEntityVersion>{};
     for (final key in keys) {
-      final rows = await txn.query(
-        'sync_entity_versions',
-        where: 'scope = ? AND type = ? AND id = ?',
-        whereArgs: <Object?>[key.scope, key.type, key.id],
+      final rows = await txn.rawQuery(
+        'SELECT v.* FROM sync_entity_versions v JOIN sync_entity_heads h ON h.operation_id = v.operation_id WHERE h.scope = ? AND h.type = ? AND h.id = ?',
+        [key.scope, key.type, key.id],
       );
       KnownSyncEntityVersion? latest;
       var latestLogicalTime = -1;
@@ -426,7 +769,7 @@ class SqliteSyncRepository implements SyncRepository {
           'local_operation_id': conflict.local.operationId,
           'remote_operation_id': conflict.remote.operationId,
           'created_at': DateTime.now().millisecondsSinceEpoch,
-        }, conflictAlgorithm: ConflictAlgorithm.ignore);
+        }, conflictAlgorithm: ConflictAlgorithm.replace);
       });
     });
   }
@@ -528,6 +871,7 @@ class SqliteSyncRepository implements SyncRepository {
           key: row['kv_key'] as String,
           value: row['kv_value'] as String,
           targetHash: row['target_hash'] as String,
+          expectedHash: row['expected_hash'] as String?,
         ),
     ];
   }

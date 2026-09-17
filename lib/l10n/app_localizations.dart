@@ -5198,6 +5198,18 @@ abstract class AppLocalizations {
   /// **'同步出错'**
   String get syncStatusError;
 
+  /// No description provided for @syncStatusNever.
+  ///
+  /// In zh, this message translates to:
+  /// **'尚未同步成功'**
+  String get syncStatusNever;
+
+  /// No description provided for @syncStatusRunning.
+  ///
+  /// In zh, this message translates to:
+  /// **'同步中'**
+  String get syncStatusRunning;
+
   /// 同步冲突计数
   ///
   /// In zh, this message translates to:

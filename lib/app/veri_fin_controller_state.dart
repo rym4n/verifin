@@ -31,6 +31,35 @@ mixin _ControllerState on ChangeNotifier {
   /// 构造。控制器只在本地写路径上回调 [onSyncChanged] 与 [notifyRemoteApply]，
   /// 不感知同步状态机。
   SyncChangeTracker? _syncChangeTracker;
+  SyncRuntime? _syncRuntime;
+  Future<SyncRuntime>? _syncRuntimeCreation;
+  Completer<void>? _remoteMutationGate;
+  Completer<void>? _localMutationsIdle;
+  int _localMutationCount = 0;
+
+  Future<T> _withLocalMutation<T>(Future<T> Function() action) async {
+    final gate = _remoteMutationGate;
+    if (gate != null) await gate.future;
+    _localMutationCount++;
+    try {
+      return await action();
+    } finally {
+      _localMutationCount--;
+      if (_localMutationCount == 0) {
+        _localMutationsIdle?.complete();
+        _localMutationsIdle = null;
+      }
+    }
+  }
+
+  T _withLocalMutationSync<T>(T Function() action) {
+    if (_remoteMutationGate != null) {
+      final error = StateError('sync_apply_busy');
+      _handlePersistError(error, StackTrace.current);
+      throw error;
+    }
+    return action();
+  }
 
   /// 同步协调器：由应用根组件（`main.dart`）注入，协调启动/恢复/本地变更的
   /// 自动同步触发与手动同步请求。可空：同步未配置时不存在。
@@ -58,10 +87,12 @@ mixin _ControllerState on ChangeNotifier {
     return coordinator.runManual();
   }
 
+  bool get syncRunning => _syncCoordinator?.isRunning ?? false;
+
   /// 成功写入后的统一上报入口：既调用外部回调，也（若已绑定）标记本地变更。
   void _notifySyncChanged() {
+    if (_syncChangeTracker?.remoteApplyActive == true) return;
     onSyncChanged?.call();
-    _syncChangeTracker?.markLocalMutation();
   }
 
   /// 远端批次应用的统一入口：期间抑制 outbox 生成，结束后对齐 shadow。
@@ -72,15 +103,48 @@ mixin _ControllerState on ChangeNotifier {
   /// 顺序很关键：**先 reconcile 对齐 shadow，再退出抑制窗口**。反过来会有一瞬间
   /// 「窗口已关闭、shadow 还没对齐」，此间的任何本地比较都会把远端刚落地的值当成
   /// 本地新变更上传。
-  Future<T> runRemoteApply<T>(Future<T> Function() apply) async {
-    _syncChangeTracker?.markRemoteApply();
+  Future<T> runRemoteApply<T>(
+    Future<T> Function() apply, {
+    bool journalOnly = false,
+    bool resolving = false,
+  }) async {
+    if (Zone.current[_syncRemoteZone] == this) return apply();
+    while (_remoteMutationGate != null || _localMutationCount > 0) {
+      if (_remoteMutationGate != null) {
+        await _remoteMutationGate!.future;
+      } else {
+        _localMutationsIdle ??= Completer<void>();
+        await _localMutationsIdle!.future;
+      }
+    }
+    final gate = Completer<void>();
+    _remoteMutationGate = gate;
+    var marked = false;
     try {
-      return await apply();
+      return await runZoned(() async {
+        await waitForPendingWrites();
+        if (!journalOnly) {
+          await (this as VeriFinController).applySyncPreferenceJournal(
+            allowConflicts: resolving,
+          );
+          await _syncChangeTracker?.reconcile();
+          _syncChangeTracker?.markRemoteApply();
+          marked = true;
+        }
+        final result = await apply();
+        if (!journalOnly) {
+          await _syncChangeTracker?.reconcile(alignShadowOnly: true);
+        }
+        return result;
+      }, zoneValues: {_syncRemoteZone: this});
     } finally {
-      await _syncChangeTracker?.reconcile(alignShadowOnly: true);
-      _syncChangeTracker?.clearRemoteApply();
+      if (marked) _syncChangeTracker?.clearRemoteApply();
+      _remoteMutationGate = null;
+      gate.complete();
     }
   }
+
+  static final Object _syncRemoteZone = Object();
 
   /// 应用锁开关变化时回调（由 main 挂钩，据此开关 Android FLAG_SECURE）。
   void Function(bool appLockEnabled)? onAppLockChanged;
@@ -258,11 +322,15 @@ mixin _ControllerState on ChangeNotifier {
   }
 
   void _persistBudgetCycleStartDays() {
-    if (_budgetCycleStartDays.isEmpty) {
-      _store.delete(_budgetCycleKey);
-      return;
-    }
-    _store.write(_budgetCycleKey, jsonEncode(_budgetCycleStartDays));
+    _trackWrite(
+      _budgetCycleStartDays.isEmpty
+          ? _store.deleteAndFlush(_budgetCycleKey)
+          : _store.writeAndFlush(
+              _budgetCycleKey,
+              jsonEncode(_budgetCycleStartDays),
+            ),
+      onSuccess: _notifySyncChanged,
+    );
   }
 
   void _loadBudgetPeriodKinds() {
@@ -288,15 +356,18 @@ mixin _ControllerState on ChangeNotifier {
   }
 
   void _persistBudgetPeriodKinds() {
-    if (_budgetPeriodKinds.isEmpty) {
-      _store.delete(_budgetPeriodKindKey);
-      return;
-    }
-    _store.write(
-      _budgetPeriodKindKey,
-      jsonEncode(
-        _budgetPeriodKinds.map((key, value) => MapEntry(key, value.name)),
-      ),
+    _trackWrite(
+      _budgetPeriodKinds.isEmpty
+          ? _store.deleteAndFlush(_budgetPeriodKindKey)
+          : _store.writeAndFlush(
+              _budgetPeriodKindKey,
+              jsonEncode(
+                _budgetPeriodKinds.map(
+                  (key, value) => MapEntry(key, value.name),
+                ),
+              ),
+            ),
+      onSuccess: _notifySyncChanged,
     );
   }
 
@@ -512,6 +583,47 @@ mixin _ControllerState on ChangeNotifier {
       _persistAllLedgerData(notifySync: false);
     }
     notifyListeners();
+  }
+
+  /// Reload committed remote rows only. No seeding, healing, or persistence.
+  Future<void> _reloadSyncLedgerData() async {
+    _ledgerBooks
+      ..clear()
+      ..addAll(await _repository.loadBooks());
+    _accounts
+      ..clear()
+      ..addAll(await _repository.loadAccounts());
+    _accountGroups
+      ..clear()
+      ..addAll(await _repository.loadAccountGroups());
+    _categories
+      ..clear()
+      ..addAll(await _repository.loadCategories());
+    _tags
+      ..clear()
+      ..addAll(await _repository.loadTags());
+    _attachments
+      ..clear()
+      ..addAll(await _repository.loadAttachments());
+    _entries
+      ..clear()
+      ..addAll(await _repository.loadEntries())
+      ..sort(_compareEntriesLatestFirst);
+    _recurringRules
+      ..clear()
+      ..addAll(await _repository.loadRecurringRules());
+    _exchangeRates
+      ..clear()
+      ..addAll(await _repository.loadExchangeRates());
+    _monthlyBudgets
+      ..clear()
+      ..addAll(await _repository.loadMonthlyBudgets());
+    _categoryBudgets
+      ..clear()
+      ..addAll(await _repository.loadCategoryBudgets());
+    _dailyBudgets
+      ..clear()
+      ..addAll(await _repository.loadDailyBudgets());
   }
 
   /// 分类参照完整性自愈：在内存列表（[_categories]/[_entries]/[_recurringRules]）上就地
