@@ -476,6 +476,16 @@ class _InMemorySyncRepository implements SyncRepository {
       state: SnapshotPublicationState.prepared,
     );
     final members = List<SyncOutboxRecord>.of(_outbox);
+    final heads = _heads.values.toList();
+    final emittedVersions = <SyncEntityVersion>[
+      ...heads,
+      for (final conflict in _conflicts) ...[conflict.local, conflict.remote],
+    ];
+    for (final member in members) {
+      if (!snapshotVersionsCoverOutbox(member, emittedVersions)) {
+        throw StateError('snapshot_outbox_not_represented');
+      }
+    }
     _snapshotState = SyncSnapshotState(
       nextSnapshotSequence: sequence + 1,
       lastPublishedSequence: _snapshotState.lastPublishedSequence,
@@ -489,7 +499,7 @@ class _InMemorySyncRepository implements SyncRepository {
     _snapshotMembers[sequence] = members;
     return PreparedSyncSnapshot(
       publication: publication,
-      heads: _heads.values.toList(),
+      heads: heads,
       conflicts: List<SyncConflictRecord>.of(_conflicts),
       members: members,
     );

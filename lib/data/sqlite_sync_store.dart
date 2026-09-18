@@ -231,24 +231,6 @@ class SqliteSyncRepository implements SyncRepository {
         final members = <SyncOutboxRecord>[
           for (final row in outboxRows) _outboxFromRow(row),
         ];
-        final includedVersions = <String>{
-          for (final version in heads) version.operationId,
-        };
-        for (final member in members) {
-          final event = member.event;
-          if (event != null && includedVersions.add(event.operationId)) {
-            heads.add(
-              SyncEntityVersion(
-                entity: event.entity,
-                version: event.version,
-                payloadHash: event.payloadHash,
-                payload: event.payload,
-                deleted: event.operation == SyncOperationKind.delete,
-                operationId: event.operationId,
-              ),
-            );
-          }
-        }
         final conflictRows = await txn.query(
           'sync_conflicts',
           orderBy: 'created_at ASC, id ASC',
@@ -278,6 +260,18 @@ class SqliteSyncRepository implements SyncRepository {
               remote: remote,
             ),
           );
+        }
+        final emittedVersions = <SyncEntityVersion>[
+          ...heads,
+          for (final conflict in conflicts) ...[
+            conflict.local,
+            conflict.remote,
+          ],
+        ];
+        for (final member in members) {
+          if (!snapshotVersionsCoverOutbox(member, emittedVersions)) {
+            throw StateError('snapshot_outbox_not_represented');
+          }
         }
         for (final member in members) {
           await txn.insert('sync_snapshot_members', {

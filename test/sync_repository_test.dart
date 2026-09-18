@@ -232,6 +232,85 @@ void main() {
         expect(second.publication.sequence, 2);
       });
 
+      test('快照准备以因果后继覆盖旧 outbox 且每个实体只保留一个 head', () async {
+        final sync = open();
+        final first = _eventWithVersion(
+          operationId: 'op-a',
+          batchId: 'batch-a',
+          entityId: 'same-entry',
+          sequence: 1,
+          context: const <String, int>{},
+          note: 'A',
+        );
+        final second = _eventWithVersion(
+          operationId: 'op-b',
+          batchId: 'batch-b',
+          entityId: 'same-entry',
+          sequence: 2,
+          context: const <String, int>{'dev-1': 1},
+          note: 'B',
+        );
+        await sync.enqueueBatch(_batchFromEvents('batch-a', [first]));
+        await sync.enqueueBatch(_batchFromEvents('batch-b', [second]));
+
+        final prepared = await sync.prepareSnapshotPublication();
+
+        expect(prepared.heads, hasLength(1));
+        expect(prepared.heads.single.operationId, 'op-b');
+        expect(prepared.members.map((row) => row.operationId).toSet(), {
+          'op-a',
+          'op-b',
+        });
+        await sync.freezeSnapshotBlobMembers(
+          prepared.publication.sequence,
+          const [],
+        );
+        await sync.markSnapshotPublished(
+          prepared.publication.sequence,
+          filename: 'snapshot.json',
+          snapshotHash: 'snapshot-hash',
+        );
+        expect(await sync.loadOutbox(), isEmpty);
+      });
+
+      test('快照准备拒绝没有被 head 或冲突版本覆盖的 outbox', () async {
+        final sync = open();
+        final first = _eventWithVersion(
+          operationId: 'op-a',
+          batchId: 'batch-a',
+          entityId: 'same-entry',
+          sequence: 1,
+          context: const <String, int>{},
+          note: 'A',
+        );
+        final concurrent = _eventWithVersion(
+          operationId: 'op-c',
+          batchId: 'batch-c',
+          entityId: 'same-entry',
+          sequence: 1,
+          context: const <String, int>{},
+          note: 'C',
+          deviceId: 'dev-2',
+        );
+        await sync.enqueueBatch(_batchFromEvents('batch-a', [first]));
+        await sync.enqueueBatch(_batchFromEvents('batch-c', [concurrent]));
+
+        await expectLater(
+          sync.prepareSnapshotPublication(),
+          throwsA(
+            isA<StateError>().having(
+              (error) => error.message,
+              'message',
+              'snapshot_outbox_not_represented',
+            ),
+          ),
+        );
+        expect(
+          (await sync.loadOutbox()).map((row) => row.operationId).toSet(),
+          {'op-a', 'op-c'},
+        );
+      });
+
       test('cursor only advances as part of accepted remote apply', () async {
         final sync = open();
         await sync.applyRemoteBatch(
@@ -817,6 +896,46 @@ SyncBatchRecord _batch(String batchId, List<String> operationIds) {
       blobHashes: const <String>[],
       manifestHash: 'manifest-$batchId',
     ),
+  );
+}
+
+SyncBatchRecord _batchFromEvents(String batchId, List<SyncEvent> events) {
+  return SyncBatchRecord(
+    batchId: batchId,
+    events: events,
+    manifest: SyncBatchManifest(
+      batchId: batchId,
+      operationIds: events.map((event) => event.operationId).toList(),
+      blobHashes: const <String>[],
+      manifestHash: 'manifest-$batchId',
+    ),
+  );
+}
+
+SyncEvent _eventWithVersion({
+  required String operationId,
+  required String batchId,
+  required String entityId,
+  required int sequence,
+  required Map<String, int> context,
+  required String note,
+  String deviceId = 'dev-1',
+}) {
+  final payload = <String, Object?>{'note': note};
+  return SyncEvent(
+    protocolVersion: syncProtocolVersion,
+    operationId: operationId,
+    version: SyncVersion(
+      dot: SyncDot(deviceId: deviceId, sequence: sequence),
+      context: SyncVersionVector(context),
+      logicalTime: sequence,
+    ),
+    entity: SyncEntityKey(scope: 'default', type: 'entry', id: entityId),
+    operation: SyncOperationKind.upsert,
+    payloadHash: computeSyncPayloadHash(payload),
+    payload: payload,
+    batchId: batchId,
+    keyFingerprint: 'none',
   );
 }
 

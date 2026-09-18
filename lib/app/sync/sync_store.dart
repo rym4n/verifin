@@ -120,6 +120,38 @@ abstract interface class SyncRepository {
   Future<void> removeConflict(String conflictId);
 }
 
+/// Whether [member] is represented by a version emitted in a full snapshot.
+///
+/// A pending operation is safe to acknowledge when the snapshot contains that
+/// exact operation, or a version of the same entity that causally follows it.
+/// Equal/concurrent vectors with different operation IDs are not coverage.
+bool snapshotVersionsCoverOutbox(
+  SyncOutboxRecord member,
+  Iterable<SyncEntityVersion> versions,
+) {
+  final event = member.event;
+  if (event == null) return false;
+  final eventVector = event.version.context.merged(
+    SyncVersionVector({event.version.dot.deviceId: event.version.dot.sequence}),
+  );
+  for (final version in versions) {
+    if (version.entity != event.entity) continue;
+    if (version.operationId == event.operationId &&
+        version.payloadHash == event.payloadHash) {
+      return true;
+    }
+    final versionVector = version.version.context.merged(
+      SyncVersionVector({
+        version.version.dot.deviceId: version.version.dot.sequence,
+      }),
+    );
+    if (versionVector.compare(eventVector) == SyncCausality.after) {
+      return true;
+    }
+  }
+  return false;
+}
+
 /// 一条待重放的 KV journal 行：`applyRemoteBatch` 在写 SQLite 元数据的同一事务内
 /// 插入（见 [RemoteApplyPlan.kvJournalValues]），[key]/[value] 就是要写进本地
 /// [LocalKeyValueStore] 的键值对本身（不是同步实体键），[targetHash] 供调试/校验
