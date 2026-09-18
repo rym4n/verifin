@@ -45,7 +45,18 @@ jobs:
         run: flutter analyze
 
       - name: Test
-        run: flutter test
+        shell: bash
+        run: |
+          set +e
+          flutter test --reporter expanded 2>&1 | tee /tmp/verifin-test.log
+          status=${PIPESTATUS[0]}
+          if [ "$status" -ne 0 ]; then
+            {
+              echo '### Flutter test failure excerpt'
+              grep -E '(^[[:space:]]*[0-9]+:.*\[E\]|^  Expected:|^  Actual:|Some tests failed|^[[:space:]]*Failed tests:)' /tmp/verifin-test.log | tail -n 120 || true
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+          exit "$status"
 
       - name: Test release materials
         run: flutter test test/anchored_menu_test.dart test/material_stability_test.dart test/navigation_settings_test.dart test/design_consistency_test.dart test/home_density_test.dart --dart-define=UNIFIED_DESIGN_PREVIEW=true
