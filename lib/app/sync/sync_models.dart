@@ -11,6 +11,10 @@ enum SyncCausality { before, after, equal, concurrent }
 /// 避免各处硬编码出「同一协议、不同版本号」的文件。
 const String syncProtocolVersion = '1';
 
+/// The independent WebDAV snapshot document protocol. It intentionally does
+/// not replace [syncProtocolVersion], which remains the v1 event value.
+const int syncSnapshotProtocolVersion = 2;
+
 /// A single logical timestamp: (deviceId, sequence).
 class SyncDot {
   const SyncDot({required this.deviceId, required this.sequence});
@@ -260,14 +264,14 @@ enum SyncOperationKind {
 
 /// Compute SHA-256 hash of canonical JSON payload.
 String computeSyncPayloadHash(Object? payload) {
-  final canonical = _canonicalJson(payload);
+  final canonical = canonicalSyncJson(payload);
   final bytes = utf8.encode(canonical);
   final digest = sha256.convert(bytes);
   return digest.toString();
 }
 
 /// Produce canonical JSON (sorted keys, no whitespace).
-String _canonicalJson(Object? value) {
+String canonicalSyncJson(Object? value) {
   if (value == null) {
     return 'null';
   } else if (value is bool) {
@@ -280,7 +284,7 @@ String _canonicalJson(Object? value) {
   } else if (value is String) {
     return jsonEncode(value);
   } else if (value is List) {
-    final items = value.cast<Object?>().map(_canonicalJson).join(',');
+    final items = value.cast<Object?>().map(canonicalSyncJson).join(',');
     return '[$items]';
   } else if (value is Map) {
     final map = value.cast<Object?, Object?>();
@@ -288,7 +292,7 @@ String _canonicalJson(Object? value) {
     final pairs = keys
         .map((k) {
           final v = map[k];
-          return '${jsonEncode(k)}:${_canonicalJson(v)}';
+          return '${jsonEncode(k)}:${canonicalSyncJson(v)}';
         })
         .join(',');
     return '{$pairs}';

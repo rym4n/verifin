@@ -52,17 +52,17 @@ class SyncCodec {
   /// If passphrase is non-empty, encrypts the payload; otherwise returns plaintext envelope.
   Future<Map<String, Object?>> encode(
     SyncEvent event,
-    String protocolVersion,
+    Object protocolVersion,
   ) => encodeValue(event.payload, protocolVersion);
 
   Future<Map<String, Object?>> encodeValue(
     Object? payload,
-    String protocolVersion,
+    Object protocolVersion,
   ) async {
     final payloadHash = computeSyncPayloadHash(payload);
     final keyFingerprint = passphrase.isEmpty
         ? 'none'
-        : _computeKeyFingerprint(passphrase);
+        : keyFingerprintFor(passphrase);
 
     if (passphrase.isEmpty) {
       // Plaintext envelope.
@@ -77,7 +77,7 @@ class SyncCodec {
       final salt = _randomBytes(_saltLength);
       final key = await _deriveKey(passphrase, salt, _pbkdf2Iterations);
       final nonce = _aesGcm.newNonce();
-      final plaintext = utf8.encode(jsonEncode(payload));
+      final plaintext = utf8.encode(canonicalSyncJson(payload));
       final box = await _aesGcm.encrypt(
         plaintext,
         secretKey: key,
@@ -99,7 +99,16 @@ class SyncCodec {
   /// Decode a JSON envelope to extract payload.
   /// If encrypted, decrypts with the passphrase; otherwise extracts plaintext payload.
   Future<Object?> decode(Map<String, Object?> envelope) async {
-    if (envelope['protocolVersion'] != syncProtocolVersion) {
+    return decodeValue(envelope, expectedProtocolVersion: syncProtocolVersion);
+  }
+
+  /// Decode an envelope for a caller-selected protocol version.
+  Future<Object?> decodeValue(
+    Map<String, Object?> envelope, {
+    required Object expectedProtocolVersion,
+    int? maxPlaintextBytes,
+  }) async {
+    if (envelope['protocolVersion'] != expectedProtocolVersion) {
       throw const SyncCodecException('protocol_version');
     }
     final keyFingerprint = envelope['keyFingerprint'] as String?;
@@ -121,7 +130,7 @@ class SyncCodec {
         );
       }
 
-      final expectedFingerprint = _computeKeyFingerprint(passphrase);
+      final expectedFingerprint = keyFingerprintFor(passphrase);
       if (keyFingerprint != expectedFingerprint) {
         throw const SyncCodecException('Key fingerprint mismatch');
       }
@@ -135,6 +144,9 @@ class SyncCodec {
         final mac = base64Decode(envelope['mac'] as String);
         final box = SecretBox(ciphertext, nonce: nonce, mac: Mac(mac));
         final decrypted = await _aesGcm.decrypt(box, secretKey: key);
+        if (maxPlaintextBytes != null && decrypted.length > maxPlaintextBytes) {
+          throw const SyncCodecException('snapshot_plaintext_too_large');
+        }
         final payloadJson = utf8.decode(decrypted);
         return _verifyHash(envelope, jsonDecode(payloadJson));
       } on SecretBoxAuthenticationError {
@@ -155,7 +167,10 @@ class SyncCodec {
   }
 
   /// Compute a fingerprint of the passphrase for key identification.
-  String _computeKeyFingerprint(String passphrase) {
+  String get keyFingerprint =>
+      passphrase.isEmpty ? 'none' : keyFingerprintFor(passphrase);
+
+  static String keyFingerprintFor(String passphrase) {
     final bytes = utf8.encode(passphrase);
     final hash = crypto.sha256.convert(bytes);
     return hash.toString().substring(0, 16);
