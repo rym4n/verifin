@@ -658,12 +658,14 @@ class SnapshotPublication {
 }
 
 class PreparedSyncSnapshot {
-  const PreparedSyncSnapshot({
+  PreparedSyncSnapshot({
     required this.publication,
-    required this.heads,
-    required this.conflicts,
-    required this.members,
-  });
+    required List<SyncEntityVersion> heads,
+    required List<SyncConflictRecord> conflicts,
+    required List<SyncOutboxRecord> members,
+  }) : heads = List.unmodifiable(heads),
+       conflicts = List.unmodifiable(conflicts),
+       members = List.unmodifiable(members);
 
   final SnapshotPublication publication;
   final List<SyncEntityVersion> heads;

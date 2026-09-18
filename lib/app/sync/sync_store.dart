@@ -1,3 +1,7 @@
+import 'dart:convert';
+
+import 'package:crypto/crypto.dart';
+
 import 'sync_models.dart';
 
 /// 同步元数据仓储边界。生产实现挂在 [SqliteLedgerRepository]（`sqlite_sync_store.dart`），
@@ -49,6 +53,7 @@ abstract interface class SyncRepository {
   Future<void> saveSnapshotCursor(SnapshotCursorAdvance cursor);
   Future<void> saveVerifiedBlobMapping(SnapshotBlobMapping mapping);
   Future<void> markSnapshotBlobMappingInvalid(String rawHash, String fileHash);
+  Future<List<SnapshotBlobMapping>> loadSnapshotBlobMappings(String rawHash);
   Future<List<SnapshotBlobMapping>> loadVerifiedBlobMappings(String rawHash);
 
   Future<void> applyRemoteBatch(RemoteApplyPlan plan);
@@ -131,6 +136,10 @@ bool snapshotVersionsCoverOutbox(
 ) {
   final event = member.event;
   if (event == null) return false;
+  if (event.operationId != member.operationId ||
+      event.payloadHash != member.payloadHash) {
+    throw StateError('snapshot_outbox_metadata_mismatch');
+  }
   final eventVector = event.version.context.merged(
     SyncVersionVector({event.version.dot.deviceId: event.version.dot.sequence}),
   );
@@ -217,6 +226,26 @@ class SyncConflictException implements Exception {
 /// 猜测切分点，使违约尽早暴露而不是把数据静默写到错误的实体上。
 String encodeSyncEntityKey(SyncEntityKey key) =>
     '${key.scope}|${key.type}|${key.id}';
+
+/// Return the deterministic identity for a concurrent pair of versions.
+///
+/// The operation ids are sorted so both devices derive the same conflict row
+/// regardless of which side observes the other first.
+String canonicalSyncConflictId(
+  SyncEntityKey entity,
+  String firstOperationId,
+  String secondOperationId,
+) {
+  final operations = [firstOperationId, secondOperationId]..sort();
+  return sha256
+      .convert(
+        utf8.encode(
+          '${encodeSyncEntityKey(entity)}\n'
+          '${operations[0]}\n${operations[1]}',
+        ),
+      )
+      .toString();
+}
 
 /// [encodeSyncEntityKey] 的逆运算。
 ///

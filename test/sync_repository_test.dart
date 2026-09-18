@@ -3,11 +3,17 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'package:verifin/app/sync/sync_models.dart';
+import 'package:verifin/app/sync/sync_snapshot.dart';
 import 'package:verifin/app/sync/sync_store.dart';
 import 'package:verifin/data/app_database.dart';
 import 'package:verifin/data/ledger_repository.dart';
 
 import 'support/in_memory_ledger_repository.dart';
+
+const _hashA =
+    'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+const _hashB =
+    'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
 
 /// 同步元数据仓储契约测试：同一组断言对 InMemory 与 SQLite 两个实现各跑一遍。
 ///
@@ -40,6 +46,46 @@ void main() {
         });
     return _DeferredSyncRepository(ready);
   }
+
+  test('snapshot coverage rejects outbox row and event metadata mismatch', () {
+    final event = _eventWithVersion(
+      operationId: 'event-op',
+      batchId: 'batch',
+      entityId: 'entry',
+      sequence: 1,
+      context: const {},
+      note: 'metadata',
+    );
+    final version = SyncEntityVersion(
+      entity: event.entity,
+      version: event.version,
+      payloadHash: event.payloadHash,
+      payload: event.payload,
+      deleted: false,
+      operationId: event.operationId,
+    );
+
+    expect(
+      () => snapshotVersionsCoverOutbox(
+        SyncOutboxRecord(
+          batchId: event.batchId,
+          operationId: 'row-op',
+          relativePath: 'event',
+          payloadHash: event.payloadHash,
+          retryCount: 0,
+          event: event,
+        ),
+        [version],
+      ),
+      throwsA(
+        isA<StateError>().having(
+          (error) => error.message,
+          'message',
+          'snapshot_outbox_metadata_mismatch',
+        ),
+      ),
+    );
+  });
 
   for (final (label, open) in <(String, SyncRepository Function())>[
     ('InMemoryLedgerRepository', openMemory),
@@ -220,8 +266,8 @@ void main() {
         );
         await sync.markSnapshotPublished(
           first.publication.sequence,
-          filename: 'snapshot-1.json',
-          snapshotHash: 'snapshot-hash-1',
+          filename: _snapshotName(1, _hashA),
+          snapshotHash: _hashA,
         );
         expect(
           (await sync.loadOutbox()).map((row) => row.operationId),
@@ -267,8 +313,8 @@ void main() {
         );
         await sync.markSnapshotPublished(
           prepared.publication.sequence,
-          filename: 'snapshot.json',
-          snapshotHash: 'snapshot-hash',
+          filename: _snapshotName(1, _hashB),
+          snapshotHash: _hashB,
         );
         expect(await sync.loadOutbox(), isEmpty);
       });
@@ -331,6 +377,165 @@ void main() {
         expect(cursor, isNotNull);
         expect(cursor!.lastMergedSequence, 7);
         expect(cursor.lastMergedHash, 'remote-hash');
+      });
+
+      test('stale cursor rejects the entire remote apply', () async {
+        final sync = open();
+        await sync.applyRemoteBatch(
+          _plan(
+            batchId: 'cursor-new',
+            versions: <SyncEntityVersion>[
+              _version('cursor-new-op', 'entry', 'new-entry', hash: 'new'),
+            ],
+            cursorAdvance: const SnapshotCursorAdvance(
+              deviceId: 'remote-device',
+              sequence: 8,
+              snapshotHash: 'remote-hash-8',
+              mergedAt: null,
+            ),
+          ),
+        );
+
+        await expectLater(
+          sync.applyRemoteBatch(
+            _plan(
+              batchId: 'cursor-stale',
+              versions: <SyncEntityVersion>[
+                _version(
+                  'cursor-stale-op',
+                  'entry',
+                  'stale-entry',
+                  hash: 'stale',
+                ),
+              ],
+              cursorAdvance: const SnapshotCursorAdvance(
+                deviceId: 'remote-device',
+                sequence: 7,
+                snapshotHash: 'remote-hash-7',
+                mergedAt: null,
+              ),
+            ),
+          ),
+          throwsA(
+            isA<StateError>().having(
+              (error) => error.message,
+              'message',
+              'snapshot_cursor_regression',
+            ),
+          ),
+        );
+        expect(
+          await sync.loadEntityHeads({
+            const SyncEntityKey(
+              scope: 'default',
+              type: 'entry',
+              id: 'stale-entry',
+            ),
+          }),
+          isEmpty,
+        );
+        expect(
+          (await sync.loadSnapshotCursor('remote-device'))!.lastMergedSequence,
+          8,
+        );
+      });
+
+      test(
+        'publication validates identity and cannot move backwards',
+        () async {
+          final sync = open();
+          await sync.enqueueBatch(_batch('publication', const ['op-1']));
+          final first = await sync.prepareSnapshotPublication();
+          final second = await sync.prepareSnapshotPublication();
+          await sync.freezeSnapshotBlobMembers(
+            first.publication.sequence,
+            const [],
+          );
+          await sync.freezeSnapshotBlobMembers(
+            second.publication.sequence,
+            const [],
+          );
+
+          await expectLater(
+            sync.markSnapshotPublished(
+              first.publication.sequence,
+              filename: _snapshotName(first.publication.sequence, _hashA),
+              snapshotHash: _hashB,
+            ),
+            throwsA(isA<StateError>()),
+          );
+          await sync.markSnapshotPublished(
+            second.publication.sequence,
+            filename: _snapshotName(second.publication.sequence, _hashB),
+            snapshotHash: _hashB,
+          );
+          await expectLater(
+            sync.markSnapshotPublished(
+              first.publication.sequence,
+              filename: _snapshotName(first.publication.sequence, _hashA),
+              snapshotHash: _hashA,
+            ),
+            throwsA(
+              isA<StateError>().having(
+                (error) => error.message,
+                'message',
+                'snapshot_publication_sequence_regression',
+              ),
+            ),
+          );
+          expect((await sync.loadSnapshotState()).lastPublishedSequence, 2);
+        },
+      );
+
+      test(
+        'invalid blob mappings persist and are excluded from reuse',
+        () async {
+          final sync = open();
+          await sync.markSnapshotBlobMappingInvalid(_hashA, _hashB);
+
+          final all = await sync.loadSnapshotBlobMappings(_hashA);
+          expect(all, hasLength(1));
+          expect(all.single.fileHash, _hashB);
+          expect(all.single.verified, isFalse);
+          expect(await sync.loadVerifiedBlobMappings(_hashA), isEmpty);
+        },
+      );
+
+      test('v1 migration rejects illegal state transitions', () async {
+        final sync = open();
+        await expectLater(
+          sync.markV1ReadyToCutover(),
+          throwsA(isA<StateError>()),
+        );
+        await sync.enqueueBatch(_batch('cutover', const ['op-cutover']));
+        final publication = await sync.prepareSnapshotPublication();
+        await sync.freezeSnapshotBlobMembers(
+          publication.publication.sequence,
+          const [],
+        );
+        await expectLater(
+          sync.completeV1CutoverWithPublication(
+            publication.publication.sequence,
+            filename: _snapshotName(publication.publication.sequence, _hashA),
+            snapshotHash: _hashA,
+          ),
+          throwsA(
+            isA<StateError>().having(
+              (error) => error.message,
+              'message',
+              'snapshot_v1_cutover_not_ready',
+            ),
+          ),
+        );
+        await sync.markV1MigrationNotRequired();
+        await expectLater(
+          sync.markV1ReadyToCutover(),
+          throwsA(isA<StateError>()),
+        );
+        await expectLater(
+          sync.markV1MigrationNotRequired(),
+          throwsA(isA<StateError>()),
+        );
       });
 
       test('扫描状态保存后原样读回（含 gap 集合与错误码）', () async {
@@ -711,6 +916,13 @@ void main() {
   });
 }
 
+String _snapshotName(int sequence, String hash) => SnapshotFileName.snapshot(
+  deviceId: '11111111111111111111111111111111',
+  snapshotSequence: sequence,
+  createdAtUtc: DateTime.utc(2026, 9, 18),
+  fileHash: hash,
+).toString();
+
 /// SqliteLedgerRepository 需要真实异步建库；这里把「等待建库」的 Future 包装成
 /// [SyncRepository]，让契约测试的两条实现路径共用同一个同步的 open() 签名。
 class _DeferredSyncRepository implements SyncRepository {
@@ -779,6 +991,10 @@ class _DeferredSyncRepository implements SyncRepository {
     String rawHash,
     String fileHash,
   ) async => (await _ready).markSnapshotBlobMappingInvalid(rawHash, fileHash);
+  @override
+  Future<List<SnapshotBlobMapping>> loadSnapshotBlobMappings(
+    String rawHash,
+  ) async => (await _ready).loadSnapshotBlobMappings(rawHash);
   @override
   Future<List<SnapshotBlobMapping>> loadVerifiedBlobMappings(
     String rawHash,

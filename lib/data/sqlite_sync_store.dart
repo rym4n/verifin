@@ -6,6 +6,7 @@ import 'package:sqflite_common/sqlite_api.dart';
 import '../app/sync/sync_models.dart';
 import '../app/sync/sync_store.dart';
 import '../app/sync/sync_plan_codec.dart';
+import '../app/sync/sync_snapshot.dart';
 
 /// [SyncRepository] 的 SQLite 实现，与业务表共享同一个 [_database] 连接与写队列。
 ///
@@ -373,12 +374,27 @@ class SqliteSyncRepository implements SyncRepository {
     required bool completeV1Cutover,
   }) async {
     await _database.transaction((txn) async {
+      final parsedFilename = SnapshotFileName.parse(filename);
+      if (parsedFilename.isBlob ||
+          parsedFilename.snapshotSequence != snapshotSequence ||
+          parsedFilename.fileHash != snapshotHash) {
+        throw StateError('snapshot_publication_identity_mismatch');
+      }
       final publications = await txn.query(
         'sync_snapshot_publications',
         where: 'snapshot_sequence = ? AND state = ?',
         whereArgs: [snapshotSequence, 'blobs_ready'],
       );
       if (publications.isEmpty) throw StateError('snapshot_not_blobs_ready');
+      final state = await _snapshotStateIn(txn);
+      if (state.lastPublishedSequence != null &&
+          snapshotSequence <= state.lastPublishedSequence!) {
+        throw StateError('snapshot_publication_sequence_regression');
+      }
+      if (completeV1Cutover &&
+          state.v1MigrationState != V1MigrationState.readyToCutover) {
+        throw StateError('snapshot_v1_cutover_not_ready');
+      }
       final members = await txn.query(
         'sync_snapshot_members',
         columns: ['operation_id', 'payload_hash'],
@@ -393,7 +409,6 @@ class SqliteSyncRepository implements SyncRepository {
           whereArgs: [member['operation_id'], member['payload_hash']],
         );
       }
-      final state = await _snapshotStateIn(txn);
       await txn.insert('sync_snapshot_state', {
         'key': _snapshotStateKey,
         'next_snapshot_sequence': state.nextSnapshotSequence,
@@ -453,8 +468,11 @@ class SqliteSyncRepository implements SyncRepository {
 
   @override
   Future<void> markV1ReadyToCutover() => _enqueue(
-    () => _updateSnapshotState(
-      (state) => SyncSnapshotState(
+    () => _updateSnapshotState((state) {
+      if (state.v1MigrationState != V1MigrationState.needsUpgradeConfirmation) {
+        throw StateError('snapshot_v1_confirmation_not_required');
+      }
+      return SyncSnapshotState(
         nextSnapshotSequence: state.nextSnapshotSequence,
         lastPublishedSequence: state.lastPublishedSequence,
         lastPublishedHash: state.lastPublishedHash,
@@ -462,14 +480,17 @@ class SqliteSyncRepository implements SyncRepository {
         v1ImportCompleted: state.v1ImportCompleted,
         v1MigrationState: V1MigrationState.readyToCutover,
         v1LastSeenFingerprint: state.v1LastSeenFingerprint,
-      ),
-    ),
+      );
+    }),
   );
 
   @override
   Future<void> markV1MigrationNotRequired() => _enqueue(
-    () => _updateSnapshotState(
-      (state) => SyncSnapshotState(
+    () => _updateSnapshotState((state) {
+      if (state.v1MigrationState != V1MigrationState.notStarted) {
+        throw StateError('snapshot_v1_migration_already_started');
+      }
+      return SyncSnapshotState(
         nextSnapshotSequence: state.nextSnapshotSequence,
         lastPublishedSequence: state.lastPublishedSequence,
         lastPublishedHash: state.lastPublishedHash,
@@ -477,8 +498,8 @@ class SqliteSyncRepository implements SyncRepository {
         v1ImportCompleted: true,
         v1MigrationState: V1MigrationState.cutoverComplete,
         v1LastSeenFingerprint: state.v1LastSeenFingerprint,
-      ),
-    ),
+      );
+    }),
   );
 
   @override
@@ -518,14 +539,42 @@ class SqliteSyncRepository implements SyncRepository {
   Future<void> markSnapshotBlobMappingInvalid(
     String rawHash,
     String fileHash,
-  ) => _enqueue(
-    () => _database.update(
+  ) => _enqueue(() async {
+    final rows = await _database.query(
       'sync_snapshot_blobs',
-      {'verified': 0},
       where: 'raw_hash = ? AND file_hash = ?',
       whereArgs: [rawHash, fileHash],
-    ),
-  );
+      limit: 1,
+    );
+    final existing = rows.isEmpty ? null : _blobFromRow(rows.single);
+    await _database.insert(
+      'sync_snapshot_blobs',
+      _blobToRow(
+        SnapshotBlobMapping(
+          rawHash: rawHash,
+          fileHash: fileHash,
+          rawLength: existing?.rawLength ?? 0,
+          verified: false,
+          verifiedAt: DateTime.now(),
+          source: existing?.source ?? 'invalid',
+        ),
+      ),
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+  });
+
+  @override
+  Future<List<SnapshotBlobMapping>> loadSnapshotBlobMappings(
+    String rawHash,
+  ) async => [
+    for (final row in await _database.query(
+      'sync_snapshot_blobs',
+      where: 'raw_hash = ?',
+      whereArgs: [rawHash],
+      orderBy: 'file_hash ASC',
+    ))
+      _blobFromRow(row),
+  ];
 
   @override
   Future<List<SnapshotBlobMapping>> loadVerifiedBlobMappings(
@@ -1356,7 +1405,9 @@ class SqliteSyncRepository implements SyncRepository {
     );
     if (existing.isNotEmpty) {
       final current = _cursorFromRow(existing.single);
-      if (cursor.sequence < current.lastMergedSequence) return;
+      if (cursor.sequence < current.lastMergedSequence) {
+        throw StateError('snapshot_cursor_regression');
+      }
       if (cursor.sequence == current.lastMergedSequence &&
           cursor.snapshotHash != current.lastMergedHash) {
         throw StateError('snapshot_sequence_collision');

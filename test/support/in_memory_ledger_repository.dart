@@ -1,6 +1,7 @@
 import 'package:verifin/app/models.dart';
 import 'package:verifin/app/sync/sync_change_tracker.dart';
 import 'package:verifin/app/sync/sync_models.dart';
+import 'package:verifin/app/sync/sync_snapshot.dart';
 import 'package:verifin/app/sync/sync_store.dart';
 import 'package:verifin/data/ledger_repository.dart';
 
@@ -563,6 +564,20 @@ class _InMemorySyncRepository implements SyncRepository {
     if (publication?.state != SnapshotPublicationState.blobsReady) {
       throw StateError('snapshot_not_blobs_ready');
     }
+    final parsedFilename = SnapshotFileName.parse(filename);
+    if (parsedFilename.isBlob ||
+        parsedFilename.snapshotSequence != snapshotSequence ||
+        parsedFilename.fileHash != snapshotHash) {
+      throw StateError('snapshot_publication_identity_mismatch');
+    }
+    if (_snapshotState.lastPublishedSequence != null &&
+        snapshotSequence <= _snapshotState.lastPublishedSequence!) {
+      throw StateError('snapshot_publication_sequence_regression');
+    }
+    if (completeV1Cutover &&
+        _snapshotState.v1MigrationState != V1MigrationState.readyToCutover) {
+      throw StateError('snapshot_v1_cutover_not_ready');
+    }
     final ids = _snapshotMembers[snapshotSequence]!
         .map((member) => (member.operationId, member.payloadHash))
         .toSet();
@@ -622,10 +637,10 @@ class _InMemorySyncRepository implements SyncRepository {
 
   @override
   Future<void> markV1ReadyToCutover() async {
-    await recordV1Scan(
-      v1HistoryFound: false,
-      fingerprint: _snapshotState.v1LastSeenFingerprint,
-    );
+    if (_snapshotState.v1MigrationState !=
+        V1MigrationState.needsUpgradeConfirmation) {
+      throw StateError('snapshot_v1_confirmation_not_required');
+    }
     _snapshotState = SyncSnapshotState(
       nextSnapshotSequence: _snapshotState.nextSnapshotSequence,
       lastPublishedSequence: _snapshotState.lastPublishedSequence,
@@ -639,6 +654,9 @@ class _InMemorySyncRepository implements SyncRepository {
 
   @override
   Future<void> markV1MigrationNotRequired() async {
+    if (_snapshotState.v1MigrationState != V1MigrationState.notStarted) {
+      throw StateError('snapshot_v1_migration_already_started');
+    }
     _snapshotState = SyncSnapshotState(
       nextSnapshotSequence: _snapshotState.nextSnapshotSequence,
       lastPublishedSequence: _snapshotState.lastPublishedSequence,
@@ -660,7 +678,9 @@ class _InMemorySyncRepository implements SyncRepository {
   Future<void> saveSnapshotCursor(SnapshotCursorAdvance cursor) async {
     final existing = _snapshotCursors[cursor.deviceId];
     if (existing != null) {
-      if (cursor.sequence < existing.lastMergedSequence) return;
+      if (cursor.sequence < existing.lastMergedSequence) {
+        throw StateError('snapshot_cursor_regression');
+      }
       if (cursor.sequence == existing.lastMergedSequence &&
           cursor.snapshotHash != existing.lastMergedHash) {
         throw StateError('snapshot_sequence_collision');
@@ -686,19 +706,24 @@ class _InMemorySyncRepository implements SyncRepository {
     String fileHash,
   ) async {
     final mapping = _snapshotBlobs[rawHash]?[fileHash];
-    if (mapping != null) {
-      await saveVerifiedBlobMapping(
-        SnapshotBlobMapping(
-          rawHash: mapping.rawHash,
-          fileHash: mapping.fileHash,
-          rawLength: mapping.rawLength,
-          verified: false,
-          verifiedAt: mapping.verifiedAt,
-          source: mapping.source,
-        ),
-      );
-    }
+    await saveVerifiedBlobMapping(
+      SnapshotBlobMapping(
+        rawHash: rawHash,
+        fileHash: fileHash,
+        rawLength: mapping?.rawLength ?? 0,
+        verified: false,
+        verifiedAt: DateTime.now(),
+        source: mapping?.source ?? 'invalid',
+      ),
+    );
   }
+
+  @override
+  Future<List<SnapshotBlobMapping>> loadSnapshotBlobMappings(
+    String rawHash,
+  ) async =>
+      (_snapshotBlobs[rawHash]?.values.toList() ?? [])
+        ..sort((a, b) => a.fileHash.compareTo(b.fileHash));
 
   @override
   Future<List<SnapshotBlobMapping>> loadVerifiedBlobMappings(

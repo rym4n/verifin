@@ -132,6 +132,9 @@ class RecordingSyncRepository implements SyncRepository {
     String fileHash,
   ) => _inner.markSnapshotBlobMappingInvalid(rawHash, fileHash);
   @override
+  Future<List<SnapshotBlobMapping>> loadSnapshotBlobMappings(String rawHash) =>
+      _inner.loadSnapshotBlobMappings(rawHash);
+  @override
   Future<List<SnapshotBlobMapping>> loadVerifiedBlobMappings(String rawHash) =>
       _inner.loadVerifiedBlobMappings(rawHash);
   @override
