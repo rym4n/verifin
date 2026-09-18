@@ -1,6 +1,7 @@
 // ignore_for_file: prefer_initializing_formals
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
 
@@ -118,6 +119,7 @@ class SyncEngine {
     SyncClock? clock,
     String passphrase = '',
     this.wireLimits = const SyncWireLimits(),
+    Directory? snapshotTempRoot,
     void Function(Object)? onError,
 
     /// Wrap remote-apply calls to suppress outbox echo (e.g.,
@@ -131,6 +133,7 @@ class SyncEngine {
        _remoteApply = remoteApply,
        _clock = clock,
        _passphrase = passphrase,
+       _snapshotTempRoot = snapshotTempRoot,
        _onError = onError;
 
   final SyncRepository _repository;
@@ -146,6 +149,7 @@ class SyncEngine {
 
   SyncClock? _clock;
   String _passphrase;
+  final Directory? _snapshotTempRoot;
   final void Function(Object)? _onError;
   void updatePassphrase(String passphrase) {
     _passphrase = passphrase;
@@ -365,10 +369,15 @@ class SyncEngine {
             ],
           ];
           final rawBlobs = await _downloadSnapshotBlobs(snapshot, rootFiles);
-          final events = <SyncEvent>[
-            for (final event in wireEvents)
-              materializeSyncEvent(event, rawBlobs, limits: wireLimits),
-          ];
+          late final List<SyncEvent> events;
+          try {
+            events = <SyncEvent>[
+              for (final event in wireEvents)
+                await _materializeSnapshotEvent(event, rawBlobs),
+            ];
+          } finally {
+            await rawBlobs.dispose();
+          }
           final result = await _mergeAndApply(
             events,
             applyBatchId: batchId,
@@ -392,7 +401,7 @@ class SyncEngine {
     return (downloaded, conflicts);
   }
 
-  Future<Map<String, Uint8List>> _downloadSnapshotBlobs(
+  Future<_SnapshotBlobSession> _downloadSnapshotBlobs(
     SyncSnapshot snapshot,
     List<WebdavRootFile> rootFiles,
   ) async {
@@ -400,67 +409,94 @@ class SyncEngine {
       for (final file in rootFiles)
         if (file.name.isBlob) file.name.fileHash: file.name,
     };
-    final result = <String, Uint8List>{};
-    for (final attachment in snapshot.attachmentBlobs) {
-      for (final chunk in attachment.chunks) {
-        if (result.containsKey(chunk.rawHash)) continue;
-        final knownMappings = await _repository.loadSnapshotBlobMappings(
-          chunk.rawHash,
-        );
-        if (knownMappings.any(
-          (mapping) => mapping.fileHash == chunk.fileHash && !mapping.verified,
-        )) {
-          throw const FormatException('snapshot_blob_invalid');
-        }
-        final name = byHash[chunk.fileHash];
-        if (name == null) throw const FormatException('snapshot_blob_missing');
-        try {
-          final downloaded = await _transport!.downloadRootFile(
-            _config!,
-            name,
-            maxBytes: wireLimits.maxEnvelopeBytes,
-          );
-          final envelope = jsonDecode(utf8.decode(downloaded.bytes));
-          if (envelope is! Map) {
-            throw const FormatException('snapshot_blob_envelope');
-          }
-          final decoded = await SyncCodec(passphrase: _passphrase).decodeValue(
-            Map<String, Object?>.from(envelope),
-            expectedProtocolVersion: syncSnapshotProtocolVersion,
-            maxPlaintextBytes: wireLimits.maxEnvelopeBytes,
-          );
-          if (decoded is! Map ||
-              decoded['rawHash'] != chunk.rawHash ||
-              decoded['data'] is! String) {
-            throw const FormatException('snapshot_blob_mapping');
-          }
-          final bytes = Uint8List.fromList(
-            base64Decode(decoded['data'] as String),
-          );
-          if (sha256.convert(bytes).toString() != chunk.rawHash) {
-            throw const FormatException('snapshot_blob_raw_hash');
-          }
-          result[chunk.rawHash] = bytes;
-          await _repository.saveVerifiedBlobMapping(
-            SnapshotBlobMapping(
-              rawHash: chunk.rawHash,
-              fileHash: chunk.fileHash,
-              rawLength: bytes.length,
-              verified: true,
-              verifiedAt: DateTime.now(),
-              source: 'remote_download',
-            ),
-          );
-        } catch (_) {
-          await _repository.markSnapshotBlobMappingInvalid(
+    final result = await _SnapshotBlobSession.create(_snapshotTempRoot);
+    try {
+      for (final attachment in snapshot.attachmentBlobs) {
+        for (final chunk in attachment.chunks) {
+          if (result.contains(chunk.rawHash)) continue;
+          final knownMappings = await _repository.loadSnapshotBlobMappings(
             chunk.rawHash,
-            chunk.fileHash,
           );
-          rethrow;
+          if (knownMappings.any(
+            (mapping) =>
+                mapping.fileHash == chunk.fileHash && !mapping.verified,
+          )) {
+            throw const FormatException('snapshot_blob_invalid');
+          }
+          final name = byHash[chunk.fileHash];
+          if (name == null)
+            throw const FormatException('snapshot_blob_missing');
+          try {
+            final downloaded = await _transport!.downloadRootFile(
+              _config!,
+              name,
+              maxBytes: wireLimits.maxEnvelopeBytes,
+            );
+            final envelope = jsonDecode(utf8.decode(downloaded.bytes));
+            if (envelope is! Map) {
+              throw const FormatException('snapshot_blob_envelope');
+            }
+            final decoded = await SyncCodec(passphrase: _passphrase)
+                .decodeValue(
+                  Map<String, Object?>.from(envelope),
+                  expectedProtocolVersion: syncSnapshotProtocolVersion,
+                  maxPlaintextBytes: wireLimits.maxEnvelopeBytes,
+                );
+            if (decoded is! Map ||
+                decoded['rawHash'] != chunk.rawHash ||
+                decoded['data'] is! String) {
+              throw const FormatException('snapshot_blob_mapping');
+            }
+            final bytes = Uint8List.fromList(
+              base64Decode(decoded['data'] as String),
+            );
+            if (sha256.convert(bytes).toString() != chunk.rawHash) {
+              throw const FormatException('snapshot_blob_raw_hash');
+            }
+            await result.write(chunk.rawHash, bytes);
+            await _repository.saveVerifiedBlobMapping(
+              SnapshotBlobMapping(
+                rawHash: chunk.rawHash,
+                fileHash: chunk.fileHash,
+                rawLength: bytes.length,
+                verified: true,
+                verifiedAt: DateTime.now(),
+                source: 'remote_download',
+              ),
+            );
+          } catch (_) {
+            await _repository.markSnapshotBlobMappingInvalid(
+              chunk.rawHash,
+              chunk.fileHash,
+            );
+            rethrow;
+          }
         }
       }
+      return result;
+    } catch (_) {
+      await result.dispose();
+      rethrow;
     }
-    return result;
+  }
+
+  Future<SyncEvent> _materializeSnapshotEvent(
+    SyncEvent event,
+    _SnapshotBlobSession blobs,
+  ) async {
+    if (event.entity.type != 'attachments' ||
+        event.operation == SyncOperationKind.delete ||
+        event.payload is! Map ||
+        !(event.payload as Map).containsKey('blobChunks')) {
+      return event;
+    }
+    final hashes = ((event.payload as Map)['blobChunks'] as List)
+        .cast<String>();
+    final chunks = <String, Uint8List>{};
+    for (final hash in hashes) {
+      chunks[hash] = await blobs.read(hash);
+    }
+    return materializeSyncEvent(event, chunks, limits: wireLimits);
   }
 
   SyncEvent _snapshotVersionEvent(
@@ -2210,6 +2246,41 @@ class SyncEngine {
 
   String _commitPath(String batchId, String deviceId) {
     return 'verifin-sync/v1/batches/$deviceId/$batchId.commit';
+  }
+}
+
+class _SnapshotBlobSession {
+  _SnapshotBlobSession(this.directory);
+
+  final Directory directory;
+  final Map<String, File> _files = <String, File>{};
+
+  static Future<_SnapshotBlobSession> create(Directory? root) async {
+    final parent = root ?? Directory.systemTemp;
+    await parent.create(recursive: true);
+    return _SnapshotBlobSession(
+      await parent.createTemp('verifin-sync-snapshot-'),
+    );
+  }
+
+  bool contains(String rawHash) => _files.containsKey(rawHash);
+
+  Future<void> write(String rawHash, Uint8List bytes) async {
+    final file = File('${directory.path}${Platform.pathSeparator}$rawHash.tmp');
+    await file.writeAsBytes(bytes, flush: true);
+    _files[rawHash] = file;
+  }
+
+  Future<Uint8List> read(String rawHash) async {
+    final file = _files[rawHash];
+    if (file == null) throw const FormatException('snapshot_blob_missing');
+    return file.readAsBytes();
+  }
+
+  Future<void> dispose() async {
+    if (await directory.exists()) {
+      await directory.delete(recursive: true);
+    }
   }
 }
 

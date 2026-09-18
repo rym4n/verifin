@@ -45,6 +45,7 @@ class SyncTestDevice {
     required String deviceId,
     required StubWebdavSyncTransport transport,
     bool trackLocalChanges = true,
+    Directory? snapshotTempRoot,
   }) async {
     final directory = Directory.systemTemp.createTempSync(
       'verifin-sync-device-',
@@ -78,6 +79,7 @@ class SyncTestDevice {
       controller: controller,
       config: syncTestConfig,
       clock: clock,
+      snapshotTempRoot: snapshotTempRoot,
       onError: (error) => device.lastSyncError = error,
     );
     device = SyncTestDevice._(

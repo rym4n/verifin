@@ -54,6 +54,9 @@ class StubWebdavSyncTransport implements WebdavSyncTransport {
   /// Test control: fail immutable snapshot uploads.
   bool failSnapshotUploads = false;
 
+  /// Test control: store one snapshot, then fail before local confirmation.
+  bool failAfterSnapshotStore = false;
+
   @override
   Future<void> ensureSyncTree(WebdavConfig config) async {
     _countV1('MKCOL');
@@ -277,6 +280,10 @@ class StubWebdavSyncTransport implements WebdavSyncTransport {
       throw WebdavFileCollision('File exists with different hash: $path');
     }
     _files[path] = uploaded;
+    if (failAfterSnapshotStore && !name.isBlob) {
+      failAfterSnapshotStore = false;
+      throw const WebdavException('Test: crash after snapshot store');
+    }
   }
 
   @override
