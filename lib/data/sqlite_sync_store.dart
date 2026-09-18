@@ -923,7 +923,7 @@ class SqliteSyncRepository implements SyncRepository {
     // KV writes form a recoverable prepared commit. Applied ids and vector
     // stay invisible until every journal row has been durably flushed.
     final prepared = encodePreparedPlan(plan);
-    if (plan.kvJournalValues.isEmpty && plan.conflicts.isEmpty) {
+    if (plan.kvJournalValues.isEmpty) {
       await _finalizePlan(txn, prepared);
     } else if (plan.kvJournalValues.isNotEmpty) {
       await txn.insert('sync_pending', {

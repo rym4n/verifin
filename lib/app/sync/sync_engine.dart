@@ -34,11 +34,20 @@ String syncErrorCode(Object error) {
         ? 'auth'
         : 'decode';
   }
+  if (error is SyncSnapshotException) {
+    if (message.contains('fingerprint')) return 'auth';
+    if (message.contains('too_large')) return 'size_limit';
+    return 'protocol';
+  }
   if (error is WebdavFileCollision) return 'protocol';
   if (error is WebdavException) {
     return RegExp(r'\b(401|403)\b').hasMatch(message) ? 'auth' : 'network';
   }
   if (message.contains('outbox_event_missing')) return 'outbox_event_missing';
+  if (message.contains('snapshot_sequence_collision') ||
+      message.contains('snapshot_')) {
+    return message.contains('too_large') ? 'size_limit' : 'protocol';
+  }
   if (error is FormatException) {
     if (message.contains('protocol_version') ||
         message.contains('manifest_') ||
@@ -260,11 +269,15 @@ class SyncEngine {
     try {
       await _ensureClock();
       await _repository.abandonIncompleteSnapshotPublications();
-      final migrationError = await _runPhase(
-        SyncPhase.ensureRemote,
-        prepareSnapshotCutover,
-        onPhase,
-      );
+      final gate = await _runPhase(SyncPhase.ensureRemote, () async {
+        final listing = await transport.listRoot(_config!);
+        final error = await prepareSnapshotCutover(
+          legacyTreePresent: listing.legacyTreePresent,
+        );
+        return (listing, error);
+      }, onPhase);
+      final rootListing = gate.$1;
+      final migrationError = gate.$2;
       if (migrationError != null) {
         return SyncRunResult(
           uploaded: 0,
@@ -275,12 +288,12 @@ class SyncEngine {
         );
       }
 
-      final rootFiles = await _runPhase(
+      final rootFiles = rootListing.files;
+      final merged = await _runPhase(
         SyncPhase.download,
-        () => transport.listRoot(_config!),
+        () => _mergeSnapshotCandidates(rootFiles),
         onPhase,
       );
-      final merged = await _mergeSnapshotCandidates(rootFiles);
       progress.downloaded = merged.$1;
       progress.conflicts = merged.$2;
 
@@ -325,6 +338,15 @@ class SyncEngine {
     var downloaded = 0;
     var conflicts = 0;
     for (final entry in byDevice.entries) {
+      final hashesBySequence = <int, Set<String>>{};
+      for (final file in entry.value) {
+        hashesBySequence
+            .putIfAbsent(file.name.snapshotSequence!, () => <String>{})
+            .add(file.name.fileHash);
+      }
+      if (hashesBySequence.values.any((hashes) => hashes.length > 1)) {
+        throw StateError('snapshot_sequence_collision');
+      }
       final cursor = await _repository.loadSnapshotCursor(entry.key);
       final candidates =
           entry.value
@@ -417,60 +439,66 @@ class SyncEngine {
           final knownMappings = await _repository.loadSnapshotBlobMappings(
             chunk.rawHash,
           );
-          if (knownMappings.any(
-            (mapping) =>
-                mapping.fileHash == chunk.fileHash && !mapping.verified,
-          )) {
-            throw const FormatException('snapshot_blob_invalid');
+          final candidates = <String>{
+            chunk.fileHash,
+            for (final mapping in knownMappings)
+              if (mapping.verified) mapping.fileHash,
+          }.toList()..sort();
+          Object? lastError;
+          for (final fileHash in candidates) {
+            final name = byHash[fileHash];
+            if (name == null) continue;
+            try {
+              final downloaded = await _transport!.downloadRootFile(
+                _config!,
+                name,
+                maxBytes: wireLimits.maxEnvelopeBytes,
+              );
+              final envelope = jsonDecode(utf8.decode(downloaded.bytes));
+              if (envelope is! Map) {
+                throw const FormatException('snapshot_blob_envelope');
+              }
+              final decoded = await SyncCodec(passphrase: _passphrase)
+                  .decodeValue(
+                    Map<String, Object?>.from(envelope),
+                    expectedProtocolVersion: syncSnapshotProtocolVersion,
+                    maxPlaintextBytes: wireLimits.maxEnvelopeBytes,
+                  );
+              if (decoded is! Map ||
+                  decoded['rawHash'] != chunk.rawHash ||
+                  decoded['data'] is! String) {
+                throw const FormatException('snapshot_blob_mapping');
+              }
+              final bytes = Uint8List.fromList(
+                base64Decode(decoded['data'] as String),
+              );
+              if (sha256.convert(bytes).toString() != chunk.rawHash) {
+                throw const FormatException('snapshot_blob_raw_hash');
+              }
+              await result.write(chunk.rawHash, bytes);
+              await _repository.saveVerifiedBlobMapping(
+                SnapshotBlobMapping(
+                  rawHash: chunk.rawHash,
+                  fileHash: fileHash,
+                  rawLength: bytes.length,
+                  verified: true,
+                  verifiedAt: DateTime.now(),
+                  source: 'remote_download',
+                ),
+              );
+              lastError = null;
+              break;
+            } catch (error) {
+              lastError = error;
+              if (error is WebdavException) continue;
+              await _repository.markSnapshotBlobMappingInvalid(
+                chunk.rawHash,
+                fileHash,
+              );
+            }
           }
-          final name = byHash[chunk.fileHash];
-          if (name == null) {
-            throw const FormatException('snapshot_blob_missing');
-          }
-          try {
-            final downloaded = await _transport!.downloadRootFile(
-              _config!,
-              name,
-              maxBytes: wireLimits.maxEnvelopeBytes,
-            );
-            final envelope = jsonDecode(utf8.decode(downloaded.bytes));
-            if (envelope is! Map) {
-              throw const FormatException('snapshot_blob_envelope');
-            }
-            final decoded = await SyncCodec(passphrase: _passphrase)
-                .decodeValue(
-                  Map<String, Object?>.from(envelope),
-                  expectedProtocolVersion: syncSnapshotProtocolVersion,
-                  maxPlaintextBytes: wireLimits.maxEnvelopeBytes,
-                );
-            if (decoded is! Map ||
-                decoded['rawHash'] != chunk.rawHash ||
-                decoded['data'] is! String) {
-              throw const FormatException('snapshot_blob_mapping');
-            }
-            final bytes = Uint8List.fromList(
-              base64Decode(decoded['data'] as String),
-            );
-            if (sha256.convert(bytes).toString() != chunk.rawHash) {
-              throw const FormatException('snapshot_blob_raw_hash');
-            }
-            await result.write(chunk.rawHash, bytes);
-            await _repository.saveVerifiedBlobMapping(
-              SnapshotBlobMapping(
-                rawHash: chunk.rawHash,
-                fileHash: chunk.fileHash,
-                rawLength: bytes.length,
-                verified: true,
-                verifiedAt: DateTime.now(),
-                source: 'remote_download',
-              ),
-            );
-          } catch (_) {
-            await _repository.markSnapshotBlobMappingInvalid(
-              chunk.rawHash,
-              chunk.fileHash,
-            );
-            rethrow;
+          if (lastError != null) {
+            throw lastError;
           }
         }
       }
@@ -687,13 +715,15 @@ class SyncEngine {
   ///
   /// Returns a stable blocking code while the user still needs to upgrade or
   /// stop legacy clients. A null result means snapshot-v2 work may continue.
-  Future<String?> prepareSnapshotCutover() async {
+  Future<String?> prepareSnapshotCutover({bool? legacyTreePresent}) async {
     final transport = _transport;
     if (_config == null || transport == null) return 'no_config';
 
     final state = await _repository.loadSnapshotState();
-    if (state.v1MigrationState == V1MigrationState.cutoverComplete &&
-        state.v1LastSeenFingerprint == null) {
+    if (legacyTreePresent == false &&
+        state.v1LastSeenFingerprint == null &&
+        state.v1MigrationState == V1MigrationState.notStarted) {
+      await _repository.markV1MigrationNotRequired();
       return null;
     }
     final remoteFiles = await transport.listSyncFiles(_config!);
@@ -1639,7 +1669,8 @@ class SyncEngine {
     }
     if (conflicts.isNotEmpty) {
       await _applyEvents(
-        const [],
+        accepted,
+        acknowledgedEvents: superseded,
         conflicts: conflicts,
         batchId: applyBatchId ?? events.first.batchId,
         cursorAdvance: cursorAdvance,
@@ -1660,9 +1691,7 @@ class SyncEngine {
       );
     }
     return (
-      conflicts.isEmpty
-          ? accepted.where((e) => shadow[e.entity] != e.payloadHash).length
-          : 0,
+      accepted.where((e) => shadow[e.entity] != e.payloadHash).length,
       conflicts.length,
     );
   }

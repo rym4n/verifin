@@ -213,7 +213,7 @@ class StubWebdavSyncTransport implements WebdavSyncTransport {
   }
 
   @override
-  Future<List<WebdavRootFile>> listRoot(WebdavConfig config) async {
+  Future<WebdavRootListing> listRoot(WebdavConfig config) async {
     _countSnapshot('PROPFIND');
     final result = <WebdavRootFile>[];
     for (final entry in _files.entries) {
@@ -230,7 +230,12 @@ class StubWebdavSyncTransport implements WebdavSyncTransport {
         // Ordinary backups, the v1 tree, and unknown root files are ignored.
       }
     }
-    return result;
+    return WebdavRootListing(
+      files: result,
+      legacyTreePresent: _files.keys.any(
+        (path) => path.startsWith('verifin-sync/v1/'),
+      ),
+    );
   }
 
   @override

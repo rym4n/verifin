@@ -33,9 +33,9 @@ void main() {
         transport.files['verifin-backup-20260918.zip'] = utf8.encode('backup');
         transport.files['verifin-sync-v2-invalid.json'] = utf8.encode('bad');
 
-        final files = await transport.listRoot(_config);
+        final listing = await transport.listRoot(_config);
 
-        expect(files.map((file) => file.name.toString()).toSet(), {
+        expect(listing.files.map((file) => file.name.toString()).toSet(), {
           snapshot.toString(),
           blob.toString(),
         });
@@ -144,9 +144,11 @@ void main() {
       });
       addTearDown(server.close);
 
-      final files = await WebdavSyncTransportImpl().listRoot(server.config);
+      final listing = await WebdavSyncTransportImpl().listRoot(server.config);
 
-      expect(files.map((file) => file.name.toString()), [snapshot.toString()]);
+      expect(listing.files.map((file) => file.name.toString()), [
+        snapshot.toString(),
+      ]);
       expect(methods, ['PROPFIND']);
     });
 

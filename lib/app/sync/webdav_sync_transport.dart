@@ -1165,7 +1165,7 @@ class WebdavSyncTransportImpl implements WebdavSyncTransport {
   }
 
   @override
-  Future<List<WebdavRootFile>> listRoot(WebdavConfig config) async {
+  Future<WebdavRootListing> listRoot(WebdavConfig config) async {
     final client = _newClient();
     try {
       final request = await _open(
@@ -1208,10 +1208,14 @@ class WebdavSyncTransportImpl implements WebdavSyncTransport {
         ),
       );
       final result = <WebdavRootFile>[];
+      var legacyTreePresent = false;
       for (final entry in _parsePropfindEntries(utf8.decode(bodyBytes))) {
-        if (entry.isCollection) continue;
         final filename = _rootFilenameFromHref(entry.href, config);
         if (filename == null) continue;
+        if (entry.isCollection) {
+          if (filename == 'verifin-sync') legacyTreePresent = true;
+          continue;
+        }
         try {
           result.add(
             WebdavRootFile(
@@ -1224,7 +1228,10 @@ class WebdavSyncTransportImpl implements WebdavSyncTransport {
           // Safe ordinary backups and unrelated root files are ignored.
         }
       }
-      return result;
+      return WebdavRootListing(
+        files: result,
+        legacyTreePresent: legacyTreePresent,
+      );
     } catch (error) {
       _fail(
         error,

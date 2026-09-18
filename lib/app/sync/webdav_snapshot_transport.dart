@@ -22,8 +22,18 @@ class DownloadedWebdavRootFile {
   final Uint8List bytes;
 }
 
+class WebdavRootListing {
+  const WebdavRootListing({
+    required this.files,
+    required this.legacyTreePresent,
+  });
+
+  final List<WebdavRootFile> files;
+  final bool legacyTreePresent;
+}
+
 abstract interface class WebdavSnapshotTransport {
-  Future<List<WebdavRootFile>> listRoot(WebdavConfig config);
+  Future<WebdavRootListing> listRoot(WebdavConfig config);
 
   Future<void> putSnapshot(
     WebdavConfig config,

@@ -837,7 +837,7 @@ class _InMemorySyncRepository implements SyncRepository {
       }
     }
 
-    if (plan.kvJournalValues.isEmpty && plan.conflicts.isEmpty) {
+    if (plan.kvJournalValues.isEmpty) {
       _finalize(plan);
     } else if (plan.kvJournalValues.isNotEmpty) {
       _prepared[plan.batchId] = plan;
