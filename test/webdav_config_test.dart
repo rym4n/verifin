@@ -87,6 +87,46 @@ void main() {
       );
       expect(joinWebdavUrl('https://a/dav/', '有 空格.json'), contains('%20'));
     });
+
+    test('安全 href 只接受配置集合下的直接文件', () {
+      const config = WebdavConfig(url: 'https://a.example/dav/verifin/');
+      expect(
+        resolveSafeWebdavFileHref(
+          config,
+          '/dav/verifin/verifin-backup-1.zip',
+        ).toString(),
+        'https://a.example/dav/verifin/verifin-backup-1.zip',
+      );
+      for (final href in <String>[
+        'https://evil.example/dav/verifin/backup.zip',
+        '//evil.example/dav/verifin/backup.zip',
+        '/dav/outside/backup.zip',
+        '/dav/verifin/sub/backup.zip',
+        '/dav/verifin/%2Foutside.zip',
+        '/dav/verifin/backup.zip?token=secret',
+        '/dav/verifin/backup.zip#fragment',
+      ]) {
+        expect(
+          () => resolveSafeWebdavFileHref(config, href),
+          throwsFormatException,
+          reason: href,
+        );
+      }
+    });
+
+    test('普通备份列表可识别并排除 v2 远端文件名', () {
+      expect(
+        isSyncSnapshotRemoteName(
+          'verifin-sync-v2-${'a' * 32}-${'0' * 20}-20260918T031522417Z-${'b' * 64}.json',
+        ),
+        isTrue,
+      );
+      expect(
+        isSyncSnapshotRemoteName('verifin-sync-v2-blob-${'c' * 64}.blob'),
+        isTrue,
+      );
+      expect(isSyncSnapshotRemoteName('verifin-backup-20260918.zip'), isFalse);
+    });
   });
 
   group('parsePropfindResponse', () {

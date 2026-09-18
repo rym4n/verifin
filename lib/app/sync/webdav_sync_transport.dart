@@ -7,6 +7,8 @@ import 'package:crypto/crypto.dart';
 import 'package:xml/xml.dart';
 
 import '../backup/webdav_config.dart';
+import 'sync_snapshot.dart';
+import 'webdav_snapshot_transport.dart';
 
 /// Maximum download size for sync files (32 MB).
 const int syncMaxDownloadBytes = 32 * 1024 * 1024;
@@ -47,7 +49,8 @@ class WebdavSyncFile {
 }
 
 /// WebDAV sync transport interface.
-abstract interface class WebdavSyncTransport {
+abstract interface class WebdavSyncTransport
+    implements WebdavSnapshotTransport {
   /// Ensure the sync directory tree exists.
   Future<void> ensureSyncTree(WebdavConfig config);
 
@@ -1160,6 +1163,360 @@ class WebdavSyncTransportImpl implements WebdavSyncTransport {
       client.close(force: true);
     }
   }
+
+  @override
+  Future<List<WebdavRootFile>> listRoot(WebdavConfig config) async {
+    final client = _newClient();
+    try {
+      final request = await _open(
+        client,
+        'PROPFIND',
+        _snapshotCollectionUri(config),
+        config,
+      );
+      request.headers.set('Depth', '1');
+      request.headers.contentType = ContentType(
+        'application',
+        'xml',
+        charset: 'utf-8',
+      );
+      request.write(_propfindBody);
+      final response = await request.close().timeout(_responseTimeout);
+      if (response.statusCode != HttpStatus.multiStatus) {
+        _abortResponse(client);
+        throw WebdavException(
+          'PROPFIND failed: ${response.statusCode}',
+          diagnostic: WebdavDiagnostic(
+            method: 'PROPFIND',
+            operation: 'list_snapshots',
+            fileKind: 'snapshot',
+            statusCode: response.statusCode,
+            reason: 'http_status',
+          ),
+        );
+      }
+      final bodyBytes = await _readResponseWithLimit(
+        client,
+        response,
+        maxBytes: 1024 * 1024,
+        errorMessage: 'Snapshot listing exceeds size limit',
+        diagnostic: const WebdavDiagnostic(
+          method: 'PROPFIND',
+          operation: 'list_snapshots',
+          fileKind: 'snapshot',
+          reason: 'size_limit',
+        ),
+      );
+      final result = <WebdavRootFile>[];
+      for (final entry in _parsePropfindEntries(utf8.decode(bodyBytes))) {
+        if (entry.isCollection) continue;
+        final filename = _rootFilenameFromHref(entry.href, config);
+        if (filename == null) continue;
+        try {
+          result.add(
+            WebdavRootFile(
+              name: SnapshotFileName.parse(filename),
+              sizeBytes: entry.sizeBytes,
+              modifiedAt: null,
+            ),
+          );
+        } on FormatException {
+          // Safe ordinary backups and unrelated root files are ignored.
+        }
+      }
+      return result;
+    } catch (error) {
+      _fail(
+        error,
+        method: 'PROPFIND',
+        operation: 'list_snapshots',
+        fileKind: 'snapshot',
+      );
+    } finally {
+      client.close(force: true);
+    }
+  }
+
+  @override
+  Future<void> putSnapshot(
+    WebdavConfig config,
+    SnapshotFileName name,
+    Stream<List<int>> bytes,
+    int length,
+  ) async {
+    if (name.isBlob) throw const WebdavException('Expected snapshot name');
+    await _putRootFile(config, name, bytes, length);
+  }
+
+  @override
+  Future<void> putBlob(
+    WebdavConfig config,
+    SnapshotFileName name,
+    Stream<List<int>> bytes,
+    int length,
+  ) async {
+    if (!name.isBlob) throw const WebdavException('Expected blob name');
+    await _putRootFile(config, name, bytes, length);
+  }
+
+  Future<void> _putRootFile(
+    WebdavConfig config,
+    SnapshotFileName name,
+    Stream<List<int>> bytes,
+    int length,
+  ) async {
+    final directory = await Directory.systemTemp.createTemp(
+      'verifin-sync-upload-',
+    );
+    final file = File('${directory.path}${Platform.pathSeparator}payload');
+    try {
+      final sink = file.openWrite();
+      var written = 0;
+      try {
+        await for (final chunk in bytes) {
+          written += chunk.length;
+          if (written > length) {
+            throw const WebdavException('Upload length mismatch');
+          }
+          sink.add(chunk);
+        }
+      } finally {
+        await sink.close();
+      }
+      if (written != length) {
+        throw const WebdavException('Upload length mismatch');
+      }
+      final digest = await sha256.bind(file.openRead()).first;
+      if (digest.toString() != name.fileHash) {
+        throw const WebdavException('Upload hash mismatch');
+      }
+
+      final client = _newClient();
+      try {
+        final request = await _open(
+          client,
+          'PUT',
+          _rootFileUri(config, name),
+          config,
+        );
+        request.headers.contentType = ContentType(
+          'application',
+          'octet-stream',
+        );
+        request.headers.contentLength = length;
+        request.headers.set(HttpHeaders.ifNoneMatchHeader, '*');
+        await request.addStream(file.openRead());
+        final response = await request.close().timeout(_responseTimeout);
+        await response.drain<void>();
+        if (response.statusCode == HttpStatus.preconditionFailed) {
+          final existing = await downloadRootFile(
+            config,
+            name,
+            maxBytes: length,
+          );
+          if (sha256.convert(existing.bytes).toString() == name.fileHash) {
+            return;
+          }
+          throw WebdavFileCollision(
+            'Root file exists with different content',
+            diagnostic: WebdavDiagnostic(
+              method: 'PUT',
+              operation: 'upload_snapshot',
+              fileKind: name.isBlob ? 'blob' : 'snapshot',
+              statusCode: response.statusCode,
+              reason: 'file_collision',
+            ),
+          );
+        }
+        if (response.statusCode != HttpStatus.ok &&
+            response.statusCode != HttpStatus.created &&
+            response.statusCode != HttpStatus.noContent) {
+          throw WebdavException(
+            'Upload failed: ${response.statusCode}',
+            diagnostic: WebdavDiagnostic(
+              method: 'PUT',
+              operation: 'upload_snapshot',
+              fileKind: name.isBlob ? 'blob' : 'snapshot',
+              statusCode: response.statusCode,
+              reason: 'http_status',
+            ),
+          );
+        }
+      } catch (error) {
+        _fail(
+          error,
+          method: 'PUT',
+          operation: 'upload_snapshot',
+          fileKind: name.isBlob ? 'blob' : 'snapshot',
+        );
+      } finally {
+        client.close(force: true);
+      }
+    } finally {
+      try {
+        if (await file.exists()) await file.delete();
+      } finally {
+        if (await directory.exists()) await directory.delete();
+      }
+    }
+  }
+
+  @override
+  Future<DownloadedWebdavRootFile> downloadRootFile(
+    WebdavConfig config,
+    SnapshotFileName name, {
+    required int maxBytes,
+  }) async {
+    final client = _newClient();
+    try {
+      final redirected = await _getFollowingRedirects(
+        client,
+        _rootFileUri(config, name),
+        config,
+        operation: 'download_snapshot',
+        fileKind: name.isBlob ? 'blob' : 'snapshot',
+      );
+      if (redirected.response.statusCode < HttpStatus.ok ||
+          redirected.response.statusCode >= 300) {
+        _abortResponse(client);
+        throw WebdavException(
+          'Download failed: ${redirected.response.statusCode}',
+          diagnostic: WebdavDiagnostic(
+            method: 'GET',
+            operation: 'download_snapshot',
+            fileKind: name.isBlob ? 'blob' : 'snapshot',
+            statusCode: redirected.response.statusCode,
+            redirectCount: redirected.redirectCount,
+            redirectRelation: redirected.redirectRelation,
+            reason: 'http_status',
+          ),
+        );
+      }
+      final bytes = await _readResponseWithLimit(
+        client,
+        redirected.response,
+        maxBytes: maxBytes,
+        errorMessage: 'File exceeds maxBytes limit',
+        diagnostic: WebdavDiagnostic(
+          method: 'GET',
+          operation: 'download_snapshot',
+          fileKind: name.isBlob ? 'blob' : 'snapshot',
+          redirectCount: redirected.redirectCount,
+          redirectRelation: redirected.redirectRelation,
+          reason: 'size_limit',
+        ),
+      );
+      if (sha256.convert(bytes).toString() != name.fileHash) {
+        throw const WebdavException('Snapshot file hash mismatch');
+      }
+      return DownloadedWebdavRootFile(name: name, bytes: bytes);
+    } catch (error) {
+      _fail(
+        error,
+        method: 'GET',
+        operation: 'download_snapshot',
+        fileKind: name.isBlob ? 'blob' : 'snapshot',
+      );
+    } finally {
+      client.close(force: true);
+    }
+  }
+
+  @override
+  Future<void> deleteSnapshot(
+    WebdavConfig config,
+    SnapshotFileName name,
+  ) async {
+    if (name.isBlob) throw const WebdavException('Expected snapshot name');
+    final client = _newClient();
+    try {
+      final request = await _open(
+        client,
+        'DELETE',
+        _rootFileUri(config, name),
+        config,
+      );
+      final response = await request.close().timeout(_responseTimeout);
+      await response.drain<void>();
+      if (response.statusCode >= 400 &&
+          response.statusCode != HttpStatus.notFound) {
+        throw WebdavException(
+          'Delete failed: ${response.statusCode}',
+          diagnostic: WebdavDiagnostic(
+            method: 'DELETE',
+            operation: 'delete_snapshot',
+            fileKind: 'snapshot',
+            statusCode: response.statusCode,
+            reason: 'http_status',
+          ),
+        );
+      }
+    } catch (error) {
+      _fail(
+        error,
+        method: 'DELETE',
+        operation: 'delete_snapshot',
+        fileKind: 'snapshot',
+      );
+    } finally {
+      client.close(force: true);
+    }
+  }
+}
+
+Uri _snapshotCollectionUri(WebdavConfig config) {
+  final uri = _collectionUri(config);
+  if (uri.hasQuery || uri.hasFragment || uri.userInfo.isNotEmpty) {
+    throw const WebdavException('Invalid WebDAV URL');
+  }
+  return uri;
+}
+
+Uri _rootFileUri(WebdavConfig config, SnapshotFileName name) {
+  final base = _snapshotCollectionUri(config);
+  final uri = base.resolve(Uri.encodeComponent(name.toString()));
+  if (!_sameOrigin(base, uri)) {
+    throw const WebdavException('Snapshot URI escapes configured collection');
+  }
+  return uri;
+}
+
+String? _rootFilenameFromHref(String href, WebdavConfig config) {
+  final lower = href.toLowerCase();
+  if (lower.contains('%2f') || lower.contains('%5c')) {
+    throw const WebdavException('PROPFIND href contains encoded slash');
+  }
+  final reference = Uri.tryParse(href);
+  if (reference == null || reference.hasQuery || reference.hasFragment) {
+    throw const WebdavException('Malformed PROPFIND href');
+  }
+  final base = _snapshotCollectionUri(config);
+  if ((!reference.hasScheme && reference.hasAuthority) ||
+      (reference.hasScheme && !_sameOrigin(reference, base))) {
+    throw const WebdavException('PROPFIND href is outside collection');
+  }
+  final resolved = base.resolveUri(reference);
+  if (!_sameOrigin(base, resolved)) {
+    throw const WebdavException('PROPFIND href is outside collection');
+  }
+  final baseSegments = base.pathSegments
+      .where((segment) => segment.isNotEmpty)
+      .toList(growable: false);
+  final resolvedSegments = resolved.pathSegments
+      .where((segment) => segment.isNotEmpty)
+      .toList(growable: false);
+  if (resolvedSegments.length == baseSegments.length &&
+      _sameSegments(resolvedSegments, baseSegments)) {
+    return null;
+  }
+  if (resolvedSegments.length != baseSegments.length + 1 ||
+      !_sameSegments(
+        resolvedSegments.sublist(0, baseSegments.length),
+        baseSegments,
+      )) {
+    throw const WebdavException('PROPFIND href is outside collection');
+  }
+  return _validatePathSegment(resolvedSegments.last);
 }
 
 String _fileKindFromUri(Uri uri) => _fileKindFromPath(uri.path);

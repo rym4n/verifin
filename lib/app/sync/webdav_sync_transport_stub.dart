@@ -6,7 +6,9 @@ import 'package:crypto/crypto.dart';
 
 import '../backup/webdav_config.dart';
 import 'sync_models.dart';
+import 'sync_snapshot.dart';
 import 'sync_wire.dart';
+import 'webdav_snapshot_transport.dart';
 import 'webdav_sync_transport.dart';
 
 // Re-export for test convenience
@@ -22,6 +24,20 @@ class StubWebdavSyncTransport implements WebdavSyncTransport {
 
   final Map<String, Uint8List> _files;
   final Set<String> _createdDirectories = {};
+  final Map<String, int> _v1RequestCounts = {};
+  final Map<String, int> _snapshotRequestCounts = {};
+
+  Map<String, int> get v1RequestCounts => Map.unmodifiable(_v1RequestCounts);
+  Map<String, int> get snapshotRequestCounts =>
+      Map.unmodifiable(_snapshotRequestCounts);
+
+  void _countV1(String method) =>
+      _v1RequestCounts.update(method, (value) => value + 1, ifAbsent: () => 1);
+  void _countSnapshot(String method) => _snapshotRequestCounts.update(
+    method,
+    (value) => value + 1,
+    ifAbsent: () => 1,
+  );
 
   /// Get all created directories for testing.
   Set<String> get createdDirectories => Set.unmodifiable(_createdDirectories);
@@ -34,6 +50,7 @@ class StubWebdavSyncTransport implements WebdavSyncTransport {
 
   @override
   Future<void> ensureSyncTree(WebdavConfig config) async {
+    _countV1('MKCOL');
     _createdDirectories.addAll([
       'verifin-sync',
       'verifin-sync/v1',
@@ -51,6 +68,7 @@ class StubWebdavSyncTransport implements WebdavSyncTransport {
     int length,
     String expectedHash,
   ) async {
+    _countV1('PUT');
     // Test control: fail commit uploads
     if (failCommitUploads && relativePath.endsWith('.commit')) {
       throw const WebdavException('Test: commit upload failure');
@@ -132,6 +150,7 @@ class StubWebdavSyncTransport implements WebdavSyncTransport {
 
   @override
   Future<List<WebdavSyncFile>> listSyncFiles(WebdavConfig config) async {
+    _countV1('PROPFIND');
     final files = <WebdavSyncFile>[];
 
     for (final entry in _files.entries) {
@@ -166,6 +185,7 @@ class StubWebdavSyncTransport implements WebdavSyncTransport {
     String relativePath, {
     required int maxBytes,
   }) async {
+    _countV1('GET');
     if (!_files.containsKey(relativePath)) {
       throw const WebdavException('File not found');
     }
@@ -178,6 +198,101 @@ class StubWebdavSyncTransport implements WebdavSyncTransport {
     }
 
     return bytes;
+  }
+
+  @override
+  Future<List<WebdavRootFile>> listRoot(WebdavConfig config) async {
+    _countSnapshot('PROPFIND');
+    final result = <WebdavRootFile>[];
+    for (final entry in _files.entries) {
+      try {
+        final name = SnapshotFileName.parse(entry.key);
+        result.add(
+          WebdavRootFile(
+            name: name,
+            sizeBytes: entry.value.length,
+            modifiedAt: DateTime.utc(2026, 1, 1),
+          ),
+        );
+      } on FormatException {
+        // Ordinary backups, the v1 tree, and unknown root files are ignored.
+      }
+    }
+    return result;
+  }
+
+  @override
+  Future<void> putSnapshot(
+    WebdavConfig config,
+    SnapshotFileName name,
+    Stream<List<int>> bytes,
+    int length,
+  ) async {
+    if (name.isBlob) throw const WebdavException('Expected snapshot name');
+    await _putRoot(name, bytes, length);
+  }
+
+  @override
+  Future<void> putBlob(
+    WebdavConfig config,
+    SnapshotFileName name,
+    Stream<List<int>> bytes,
+    int length,
+  ) async {
+    if (!name.isBlob) throw const WebdavException('Expected blob name');
+    await _putRoot(name, bytes, length);
+  }
+
+  Future<void> _putRoot(
+    SnapshotFileName name,
+    Stream<List<int>> bytes,
+    int length,
+  ) async {
+    _countSnapshot('PUT');
+    final builder = BytesBuilder(copy: false);
+    await for (final chunk in bytes) {
+      builder.add(chunk);
+    }
+    final uploaded = builder.takeBytes();
+    if (uploaded.length != length ||
+        sha256.convert(uploaded).toString() != name.fileHash) {
+      throw const WebdavException('Hash mismatch');
+    }
+    final path = name.toString();
+    final existing = _files[path];
+    if (existing != null) {
+      if (sha256.convert(existing).toString() == name.fileHash) return;
+      throw WebdavFileCollision('File exists with different hash: $path');
+    }
+    _files[path] = uploaded;
+  }
+
+  @override
+  Future<DownloadedWebdavRootFile> downloadRootFile(
+    WebdavConfig config,
+    SnapshotFileName name, {
+    required int maxBytes,
+  }) async {
+    _countSnapshot('GET');
+    final bytes = _files[name.toString()];
+    if (bytes == null) throw const WebdavException('File not found');
+    if (bytes.length > maxBytes) {
+      throw const WebdavException('File exceeds maxBytes limit');
+    }
+    if (sha256.convert(bytes).toString() != name.fileHash) {
+      throw const WebdavException('Snapshot file hash mismatch');
+    }
+    return DownloadedWebdavRootFile(name: name, bytes: bytes);
+  }
+
+  @override
+  Future<void> deleteSnapshot(
+    WebdavConfig config,
+    SnapshotFileName name,
+  ) async {
+    if (name.isBlob) throw const WebdavException('Expected snapshot name');
+    _countSnapshot('DELETE');
+    _files.remove(name.toString());
   }
 
   WebdavSyncFileKind? _parseSyncFileKind(String name) {

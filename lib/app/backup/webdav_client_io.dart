@@ -89,8 +89,11 @@ Uri _collectionUri(WebdavConfig config) {
 
 /// 把 PROPFIND 返回的 href（可能是服务器绝对路径）解析为完整 URL。
 Uri _resolveHref(WebdavConfig config, String href) {
-  final base = _collectionUri(config);
-  return base.resolve(href);
+  try {
+    return resolveSafeWebdavFileHref(config, href);
+  } on FormatException {
+    throw const WebdavException('WebDAV 返回了不安全的文件地址');
+  }
 }
 
 Future<void> _ensureCollection(HttpClient client, WebdavConfig config) async {
@@ -186,11 +189,18 @@ Future<List<WebdavRemoteFile>> webdavList(WebdavConfig config) async {
     if (response.statusCode >= 400) {
       throw WebdavException(_statusMessage(response.statusCode));
     }
-    return parsePropfindResponse(body)
-        .where(
-          (file) => file.name.endsWith('.json') || file.name.endsWith('.zip'),
-        )
-        .toList();
+    return parsePropfindResponse(body).where((file) {
+      if (isSyncSnapshotRemoteName(file.name) ||
+          (!file.name.endsWith('.json') && !file.name.endsWith('.zip'))) {
+        return false;
+      }
+      try {
+        resolveSafeWebdavFileHref(config, file.href);
+        return true;
+      } on FormatException {
+        return false;
+      }
+    }).toList();
   } catch (error) {
     _fail(error);
   } finally {

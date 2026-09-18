@@ -98,6 +98,66 @@ String joinWebdavUrl(String collectionUrl, String filename) {
   return '${normalizeCollectionUrl(collectionUrl)}${Uri.encodeComponent(filename)}';
 }
 
+Uri resolveSafeWebdavFileHref(WebdavConfig config, String href) {
+  final lower = href.toLowerCase();
+  if (lower.contains('%2f') || lower.contains('%5c')) {
+    throw const FormatException('webdav_href_encoded_slash');
+  }
+  final base = Uri.tryParse(normalizeCollectionUrl(config.url));
+  final reference = Uri.tryParse(href);
+  if (base == null ||
+      reference == null ||
+      !base.hasAuthority ||
+      (base.scheme != 'http' && base.scheme != 'https') ||
+      base.hasQuery ||
+      base.hasFragment ||
+      base.userInfo.isNotEmpty ||
+      reference.hasQuery ||
+      reference.hasFragment ||
+      (!reference.hasScheme && reference.hasAuthority)) {
+    throw const FormatException('webdav_href_invalid');
+  }
+  bool sameOrigin(Uri left, Uri right) =>
+      left.scheme == right.scheme &&
+      left.host == right.host &&
+      left.port == right.port;
+  if (reference.hasScheme && !sameOrigin(reference, base)) {
+    throw const FormatException('webdav_href_cross_origin');
+  }
+  final resolved = base.resolveUri(reference);
+  if (!sameOrigin(resolved, base)) {
+    throw const FormatException('webdav_href_cross_origin');
+  }
+  final baseSegments = base.pathSegments
+      .where((segment) => segment.isNotEmpty)
+      .toList(growable: false);
+  final resolvedSegments = resolved.pathSegments
+      .where((segment) => segment.isNotEmpty)
+      .toList(growable: false);
+  if (resolvedSegments.length != baseSegments.length + 1) {
+    throw const FormatException('webdav_href_outside_collection');
+  }
+  for (var index = 0; index < baseSegments.length; index++) {
+    if (resolvedSegments[index] != baseSegments[index]) {
+      throw const FormatException('webdav_href_outside_collection');
+    }
+  }
+  final name = resolvedSegments.last;
+  if (name.isEmpty ||
+      name == '.' ||
+      name == '..' ||
+      name.contains('/') ||
+      name.contains('\\') ||
+      RegExp(r'[\x00-\x1F\x7F]').hasMatch(name)) {
+    throw const FormatException('webdav_href_invalid_name');
+  }
+  return resolved;
+}
+
+bool isSyncSnapshotRemoteName(String name) =>
+    name.startsWith('verifin-sync-v2-') &&
+    (name.endsWith('.json') || name.endsWith('.blob'));
+
 /// 从 WebDAV 文件列表挑出应删除的旧自动备份（只处理 [autoBackupFilePrefix] 前缀，
 /// 按修改时间倒序保留最新 [retention] 份）。`modifiedAt` 为 null 的排在最后、优先删。
 List<WebdavRemoteFile> webdavAutoBackupsToPrune(
