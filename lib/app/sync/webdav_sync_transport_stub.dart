@@ -48,6 +48,9 @@ class StubWebdavSyncTransport implements WebdavSyncTransport {
   /// Test control: fail commit uploads.
   bool failCommitUploads = false;
 
+  /// Test control: fail the read-only v1 bridge listing.
+  bool failV1ListRequests = false;
+
   @override
   Future<void> ensureSyncTree(WebdavConfig config) async {
     _countV1('MKCOL');
@@ -151,6 +154,9 @@ class StubWebdavSyncTransport implements WebdavSyncTransport {
   @override
   Future<List<WebdavSyncFile>> listSyncFiles(WebdavConfig config) async {
     _countV1('PROPFIND');
+    if (failV1ListRequests) {
+      throw const WebdavException('Test: v1 bridge listing failure');
+    }
     final files = <WebdavSyncFile>[];
 
     for (final entry in _files.entries) {

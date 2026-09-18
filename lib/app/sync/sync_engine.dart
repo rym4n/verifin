@@ -250,6 +250,85 @@ class SyncEngine {
     }
   }
 
+  /// Read-only v1 migration/bridge gate run before any snapshot-v2 work.
+  ///
+  /// Returns a stable blocking code while the user still needs to upgrade or
+  /// stop legacy clients. A null result means snapshot-v2 work may continue.
+  Future<String?> prepareSnapshotCutover() async {
+    final transport = _transport;
+    if (_config == null || transport == null) return 'no_config';
+
+    final state = await _repository.loadSnapshotState();
+    final remoteFiles = await transport.listSyncFiles(_config!);
+    final batches = await _groupFilesByBatchAsync(remoteFiles);
+    final complete = _causalBatchOrder(
+      batches.values.where((batch) => batch.isComplete),
+    );
+    final fingerprint = _v1Fingerprint(complete);
+
+    for (final batch in complete) {
+      await _mergeAndApply(batch.events, applyBatchId: batch.batchId);
+    }
+
+    if (fingerprint == null) {
+      if (state.v1MigrationState == V1MigrationState.notStarted) {
+        await _repository.markV1MigrationNotRequired();
+        return null;
+      }
+      return state.v1MigrationState == V1MigrationState.needsUpgradeConfirmation
+          ? 'legacy_client_upgrade_required'
+          : null;
+    }
+
+    switch (state.v1MigrationState) {
+      case V1MigrationState.notStarted:
+        await _repository.recordV1Scan(
+          v1HistoryFound: true,
+          fingerprint: fingerprint,
+        );
+        return 'legacy_client_upgrade_required';
+      case V1MigrationState.needsUpgradeConfirmation:
+        if (state.v1LastSeenFingerprint != fingerprint) {
+          await _repository.recordV1Scan(
+            v1HistoryFound: true,
+            fingerprint: fingerprint,
+          );
+        }
+        return 'legacy_client_upgrade_required';
+      case V1MigrationState.readyToCutover:
+        if (state.v1LastSeenFingerprint == fingerprint) return null;
+        await _repository.recordV1Scan(
+          v1HistoryFound: true,
+          fingerprint: fingerprint,
+        );
+        return 'legacy_client_upgrade_required';
+      case V1MigrationState.cutoverComplete:
+        if (state.v1LastSeenFingerprint == fingerprint) return null;
+        await _repository.recordV1Scan(
+          v1HistoryFound: true,
+          fingerprint: fingerprint,
+        );
+        return 'legacy_client_upgrade_required';
+    }
+  }
+
+  static String? _v1Fingerprint(List<_BatchFiles> batches) {
+    if (batches.isEmpty) return null;
+    final maxima = <String, int>{};
+    for (final batch in batches) {
+      for (final event in batch.events) {
+        final device = event.version.dot.deviceId;
+        final sequence = event.version.dot.sequence;
+        if (sequence > (maxima[device] ?? 0)) maxima[device] = sequence;
+      }
+    }
+    final ordered = maxima.entries.toList()
+      ..sort((left, right) => left.key.compareTo(right.key));
+    return computeSyncPayloadHash(<String, int>{
+      for (final entry in ordered) entry.key: entry.value,
+    });
+  }
+
   /// Initialize from restored data: baseline or join-conflict flow.
   Future<void> initializeFromRestoredData() async {
     final transport = _transport;
