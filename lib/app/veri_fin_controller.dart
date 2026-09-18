@@ -256,6 +256,7 @@ class VeriFinController extends ChangeNotifier
         resolutionEvents: plan.resolutionEvents,
         resolvedConflictIds: plan.resolvedConflictIds,
         completedPendingIds: plan.completedPendingIds,
+        cursorAdvance: plan.cursorAdvance,
         kvExpectedHashes: {
           for (final key in kv.keys)
             key: computeSyncPayloadHash(_store.read(key)),
@@ -270,6 +271,11 @@ class VeriFinController extends ChangeNotifier
       notifyListeners();
     });
   }
+
+  /// Records the user's v1 upgrade confirmation. Network validation remains
+  /// the sync engine's responsibility on the following run.
+  Future<void> confirmSnapshotCutover() =>
+      _repository.sync.markV1ReadyToCutover();
 
   @override
   Future<T> runSyncRemoteMerge<T>(

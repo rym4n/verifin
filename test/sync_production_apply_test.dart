@@ -7,6 +7,7 @@ import 'package:verifin/app/sync/sync_change_tracker.dart';
 import 'package:verifin/app/sync/sync_clock.dart';
 import 'package:verifin/app/sync/sync_engine.dart';
 import 'package:verifin/app/sync/sync_models.dart';
+import 'package:verifin/app/sync/sync_store.dart';
 import 'package:verifin/app/sync/sync_projection.dart';
 import 'package:verifin/app/sync/webdav_sync_transport_stub.dart';
 import 'package:verifin/app/veri_fin_controller.dart';
@@ -218,6 +219,51 @@ void main() {
       );
       expect(await db.db.query('sync_entity_versions'), isEmpty);
       expect(await db.db.query('sync_shadow'), isEmpty);
+    },
+  );
+
+  test(
+    'cursor write failure rolls back remote business data with the cursor',
+    () async {
+      await db.db.execute(
+        "CREATE TRIGGER fail_cursor BEFORE INSERT ON sync_snapshot_cursors BEGIN SELECT RAISE(ABORT, 'injected cursor failure'); END",
+      );
+      final events = aggregate();
+      final plan = RemoteApplyPlan(
+        batchId: 'cursor-atomic',
+        entityVersions: [
+          for (final item in events)
+            SyncEntityVersion(
+              entity: item.entity,
+              version: item.version,
+              payloadHash: item.payloadHash,
+              payload: item.payload,
+              deleted: item.operation == SyncOperationKind.delete,
+              operationId: item.operationId,
+            ),
+        ],
+        appliedOperationIds: [for (final item in events) item.operationId],
+        appliedPayloadHashes: {
+          for (final item in events) item.operationId: item.payloadHash,
+        },
+        shadowHashes: {
+          for (final item in events)
+            encodeSyncEntityKey(item.entity): item.payloadHash,
+        },
+        kvJournalValues: const {},
+        cursorAdvance: const SnapshotCursorAdvance(
+          deviceId: 'remote',
+          sequence: 8,
+          snapshotHash: 'snapshot-8',
+          mergedAt: null,
+        ),
+      );
+      await expectLater(
+        controller.applySyncRemoteBatch(plan),
+        throwsA(anything),
+      );
+      expect(await repository.loadEntries(), isEmpty);
+      expect(await repository.sync.loadSnapshotCursor('remote'), isNull);
     },
   );
 

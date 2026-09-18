@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:sqflite_common/sqlite_api.dart';
@@ -173,6 +174,377 @@ class SqliteSyncRepository implements SyncRepository {
       );
     });
   }
+
+  static const String _snapshotStateKey = 'singleton';
+
+  @override
+  Future<SyncSnapshotState> loadSnapshotState() async {
+    final rows = await _database.query(
+      'sync_snapshot_state',
+      where: 'key = ?',
+      whereArgs: [_snapshotStateKey],
+    );
+    if (rows.isEmpty) return const SyncSnapshotState();
+    return _snapshotStateFromRow(rows.single);
+  }
+
+  @override
+  Future<PreparedSyncSnapshot> prepareSnapshotPublication() {
+    final completer = Completer<PreparedSyncSnapshot>();
+    _enqueue(() async {
+      late PreparedSyncSnapshot prepared;
+      await _database.transaction((txn) async {
+        final stateRows = await txn.query(
+          'sync_snapshot_state',
+          where: 'key = ?',
+          whereArgs: [_snapshotStateKey],
+        );
+        final state = stateRows.isEmpty
+            ? const SyncSnapshotState()
+            : _snapshotStateFromRow(stateRows.single);
+        final sequence = state.nextSnapshotSequence;
+        await txn.insert('sync_snapshot_state', {
+          'key': _snapshotStateKey,
+          'next_snapshot_sequence': sequence + 1,
+          'last_published_sequence': state.lastPublishedSequence,
+          'last_published_hash': state.lastPublishedHash,
+          'last_published_at': state.lastPublishedAt?.millisecondsSinceEpoch,
+          'v1_import_completed': state.v1ImportCompleted ? 1 : 0,
+          'v1_migration_state': _migrationStateValue(state.v1MigrationState),
+          'v1_last_seen_fingerprint': state.v1LastSeenFingerprint,
+        }, conflictAlgorithm: ConflictAlgorithm.replace);
+        await txn.insert('sync_snapshot_publications', {
+          'snapshot_sequence': sequence,
+          'state': 'prepared',
+        });
+        final headRows = await txn.rawQuery(
+          'SELECT v.* FROM sync_entity_versions v '
+          'JOIN sync_entity_heads h ON h.operation_id = v.operation_id '
+          'ORDER BY v.scope, v.type, v.id',
+        );
+        final heads = headRows.map(_versionFromRow).toList();
+        final outboxRows = await txn.query(
+          'sync_outbox',
+          where: 'uploaded = 0',
+          orderBy: 'batch_id ASC, operation_id ASC',
+        );
+        final members = <SyncOutboxRecord>[
+          for (final row in outboxRows) _outboxFromRow(row),
+        ];
+        final includedVersions = <String>{
+          for (final version in heads) version.operationId,
+        };
+        for (final member in members) {
+          final event = member.event;
+          if (event != null && includedVersions.add(event.operationId)) {
+            heads.add(
+              SyncEntityVersion(
+                entity: event.entity,
+                version: event.version,
+                payloadHash: event.payloadHash,
+                payload: event.payload,
+                deleted: event.operation == SyncOperationKind.delete,
+                operationId: event.operationId,
+              ),
+            );
+          }
+        }
+        final conflictRows = await txn.query(
+          'sync_conflicts',
+          orderBy: 'created_at ASC, id ASC',
+        );
+        final conflicts = <SyncConflictRecord>[];
+        for (final row in conflictRows) {
+          final local = await _loadEntityVersionIn(
+            txn,
+            row['local_operation_id'] as String,
+          );
+          final remote = await _loadEntityVersionIn(
+            txn,
+            row['remote_operation_id'] as String,
+          );
+          if (local == null || remote == null) {
+            throw StateError('snapshot_conflict_version_missing');
+          }
+          conflicts.add(
+            SyncConflictRecord(
+              id: row['id'] as String,
+              entity: SyncEntityKey(
+                scope: row['scope'] as String,
+                type: row['type'] as String,
+                id: row['entity_id'] as String,
+              ),
+              local: local,
+              remote: remote,
+            ),
+          );
+        }
+        for (final member in members) {
+          await txn.insert('sync_snapshot_members', {
+            'snapshot_sequence': sequence,
+            'operation_id': member.operationId,
+            'payload_hash': member.payloadHash,
+          });
+        }
+        prepared = PreparedSyncSnapshot(
+          publication: SnapshotPublication(
+            sequence: sequence,
+            state: SnapshotPublicationState.prepared,
+          ),
+          heads: heads,
+          conflicts: conflicts,
+          members: members,
+        );
+      });
+      completer.complete(prepared);
+    }).catchError((Object error, StackTrace stackTrace) {
+      if (!completer.isCompleted) completer.completeError(error, stackTrace);
+    });
+    return completer.future;
+  }
+
+  @override
+  Future<void> freezeSnapshotBlobMembers(
+    int snapshotSequence,
+    List<SnapshotBlobMapping> mappings,
+  ) => _enqueue(() async {
+    await _database.transaction((txn) async {
+      final publication = await txn.query(
+        'sync_snapshot_publications',
+        where: 'snapshot_sequence = ? AND state = ?',
+        whereArgs: [snapshotSequence, 'prepared'],
+      );
+      if (publication.isEmpty) throw StateError('snapshot_not_prepared');
+      final seen = <String>{};
+      for (final mapping in mappings) {
+        if (!mapping.verified || !seen.add(mapping.rawHash)) {
+          throw StateError('snapshot_blob_mapping_invalid');
+        }
+        final verified = await txn.query(
+          'sync_snapshot_blobs',
+          where: 'raw_hash = ? AND file_hash = ? AND verified = 1',
+          whereArgs: [mapping.rawHash, mapping.fileHash],
+          limit: 1,
+        );
+        if (verified.isEmpty) {
+          throw StateError('snapshot_blob_mapping_unverified');
+        }
+        await txn.insert('sync_snapshot_blob_members', {
+          'snapshot_sequence': snapshotSequence,
+          'raw_hash': mapping.rawHash,
+          'file_hash': mapping.fileHash,
+        });
+      }
+      await txn.update(
+        'sync_snapshot_publications',
+        {'state': 'blobs_ready'},
+        where: 'snapshot_sequence = ?',
+        whereArgs: [snapshotSequence],
+      );
+    });
+  });
+
+  @override
+  Future<void> markSnapshotPublished(
+    int snapshotSequence, {
+    required String filename,
+    required String snapshotHash,
+  }) => _enqueue(
+    () => _confirmSnapshotPublication(
+      snapshotSequence,
+      filename: filename,
+      snapshotHash: snapshotHash,
+      completeV1Cutover: false,
+    ),
+  );
+
+  @override
+  Future<void> completeV1CutoverWithPublication(
+    int snapshotSequence, {
+    required String filename,
+    required String snapshotHash,
+  }) => _enqueue(
+    () => _confirmSnapshotPublication(
+      snapshotSequence,
+      filename: filename,
+      snapshotHash: snapshotHash,
+      completeV1Cutover: true,
+    ),
+  );
+
+  Future<void> _confirmSnapshotPublication(
+    int snapshotSequence, {
+    required String filename,
+    required String snapshotHash,
+    required bool completeV1Cutover,
+  }) async {
+    await _database.transaction((txn) async {
+      final publications = await txn.query(
+        'sync_snapshot_publications',
+        where: 'snapshot_sequence = ? AND state = ?',
+        whereArgs: [snapshotSequence, 'blobs_ready'],
+      );
+      if (publications.isEmpty) throw StateError('snapshot_not_blobs_ready');
+      final members = await txn.query(
+        'sync_snapshot_members',
+        columns: ['operation_id', 'payload_hash'],
+        where: 'snapshot_sequence = ?',
+        whereArgs: [snapshotSequence],
+      );
+      for (final member in members) {
+        await txn.update(
+          'sync_outbox',
+          {'uploaded': 1},
+          where: 'operation_id = ? AND payload_hash = ?',
+          whereArgs: [member['operation_id'], member['payload_hash']],
+        );
+      }
+      final state = await _snapshotStateIn(txn);
+      await txn.insert('sync_snapshot_state', {
+        'key': _snapshotStateKey,
+        'next_snapshot_sequence': state.nextSnapshotSequence,
+        'last_published_sequence': snapshotSequence,
+        'last_published_hash': snapshotHash,
+        'last_published_at': DateTime.now().millisecondsSinceEpoch,
+        'v1_import_completed': completeV1Cutover || state.v1ImportCompleted
+            ? 1
+            : 0,
+        'v1_migration_state': _migrationStateValue(
+          completeV1Cutover
+              ? V1MigrationState.cutoverComplete
+              : state.v1MigrationState,
+        ),
+        'v1_last_seen_fingerprint': state.v1LastSeenFingerprint,
+      }, conflictAlgorithm: ConflictAlgorithm.replace);
+      await txn.update(
+        'sync_snapshot_publications',
+        {
+          'state': 'published',
+          'filename': filename,
+          'snapshot_hash': snapshotHash,
+          'published_at': DateTime.now().millisecondsSinceEpoch,
+        },
+        where: 'snapshot_sequence = ?',
+        whereArgs: [snapshotSequence],
+      );
+    });
+  }
+
+  @override
+  Future<void> abandonIncompleteSnapshotPublications() => _enqueue(() async {
+    await _database.update('sync_snapshot_publications', {
+      'state': 'abandoned',
+    }, where: "state IN ('prepared', 'blobs_ready')");
+  });
+
+  @override
+  Future<void> recordV1Scan({
+    required bool v1HistoryFound,
+    required String? fingerprint,
+  }) => _enqueue(
+    () => _updateSnapshotState(
+      (state) => SyncSnapshotState(
+        nextSnapshotSequence: state.nextSnapshotSequence,
+        lastPublishedSequence: state.lastPublishedSequence,
+        lastPublishedHash: state.lastPublishedHash,
+        lastPublishedAt: state.lastPublishedAt,
+        v1ImportCompleted: state.v1ImportCompleted,
+        v1MigrationState: v1HistoryFound
+            ? V1MigrationState.needsUpgradeConfirmation
+            : state.v1MigrationState,
+        v1LastSeenFingerprint: fingerprint,
+      ),
+    ),
+  );
+
+  @override
+  Future<void> markV1ReadyToCutover() => _enqueue(
+    () => _updateSnapshotState(
+      (state) => SyncSnapshotState(
+        nextSnapshotSequence: state.nextSnapshotSequence,
+        lastPublishedSequence: state.lastPublishedSequence,
+        lastPublishedHash: state.lastPublishedHash,
+        lastPublishedAt: state.lastPublishedAt,
+        v1ImportCompleted: state.v1ImportCompleted,
+        v1MigrationState: V1MigrationState.readyToCutover,
+        v1LastSeenFingerprint: state.v1LastSeenFingerprint,
+      ),
+    ),
+  );
+
+  @override
+  Future<void> markV1MigrationNotRequired() => _enqueue(
+    () => _updateSnapshotState(
+      (state) => SyncSnapshotState(
+        nextSnapshotSequence: state.nextSnapshotSequence,
+        lastPublishedSequence: state.lastPublishedSequence,
+        lastPublishedHash: state.lastPublishedHash,
+        lastPublishedAt: state.lastPublishedAt,
+        v1ImportCompleted: true,
+        v1MigrationState: V1MigrationState.cutoverComplete,
+        v1LastSeenFingerprint: state.v1LastSeenFingerprint,
+      ),
+    ),
+  );
+
+  @override
+  Future<SyncSnapshotCursor?> loadSnapshotCursor(String deviceId) async {
+    final rows = await _database.query(
+      'sync_snapshot_cursors',
+      where: 'device_id = ?',
+      whereArgs: [deviceId],
+    );
+    return rows.isEmpty ? null : _cursorFromRow(rows.single);
+  }
+
+  @override
+  Future<List<SyncSnapshotCursor>> loadSnapshotCursors() async => [
+    for (final row in await _database.query('sync_snapshot_cursors'))
+      _cursorFromRow(row),
+  ];
+
+  @override
+  Future<void> saveSnapshotCursor(SnapshotCursorAdvance cursor) =>
+      _enqueue(() async {
+        await _database.transaction(
+          (txn) => _saveSnapshotCursorInTransaction(txn, cursor),
+        );
+      });
+
+  @override
+  Future<void> saveVerifiedBlobMapping(SnapshotBlobMapping mapping) => _enqueue(
+    () => _database.insert(
+      'sync_snapshot_blobs',
+      _blobToRow(mapping),
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    ),
+  );
+
+  @override
+  Future<void> markSnapshotBlobMappingInvalid(
+    String rawHash,
+    String fileHash,
+  ) => _enqueue(
+    () => _database.update(
+      'sync_snapshot_blobs',
+      {'verified': 0},
+      where: 'raw_hash = ? AND file_hash = ?',
+      whereArgs: [rawHash, fileHash],
+    ),
+  );
+
+  @override
+  Future<List<SnapshotBlobMapping>> loadVerifiedBlobMappings(
+    String rawHash,
+  ) async => [
+    for (final row in await _database.query(
+      'sync_snapshot_blobs',
+      where: 'raw_hash = ? AND verified = 1',
+      whereArgs: [rawHash],
+      orderBy: 'file_hash ASC',
+    ))
+      _blobFromRow(row),
+  ];
 
   // ---- 远端批次应用 ----
 
@@ -452,6 +824,11 @@ class SqliteSyncRepository implements SyncRepository {
       appliedHashes: appliedHashes,
       knownVersions: knownVersions,
     );
+
+    final cursorAdvance = plan.cursorAdvance;
+    if (cursorAdvance != null) {
+      await _saveSnapshotCursorInTransaction(txn, cursorAdvance);
+    }
 
     final appliedAt = DateTime.now().millisecondsSinceEpoch;
 
@@ -852,6 +1229,19 @@ class SqliteSyncRepository implements SyncRepository {
     );
   }
 
+  static Future<SyncEntityVersion?> _loadEntityVersionIn(
+    Transaction txn,
+    String operationId,
+  ) async {
+    final rows = await txn.query(
+      'sync_entity_versions',
+      where: 'operation_id = ?',
+      whereArgs: [operationId],
+      limit: 1,
+    );
+    return rows.isEmpty ? null : _versionFromRow(rows.single);
+  }
+
   // ---- KV journal 重放 ----
 
   /// 按 id 升序返回，使同一批内先写入的行在调用方按 key 排序前仍有稳定的
@@ -889,6 +1279,156 @@ class SqliteSyncRepository implements SyncRepository {
   }
 
   // ---- JSON 解码 ----
+
+  static SyncSnapshotState _snapshotStateFromRow(
+    Map<String, Object?> row,
+  ) => SyncSnapshotState(
+    nextSnapshotSequence: (row['next_snapshot_sequence'] as num?)?.toInt() ?? 1,
+    lastPublishedSequence: (row['last_published_sequence'] as num?)?.toInt(),
+    lastPublishedHash: row['last_published_hash'] as String?,
+    lastPublishedAt: _dateFromMilliseconds(row['last_published_at']),
+    v1ImportCompleted:
+        ((row['v1_import_completed'] as num?)?.toInt() ?? 0) != 0,
+    v1MigrationState: _migrationStateFromValue(
+      row['v1_migration_state'] as String?,
+    ),
+    v1LastSeenFingerprint: row['v1_last_seen_fingerprint'] as String?,
+  );
+
+  Future<SyncSnapshotState> _snapshotStateIn(Transaction txn) async {
+    final rows = await txn.query(
+      'sync_snapshot_state',
+      where: 'key = ?',
+      whereArgs: [_snapshotStateKey],
+    );
+    return rows.isEmpty
+        ? const SyncSnapshotState()
+        : _snapshotStateFromRow(rows.single);
+  }
+
+  Future<void> _updateSnapshotState(
+    SyncSnapshotState Function(SyncSnapshotState) update,
+  ) async {
+    await _database.transaction((txn) async {
+      final state = update(await _snapshotStateIn(txn));
+      await txn.insert('sync_snapshot_state', {
+        'key': _snapshotStateKey,
+        'next_snapshot_sequence': state.nextSnapshotSequence,
+        'last_published_sequence': state.lastPublishedSequence,
+        'last_published_hash': state.lastPublishedHash,
+        'last_published_at': state.lastPublishedAt?.millisecondsSinceEpoch,
+        'v1_import_completed': state.v1ImportCompleted ? 1 : 0,
+        'v1_migration_state': _migrationStateValue(state.v1MigrationState),
+        'v1_last_seen_fingerprint': state.v1LastSeenFingerprint,
+      }, conflictAlgorithm: ConflictAlgorithm.replace);
+    });
+  }
+
+  static String _migrationStateValue(V1MigrationState state) => switch (state) {
+    V1MigrationState.notStarted => 'not_started',
+    V1MigrationState.needsUpgradeConfirmation => 'needs_upgrade_confirmation',
+    V1MigrationState.readyToCutover => 'ready_to_cutover',
+    V1MigrationState.cutoverComplete => 'cutover_complete',
+  };
+
+  static V1MigrationState _migrationStateFromValue(String? value) =>
+      switch (value) {
+        'needs_upgrade_confirmation' =>
+          V1MigrationState.needsUpgradeConfirmation,
+        'ready_to_cutover' => V1MigrationState.readyToCutover,
+        'cutover_complete' => V1MigrationState.cutoverComplete,
+        _ => V1MigrationState.notStarted,
+      };
+
+  static DateTime? _dateFromMilliseconds(Object? value) =>
+      value is num ? DateTime.fromMillisecondsSinceEpoch(value.toInt()) : null;
+
+  static Map<String, Object?> _cursorToRow(SnapshotCursorAdvance cursor) => {
+    'device_id': cursor.deviceId,
+    'last_merged_sequence': cursor.sequence,
+    'last_merged_hash': cursor.snapshotHash,
+    'last_merged_at': cursor.mergedAt?.millisecondsSinceEpoch,
+  };
+
+  static Future<void> _saveSnapshotCursorInTransaction(
+    Transaction txn,
+    SnapshotCursorAdvance cursor,
+  ) async {
+    final existing = await txn.query(
+      'sync_snapshot_cursors',
+      where: 'device_id = ?',
+      whereArgs: [cursor.deviceId],
+      limit: 1,
+    );
+    if (existing.isNotEmpty) {
+      final current = _cursorFromRow(existing.single);
+      if (cursor.sequence < current.lastMergedSequence) return;
+      if (cursor.sequence == current.lastMergedSequence &&
+          cursor.snapshotHash != current.lastMergedHash) {
+        throw StateError('snapshot_sequence_collision');
+      }
+    }
+    await txn.insert(
+      'sync_snapshot_cursors',
+      _cursorToRow(cursor),
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+  }
+
+  static SyncSnapshotCursor _cursorFromRow(Map<String, Object?> row) =>
+      SyncSnapshotCursor(
+        deviceId: row['device_id'] as String,
+        lastMergedSequence: (row['last_merged_sequence'] as num).toInt(),
+        lastMergedHash: row['last_merged_hash'] as String,
+        lastMergedAt: _dateFromMilliseconds(row['last_merged_at']),
+      );
+
+  static Map<String, Object?> _blobToRow(SnapshotBlobMapping mapping) => {
+    'raw_hash': mapping.rawHash,
+    'file_hash': mapping.fileHash,
+    'raw_length': mapping.rawLength,
+    'verified': mapping.verified ? 1 : 0,
+    'verified_at': mapping.verifiedAt?.millisecondsSinceEpoch,
+    'source': mapping.source,
+  };
+
+  static SnapshotBlobMapping _blobFromRow(Map<String, Object?> row) =>
+      SnapshotBlobMapping(
+        rawHash: row['raw_hash'] as String,
+        fileHash: row['file_hash'] as String,
+        rawLength: (row['raw_length'] as num).toInt(),
+        verified: ((row['verified'] as num).toInt()) != 0,
+        verifiedAt: _dateFromMilliseconds(row['verified_at']),
+        source: row['source'] as String?,
+      );
+
+  static SyncOutboxRecord _outboxFromRow(Map<String, Object?> row) =>
+      SyncOutboxRecord(
+        batchId: row['batch_id'] as String,
+        operationId: row['operation_id'] as String,
+        relativePath: row['relative_path'] as String,
+        payloadHash: row['payload_hash'] as String,
+        retryCount: (row['retry_count'] as num?)?.toInt() ?? 0,
+        event: _decodeOutboxEvent(row['event_json'] as String?),
+      );
+
+  static SyncEntityVersion _versionFromRow(Map<String, Object?> row) =>
+      SyncEntityVersion(
+        entity: SyncEntityKey(
+          scope: row['scope'] as String,
+          type: row['type'] as String,
+          id: row['id'] as String,
+        ),
+        version: SyncVersion.fromJson(
+          _decodeObject(row['version_json'] as String),
+        ),
+        payloadHash: row['payload_hash'] as String,
+        payload: row['payload_envelope'] == null
+            ? null
+            : jsonDecode(row['payload_envelope'] as String),
+        deleted: ((row['deleted'] as num?)?.toInt() ?? 0) != 0,
+        operationId: row['operation_id'] as String,
+      );
 
   static Map<String, Object?> _decodeObject(String raw) {
     final decoded = jsonDecode(raw);

@@ -21,6 +21,36 @@ abstract interface class SyncRepository {
   Future<void> enqueueBatch(SyncBatchRecord batch);
   Future<void> markBatchUploaded(String batchId);
 
+  Future<SyncSnapshotState> loadSnapshotState();
+  Future<PreparedSyncSnapshot> prepareSnapshotPublication();
+  Future<void> freezeSnapshotBlobMembers(
+    int snapshotSequence,
+    List<SnapshotBlobMapping> mappings,
+  );
+  Future<void> markSnapshotPublished(
+    int snapshotSequence, {
+    required String filename,
+    required String snapshotHash,
+  });
+  Future<void> abandonIncompleteSnapshotPublications();
+  Future<void> recordV1Scan({
+    required bool v1HistoryFound,
+    required String? fingerprint,
+  });
+  Future<void> markV1ReadyToCutover();
+  Future<void> markV1MigrationNotRequired();
+  Future<void> completeV1CutoverWithPublication(
+    int snapshotSequence, {
+    required String filename,
+    required String snapshotHash,
+  });
+  Future<SyncSnapshotCursor?> loadSnapshotCursor(String deviceId);
+  Future<List<SyncSnapshotCursor>> loadSnapshotCursors();
+  Future<void> saveSnapshotCursor(SnapshotCursorAdvance cursor);
+  Future<void> saveVerifiedBlobMapping(SnapshotBlobMapping mapping);
+  Future<void> markSnapshotBlobMappingInvalid(String rawHash, String fileHash);
+  Future<List<SnapshotBlobMapping>> loadVerifiedBlobMappings(String rawHash);
+
   Future<void> applyRemoteBatch(RemoteApplyPlan plan);
   Future<Map<String, String>> loadAppliedOperationHashes(
     List<String> operationIds,

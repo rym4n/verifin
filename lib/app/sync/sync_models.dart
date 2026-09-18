@@ -584,6 +584,111 @@ class SyncScanState {
   final int retryCount;
 }
 
+enum V1MigrationState {
+  notStarted,
+  needsUpgradeConfirmation,
+  readyToCutover,
+  cutoverComplete,
+}
+
+enum SnapshotPublicationState { prepared, blobsReady, published, abandoned }
+
+class SyncSnapshotState {
+  const SyncSnapshotState({
+    this.nextSnapshotSequence = 1,
+    this.lastPublishedSequence,
+    this.lastPublishedHash,
+    this.lastPublishedAt,
+    this.v1ImportCompleted = false,
+    this.v1MigrationState = V1MigrationState.notStarted,
+    this.v1LastSeenFingerprint,
+  });
+
+  final int nextSnapshotSequence;
+  final int? lastPublishedSequence;
+  final String? lastPublishedHash;
+  final DateTime? lastPublishedAt;
+  final bool v1ImportCompleted;
+  final V1MigrationState v1MigrationState;
+  final String? v1LastSeenFingerprint;
+}
+
+class SyncSnapshotCursor {
+  const SyncSnapshotCursor({
+    required this.deviceId,
+    required this.lastMergedSequence,
+    required this.lastMergedHash,
+    this.lastMergedAt,
+  });
+
+  final String deviceId;
+  final int lastMergedSequence;
+  final String lastMergedHash;
+  final DateTime? lastMergedAt;
+}
+
+class SnapshotCursorAdvance {
+  const SnapshotCursorAdvance({
+    required this.deviceId,
+    required this.sequence,
+    required this.snapshotHash,
+    required this.mergedAt,
+  });
+
+  final String deviceId;
+  final int sequence;
+  final String snapshotHash;
+  final DateTime? mergedAt;
+}
+
+class SnapshotPublication {
+  const SnapshotPublication({
+    required this.sequence,
+    required this.state,
+    this.filename,
+    this.snapshotHash,
+    this.publishedAt,
+  });
+
+  final int sequence;
+  final SnapshotPublicationState state;
+  final String? filename;
+  final String? snapshotHash;
+  final DateTime? publishedAt;
+}
+
+class PreparedSyncSnapshot {
+  const PreparedSyncSnapshot({
+    required this.publication,
+    required this.heads,
+    required this.conflicts,
+    required this.members,
+  });
+
+  final SnapshotPublication publication;
+  final List<SyncEntityVersion> heads;
+  final List<SyncConflictRecord> conflicts;
+  final List<SyncOutboxRecord> members;
+}
+
+class SnapshotBlobMapping {
+  const SnapshotBlobMapping({
+    required this.rawHash,
+    required this.fileHash,
+    required this.rawLength,
+    required this.verified,
+    this.verifiedAt,
+    this.source,
+  });
+
+  final String rawHash;
+  final String fileHash;
+  final int rawLength;
+  final bool verified;
+  final DateTime? verifiedAt;
+  final String? source;
+}
+
 /// Conflict record.
 class SyncConflictRecord {
   const SyncConflictRecord({
@@ -613,6 +718,7 @@ class RemoteApplyPlan {
     this.resolvedConflictIds = const <String>[],
     this.completedPendingIds = const <String>[],
     this.kvExpectedHashes = const <String, String>{},
+    this.cursorAdvance,
   });
 
   final String batchId;
@@ -643,6 +749,7 @@ class RemoteApplyPlan {
   final List<String> resolvedConflictIds;
   final List<String> completedPendingIds;
   final Map<String, String> kvExpectedHashes;
+  final SnapshotCursorAdvance? cursorAdvance;
 
   /// 某个已应用操作的 payload hash：优先取 [appliedPayloadHashes]，
   /// 缺失时回落到 [entityVersions]；两者都没有则返回空串。

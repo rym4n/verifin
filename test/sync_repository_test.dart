@@ -204,6 +204,56 @@ void main() {
         expect(state.retryCount, 0);
       });
 
+      test('快照发布只确认准备时冻结的成员，且序号绝不复用', () async {
+        final sync = open();
+        await sync.enqueueBatch(_batch('first', const <String>['op-1']));
+        final first = await sync.prepareSnapshotPublication();
+        expect(first.publication.sequence, 1);
+        expect(first.publication.state, SnapshotPublicationState.prepared);
+
+        // Preparation creates an immutable cutoff. This later operation must
+        // survive confirmation of the earlier snapshot.
+        await sync.enqueueBatch(_batch('later', const <String>['op-2']));
+        await sync.freezeSnapshotBlobMembers(
+          first.publication.sequence,
+          const [],
+        );
+        await sync.markSnapshotPublished(
+          first.publication.sequence,
+          filename: 'snapshot-1.json',
+          snapshotHash: 'snapshot-hash-1',
+        );
+        expect(
+          (await sync.loadOutbox()).map((row) => row.operationId),
+          const <String>['op-2'],
+        );
+
+        final second = await sync.prepareSnapshotPublication();
+        expect(second.publication.sequence, 2);
+      });
+
+      test('cursor only advances as part of accepted remote apply', () async {
+        final sync = open();
+        await sync.applyRemoteBatch(
+          _plan(
+            batchId: 'cursor',
+            versions: <SyncEntityVersion>[
+              _version('cursor-op', 'entry', 'cursor-entry', hash: 'cursor'),
+            ],
+            cursorAdvance: const SnapshotCursorAdvance(
+              deviceId: 'remote-device',
+              sequence: 7,
+              snapshotHash: 'remote-hash',
+              mergedAt: null,
+            ),
+          ),
+        );
+        final cursor = await sync.loadSnapshotCursor('remote-device');
+        expect(cursor, isNotNull);
+        expect(cursor!.lastMergedSequence, 7);
+        expect(cursor.lastMergedHash, 'remote-hash');
+      });
+
       test('扫描状态保存后原样读回（含 gap 集合与错误码）', () async {
         final sync = open();
         await sync.saveScanState(
@@ -586,6 +636,75 @@ void main() {
 /// [SyncRepository]，让契约测试的两条实现路径共用同一个同步的 open() 签名。
 class _DeferredSyncRepository implements SyncRepository {
   @override
+  Future<SyncSnapshotState> loadSnapshotState() async =>
+      (await _ready).loadSnapshotState();
+  @override
+  Future<PreparedSyncSnapshot> prepareSnapshotPublication() async =>
+      (await _ready).prepareSnapshotPublication();
+  @override
+  Future<void> freezeSnapshotBlobMembers(
+    int sequence,
+    List<SnapshotBlobMapping> mappings,
+  ) async => (await _ready).freezeSnapshotBlobMembers(sequence, mappings);
+  @override
+  Future<void> markSnapshotPublished(
+    int sequence, {
+    required String filename,
+    required String snapshotHash,
+  }) async => (await _ready).markSnapshotPublished(
+    sequence,
+    filename: filename,
+    snapshotHash: snapshotHash,
+  );
+  @override
+  Future<void> abandonIncompleteSnapshotPublications() async =>
+      (await _ready).abandonIncompleteSnapshotPublications();
+  @override
+  Future<void> recordV1Scan({
+    required bool v1HistoryFound,
+    required String? fingerprint,
+  }) async => (await _ready).recordV1Scan(
+    v1HistoryFound: v1HistoryFound,
+    fingerprint: fingerprint,
+  );
+  @override
+  Future<void> markV1ReadyToCutover() async =>
+      (await _ready).markV1ReadyToCutover();
+  @override
+  Future<void> markV1MigrationNotRequired() async =>
+      (await _ready).markV1MigrationNotRequired();
+  @override
+  Future<void> completeV1CutoverWithPublication(
+    int sequence, {
+    required String filename,
+    required String snapshotHash,
+  }) async => (await _ready).completeV1CutoverWithPublication(
+    sequence,
+    filename: filename,
+    snapshotHash: snapshotHash,
+  );
+  @override
+  Future<SyncSnapshotCursor?> loadSnapshotCursor(String deviceId) async =>
+      (await _ready).loadSnapshotCursor(deviceId);
+  @override
+  Future<List<SyncSnapshotCursor>> loadSnapshotCursors() async =>
+      (await _ready).loadSnapshotCursors();
+  @override
+  Future<void> saveSnapshotCursor(SnapshotCursorAdvance cursor) async =>
+      (await _ready).saveSnapshotCursor(cursor);
+  @override
+  Future<void> saveVerifiedBlobMapping(SnapshotBlobMapping mapping) async =>
+      (await _ready).saveVerifiedBlobMapping(mapping);
+  @override
+  Future<void> markSnapshotBlobMappingInvalid(
+    String rawHash,
+    String fileHash,
+  ) async => (await _ready).markSnapshotBlobMappingInvalid(rawHash, fileHash);
+  @override
+  Future<List<SnapshotBlobMapping>> loadVerifiedBlobMappings(
+    String rawHash,
+  ) async => (await _ready).loadVerifiedBlobMappings(rawHash);
+  @override
   Future<String?> loadEnrollmentState() async =>
       (await _ready).loadEnrollmentState();
   @override
@@ -729,6 +848,7 @@ RemoteApplyPlan _plan({
   List<String>? appliedOperationIds,
   Map<String, String> appliedPayloadHashes = const <String, String>{},
   Map<String, String> kvJournalValues = const <String, String>{},
+  SnapshotCursorAdvance? cursorAdvance,
 }) {
   return RemoteApplyPlan(
     batchId: batchId,
@@ -745,6 +865,7 @@ RemoteApplyPlan _plan({
       ...appliedPayloadHashes,
     },
     kvJournalValues: kvJournalValues,
+    cursorAdvance: cursorAdvance,
   );
 }
 

@@ -69,6 +69,72 @@ class _BlockingRecordingSyncRepository extends RecordingSyncRepository {
 /// 记录调用、可注入失败的 [SyncRepository]，其余方法委托给内存镜像。
 class RecordingSyncRepository implements SyncRepository {
   @override
+  Future<SyncSnapshotState> loadSnapshotState() => _inner.loadSnapshotState();
+  @override
+  Future<PreparedSyncSnapshot> prepareSnapshotPublication() =>
+      _inner.prepareSnapshotPublication();
+  @override
+  Future<void> freezeSnapshotBlobMembers(
+    int sequence,
+    List<SnapshotBlobMapping> mappings,
+  ) => _inner.freezeSnapshotBlobMembers(sequence, mappings);
+  @override
+  Future<void> markSnapshotPublished(
+    int sequence, {
+    required String filename,
+    required String snapshotHash,
+  }) => _inner.markSnapshotPublished(
+    sequence,
+    filename: filename,
+    snapshotHash: snapshotHash,
+  );
+  @override
+  Future<void> abandonIncompleteSnapshotPublications() =>
+      _inner.abandonIncompleteSnapshotPublications();
+  @override
+  Future<void> recordV1Scan({
+    required bool v1HistoryFound,
+    required String? fingerprint,
+  }) => _inner.recordV1Scan(
+    v1HistoryFound: v1HistoryFound,
+    fingerprint: fingerprint,
+  );
+  @override
+  Future<void> markV1ReadyToCutover() => _inner.markV1ReadyToCutover();
+  @override
+  Future<void> markV1MigrationNotRequired() =>
+      _inner.markV1MigrationNotRequired();
+  @override
+  Future<void> completeV1CutoverWithPublication(
+    int sequence, {
+    required String filename,
+    required String snapshotHash,
+  }) => _inner.completeV1CutoverWithPublication(
+    sequence,
+    filename: filename,
+    snapshotHash: snapshotHash,
+  );
+  @override
+  Future<SyncSnapshotCursor?> loadSnapshotCursor(String deviceId) =>
+      _inner.loadSnapshotCursor(deviceId);
+  @override
+  Future<List<SyncSnapshotCursor>> loadSnapshotCursors() =>
+      _inner.loadSnapshotCursors();
+  @override
+  Future<void> saveSnapshotCursor(SnapshotCursorAdvance cursor) =>
+      _inner.saveSnapshotCursor(cursor);
+  @override
+  Future<void> saveVerifiedBlobMapping(SnapshotBlobMapping mapping) =>
+      _inner.saveVerifiedBlobMapping(mapping);
+  @override
+  Future<void> markSnapshotBlobMappingInvalid(
+    String rawHash,
+    String fileHash,
+  ) => _inner.markSnapshotBlobMappingInvalid(rawHash, fileHash);
+  @override
+  Future<List<SnapshotBlobMapping>> loadVerifiedBlobMappings(String rawHash) =>
+      _inner.loadVerifiedBlobMappings(rawHash);
+  @override
   Future<String?> loadEnrollmentState() => _inner.loadEnrollmentState();
   @override
   Future<void> saveEnrollmentState(String state) =>

@@ -95,6 +95,28 @@ const List<String> _schemaV1 = <String>[
 void main() {
   setUpAll(sqfliteFfiInit);
 
+  test('v22 fresh database creates snapshot persistence tables', () async {
+    final app = await AppDatabase.open(
+      factory: databaseFactoryFfi,
+      path: inMemoryDatabasePath,
+    );
+    final tables = await app.db.rawQuery(
+      "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name",
+    );
+    expect(
+      tables.map((row) => row['name']),
+      containsAll(const <String>[
+        'sync_snapshot_state',
+        'sync_snapshot_cursors',
+        'sync_snapshot_publications',
+        'sync_snapshot_members',
+        'sync_snapshot_blobs',
+        'sync_snapshot_blob_members',
+      ]),
+    );
+    await app.close();
+  });
+
   late Directory tempDir;
   late Map<String, Object?> freshSchema;
 

@@ -258,6 +258,11 @@ class InMemoryLedgerRepository
 /// 中途抛错时没有任何集合被改动，等价于 SQLite 的事务回滚。
 class _InMemorySyncRepository implements SyncRepository {
   String? _enrollment;
+  SyncSnapshotState _snapshotState = const SyncSnapshotState();
+  final Map<int, SnapshotPublication> _snapshotPublications = {};
+  final Map<int, List<SyncOutboxRecord>> _snapshotMembers = {};
+  final Map<String, SyncSnapshotCursor> _snapshotCursors = {};
+  final Map<String, Map<String, SnapshotBlobMapping>> _snapshotBlobs = {};
   @override
   Future<String?> loadEnrollmentState() async => _enrollment;
   @override
@@ -461,6 +466,241 @@ class _InMemorySyncRepository implements SyncRepository {
   }
 
   @override
+  Future<SyncSnapshotState> loadSnapshotState() async => _snapshotState;
+
+  @override
+  Future<PreparedSyncSnapshot> prepareSnapshotPublication() async {
+    final sequence = _snapshotState.nextSnapshotSequence;
+    final publication = SnapshotPublication(
+      sequence: sequence,
+      state: SnapshotPublicationState.prepared,
+    );
+    final members = List<SyncOutboxRecord>.of(_outbox);
+    _snapshotState = SyncSnapshotState(
+      nextSnapshotSequence: sequence + 1,
+      lastPublishedSequence: _snapshotState.lastPublishedSequence,
+      lastPublishedHash: _snapshotState.lastPublishedHash,
+      lastPublishedAt: _snapshotState.lastPublishedAt,
+      v1ImportCompleted: _snapshotState.v1ImportCompleted,
+      v1MigrationState: _snapshotState.v1MigrationState,
+      v1LastSeenFingerprint: _snapshotState.v1LastSeenFingerprint,
+    );
+    _snapshotPublications[sequence] = publication;
+    _snapshotMembers[sequence] = members;
+    return PreparedSyncSnapshot(
+      publication: publication,
+      heads: _heads.values.toList(),
+      conflicts: List<SyncConflictRecord>.of(_conflicts),
+      members: members,
+    );
+  }
+
+  @override
+  Future<void> freezeSnapshotBlobMembers(
+    int snapshotSequence,
+    List<SnapshotBlobMapping> mappings,
+  ) async {
+    final publication = _snapshotPublications[snapshotSequence];
+    if (publication?.state != SnapshotPublicationState.prepared ||
+        mappings.any((mapping) => !mapping.verified) ||
+        mappings.map((mapping) => mapping.rawHash).toSet().length !=
+            mappings.length) {
+      throw StateError('snapshot_blob_mapping_invalid');
+    }
+    for (final mapping in mappings) {
+      if (_snapshotBlobs[mapping.rawHash]?[mapping.fileHash]?.verified !=
+          true) {
+        throw StateError('snapshot_blob_mapping_unverified');
+      }
+    }
+    _snapshotPublications[snapshotSequence] = SnapshotPublication(
+      sequence: snapshotSequence,
+      state: SnapshotPublicationState.blobsReady,
+    );
+  }
+
+  @override
+  Future<void> markSnapshotPublished(
+    int snapshotSequence, {
+    required String filename,
+    required String snapshotHash,
+  }) async => _publishSnapshot(
+    snapshotSequence,
+    filename: filename,
+    snapshotHash: snapshotHash,
+    completeV1Cutover: false,
+  );
+
+  @override
+  Future<void> completeV1CutoverWithPublication(
+    int snapshotSequence, {
+    required String filename,
+    required String snapshotHash,
+  }) async => _publishSnapshot(
+    snapshotSequence,
+    filename: filename,
+    snapshotHash: snapshotHash,
+    completeV1Cutover: true,
+  );
+
+  Future<void> _publishSnapshot(
+    int snapshotSequence, {
+    required String filename,
+    required String snapshotHash,
+    required bool completeV1Cutover,
+  }) async {
+    final publication = _snapshotPublications[snapshotSequence];
+    if (publication?.state != SnapshotPublicationState.blobsReady) {
+      throw StateError('snapshot_not_blobs_ready');
+    }
+    final ids = _snapshotMembers[snapshotSequence]!
+        .map((member) => (member.operationId, member.payloadHash))
+        .toSet();
+    _outbox.removeWhere(
+      (record) => ids.contains((record.operationId, record.payloadHash)),
+    );
+    _snapshotPublications[snapshotSequence] = SnapshotPublication(
+      sequence: snapshotSequence,
+      state: SnapshotPublicationState.published,
+      filename: filename,
+      snapshotHash: snapshotHash,
+      publishedAt: DateTime.now(),
+    );
+    _snapshotState = SyncSnapshotState(
+      nextSnapshotSequence: _snapshotState.nextSnapshotSequence,
+      lastPublishedSequence: snapshotSequence,
+      lastPublishedHash: snapshotHash,
+      lastPublishedAt: DateTime.now(),
+      v1ImportCompleted: completeV1Cutover || _snapshotState.v1ImportCompleted,
+      v1MigrationState: completeV1Cutover
+          ? V1MigrationState.cutoverComplete
+          : _snapshotState.v1MigrationState,
+      v1LastSeenFingerprint: _snapshotState.v1LastSeenFingerprint,
+    );
+  }
+
+  @override
+  Future<void> abandonIncompleteSnapshotPublications() async {
+    for (final entry in _snapshotPublications.entries.toList()) {
+      if (entry.value.state == SnapshotPublicationState.prepared ||
+          entry.value.state == SnapshotPublicationState.blobsReady) {
+        _snapshotPublications[entry.key] = SnapshotPublication(
+          sequence: entry.key,
+          state: SnapshotPublicationState.abandoned,
+        );
+      }
+    }
+  }
+
+  @override
+  Future<void> recordV1Scan({
+    required bool v1HistoryFound,
+    required String? fingerprint,
+  }) async {
+    _snapshotState = SyncSnapshotState(
+      nextSnapshotSequence: _snapshotState.nextSnapshotSequence,
+      lastPublishedSequence: _snapshotState.lastPublishedSequence,
+      lastPublishedHash: _snapshotState.lastPublishedHash,
+      lastPublishedAt: _snapshotState.lastPublishedAt,
+      v1ImportCompleted: _snapshotState.v1ImportCompleted,
+      v1MigrationState: v1HistoryFound
+          ? V1MigrationState.needsUpgradeConfirmation
+          : _snapshotState.v1MigrationState,
+      v1LastSeenFingerprint: fingerprint,
+    );
+  }
+
+  @override
+  Future<void> markV1ReadyToCutover() async {
+    await recordV1Scan(
+      v1HistoryFound: false,
+      fingerprint: _snapshotState.v1LastSeenFingerprint,
+    );
+    _snapshotState = SyncSnapshotState(
+      nextSnapshotSequence: _snapshotState.nextSnapshotSequence,
+      lastPublishedSequence: _snapshotState.lastPublishedSequence,
+      lastPublishedHash: _snapshotState.lastPublishedHash,
+      lastPublishedAt: _snapshotState.lastPublishedAt,
+      v1ImportCompleted: _snapshotState.v1ImportCompleted,
+      v1MigrationState: V1MigrationState.readyToCutover,
+      v1LastSeenFingerprint: _snapshotState.v1LastSeenFingerprint,
+    );
+  }
+
+  @override
+  Future<void> markV1MigrationNotRequired() async {
+    _snapshotState = SyncSnapshotState(
+      nextSnapshotSequence: _snapshotState.nextSnapshotSequence,
+      lastPublishedSequence: _snapshotState.lastPublishedSequence,
+      lastPublishedHash: _snapshotState.lastPublishedHash,
+      lastPublishedAt: _snapshotState.lastPublishedAt,
+      v1ImportCompleted: true,
+      v1MigrationState: V1MigrationState.cutoverComplete,
+      v1LastSeenFingerprint: _snapshotState.v1LastSeenFingerprint,
+    );
+  }
+
+  @override
+  Future<SyncSnapshotCursor?> loadSnapshotCursor(String deviceId) async =>
+      _snapshotCursors[deviceId];
+  @override
+  Future<List<SyncSnapshotCursor>> loadSnapshotCursors() async =>
+      _snapshotCursors.values.toList();
+  @override
+  Future<void> saveSnapshotCursor(SnapshotCursorAdvance cursor) async {
+    final existing = _snapshotCursors[cursor.deviceId];
+    if (existing != null) {
+      if (cursor.sequence < existing.lastMergedSequence) return;
+      if (cursor.sequence == existing.lastMergedSequence &&
+          cursor.snapshotHash != existing.lastMergedHash) {
+        throw StateError('snapshot_sequence_collision');
+      }
+    }
+    _snapshotCursors[cursor.deviceId] = SyncSnapshotCursor(
+      deviceId: cursor.deviceId,
+      lastMergedSequence: cursor.sequence,
+      lastMergedHash: cursor.snapshotHash,
+      lastMergedAt: cursor.mergedAt,
+    );
+  }
+
+  @override
+  Future<void> saveVerifiedBlobMapping(SnapshotBlobMapping mapping) async {
+    _snapshotBlobs.putIfAbsent(mapping.rawHash, () => {})[mapping.fileHash] =
+        mapping;
+  }
+
+  @override
+  Future<void> markSnapshotBlobMappingInvalid(
+    String rawHash,
+    String fileHash,
+  ) async {
+    final mapping = _snapshotBlobs[rawHash]?[fileHash];
+    if (mapping != null) {
+      await saveVerifiedBlobMapping(
+        SnapshotBlobMapping(
+          rawHash: mapping.rawHash,
+          fileHash: mapping.fileHash,
+          rawLength: mapping.rawLength,
+          verified: false,
+          verifiedAt: mapping.verifiedAt,
+          source: mapping.source,
+        ),
+      );
+    }
+  }
+
+  @override
+  Future<List<SnapshotBlobMapping>> loadVerifiedBlobMappings(
+    String rawHash,
+  ) async =>
+      (_snapshotBlobs[rawHash]?.values
+                .where((mapping) => mapping.verified)
+                .toList() ??
+            [])
+        ..sort((a, b) => a.fileHash.compareTo(b.fileHash));
+
+  @override
   Future<void> applyRemoteBatch(RemoteApplyPlan plan) async {
     // 1) 校验阶段：只读，不触碰任何状态。
     final knownVersions = <SyncEntityKey, KnownSyncEntityVersion>{};
@@ -478,6 +718,9 @@ class _InMemorySyncRepository implements SyncRepository {
       },
       knownVersions: knownVersions,
     );
+    if (plan.cursorAdvance != null) {
+      await saveSnapshotCursor(plan.cursorAdvance!);
+    }
 
     // 2) 构造阶段：全部新状态在本地算好，任何异常都不会留下半批数据。
     final nextVersions = <SyncEntityKey, List<SyncEntityVersion>>{

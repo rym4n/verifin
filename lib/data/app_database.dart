@@ -14,7 +14,7 @@ class AppDatabase {
   final Database db;
 
   static const String defaultDatabaseName = 'verifin.db';
-  static const int schemaVersion = 21;
+  static const int schemaVersion = 22;
 
   /// 打开（或创建）数据库。测试通过 [factory]/[path] 注入 ffi 与内存路径；
   /// 真实平台留空则由 [resolveDatabaseFactory]/[resolveDatabasePath] 决定。
@@ -74,6 +74,7 @@ class AppDatabase {
         19: _migrateToV19,
         20: _migrateToV20,
         21: _migrateToV21,
+        22: _migrateToV22,
       };
 
   /// 只读暴露迁移注册表，供迁移矩阵测试把库推进到任意中间版本。生产代码勿用。
@@ -402,6 +403,12 @@ class AppDatabase {
     }
   }
 
+  static Future<void> _migrateToV22(Database db) async {
+    for (final statement in _schemaV22Snapshot) {
+      await db.execute(statement);
+    }
+  }
+
   static Future<bool> _tableExists(Database db, String name) async {
     final rows = await db.rawQuery(
       "SELECT name FROM sqlite_master WHERE type='table' AND name = ?",
@@ -661,7 +668,74 @@ class AppDatabase {
     _syncApplyJournalTableCurrent,
     _syncApplyJournalPendingIndex,
     _syncConflictsTable,
+    ..._schemaV22Snapshot,
   ];
+
+  static const List<String> _schemaV22Snapshot = <String>[
+    _syncSnapshotStateTable,
+    _syncSnapshotCursorsTable,
+    _syncSnapshotPublicationsTable,
+    _syncSnapshotMembersTable,
+    _syncSnapshotBlobsTable,
+    _syncSnapshotBlobMembersTable,
+  ];
+
+  static const String _syncSnapshotStateTable = '''
+    CREATE TABLE IF NOT EXISTS sync_snapshot_state (
+      key TEXT PRIMARY KEY DEFAULT 'singleton',
+      next_snapshot_sequence INTEGER NOT NULL DEFAULT 1,
+      last_published_sequence INTEGER,
+      last_published_hash TEXT,
+      last_published_at INTEGER,
+      v1_import_completed INTEGER NOT NULL DEFAULT 0,
+      v1_migration_state TEXT NOT NULL DEFAULT 'not_started',
+      v1_last_seen_fingerprint TEXT
+    )
+  ''';
+  static const String _syncSnapshotCursorsTable = '''
+    CREATE TABLE IF NOT EXISTS sync_snapshot_cursors (
+      device_id TEXT PRIMARY KEY,
+      last_merged_sequence INTEGER NOT NULL,
+      last_merged_hash TEXT NOT NULL,
+      last_merged_at INTEGER
+    )
+  ''';
+  static const String _syncSnapshotPublicationsTable = '''
+    CREATE TABLE IF NOT EXISTS sync_snapshot_publications (
+      snapshot_sequence INTEGER PRIMARY KEY,
+      state TEXT NOT NULL,
+      filename TEXT,
+      snapshot_hash TEXT,
+      published_at INTEGER
+    )
+  ''';
+  static const String _syncSnapshotMembersTable = '''
+    CREATE TABLE IF NOT EXISTS sync_snapshot_members (
+      snapshot_sequence INTEGER NOT NULL,
+      operation_id TEXT NOT NULL,
+      payload_hash TEXT NOT NULL,
+      PRIMARY KEY (snapshot_sequence, operation_id)
+    )
+  ''';
+  static const String _syncSnapshotBlobsTable = '''
+    CREATE TABLE IF NOT EXISTS sync_snapshot_blobs (
+      raw_hash TEXT NOT NULL,
+      file_hash TEXT NOT NULL,
+      raw_length INTEGER NOT NULL,
+      verified INTEGER NOT NULL DEFAULT 0,
+      verified_at INTEGER,
+      source TEXT,
+      PRIMARY KEY (raw_hash, file_hash)
+    )
+  ''';
+  static const String _syncSnapshotBlobMembersTable = '''
+    CREATE TABLE IF NOT EXISTS sync_snapshot_blob_members (
+      snapshot_sequence INTEGER NOT NULL,
+      raw_hash TEXT NOT NULL,
+      file_hash TEXT NOT NULL,
+      PRIMARY KEY (snapshot_sequence, raw_hash)
+    )
+  ''';
 
   /// 上传进度按批次标记，故批次列为高频过滤条件。
   static const String _syncOutboxUploadedIndex =
