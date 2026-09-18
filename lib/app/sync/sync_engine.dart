@@ -424,8 +424,9 @@ class SyncEngine {
             throw const FormatException('snapshot_blob_invalid');
           }
           final name = byHash[chunk.fileHash];
-          if (name == null)
+          if (name == null) {
             throw const FormatException('snapshot_blob_missing');
+          }
           try {
             final downloaded = await _transport!.downloadRootFile(
               _config!,
