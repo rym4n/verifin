@@ -101,22 +101,9 @@ class SyncRuntime {
         await controller.waitForPendingWrites();
         await controller.applySyncPreferenceJournal();
       });
-      await runLog.phase(
-        SyncPhase.initialize,
-        engine.initializeFromRestoredData,
-      );
-      if (await _repository.loadEnrollmentState() == 'enrolling') {
-        final result = SyncRunResult(
-          uploaded: 0,
-          downloaded: 0,
-          conflicts: 0,
-          pending: (await _repository.loadPendingBatches()).length,
-        );
-        runLog.finish(result);
-        return result;
-      }
+      await runLog.phase(SyncPhase.initialize, () async {});
       await runLog.phase(SyncPhase.reconcile, tracker.reconcile);
-      final result = await engine.run(
+      final result = await engine.runSnapshot(
         trigger: trigger,
         onPhase: runLog.reportPhase,
       );

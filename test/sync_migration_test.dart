@@ -138,41 +138,78 @@ void main() {
 
     test('old-client writes after cutover reopen the blocking gate', () async {
       final transport = StubWebdavSyncTransport();
+      final remote = SyncTestRemote('22222222222222222222222222222222');
+      await transport.simulateRemoteBatch(remote.deviceId, 1, [
+        remote.expense('pre-cutover', 25, batchId: 'pre-batch'),
+      ]);
       final device = await SyncTestDevice.create(
         deviceId: '11111111111111111111111111111111',
         transport: transport,
       );
       addTearDown(device.dispose);
-      expect(await device.engine.prepareSnapshotCutover(), isNull);
+      expect(
+        await device.engine.prepareSnapshotCutover(),
+        'legacy_client_upgrade_required',
+      );
+      await device.controller.confirmSnapshotCutover();
+      expect(
+        (await device.engine.runSnapshot(
+          trigger: SyncTrigger.manual,
+        )).errorCode,
+        isNull,
+      );
+      expect(
+        (await device.repository.sync.loadSnapshotState()).v1MigrationState,
+        V1MigrationState.cutoverComplete,
+      );
 
-      final remote = SyncTestRemote('22222222222222222222222222222222');
-      await transport.simulateRemoteBatch(remote.deviceId, 1, [
+      await transport.simulateRemoteBatch(remote.deviceId, 2, [
         remote.expense('post-cutover', 50, batchId: 'post-batch'),
       ]);
+      final snapshotCounts = Map<String, int>.from(
+        transport.snapshotRequestCounts,
+      );
 
       expect(
         await device.engine.prepareSnapshotCutover(),
         'legacy_client_upgrade_required',
       );
       expect(device.entries.map((entry) => entry.id), contains('post-cutover'));
-      expect(transport.snapshotRequestCounts, isEmpty);
+      expect(transport.snapshotRequestCounts, snapshotCounts);
     });
 
     test('v1 bridge scan failure blocks snapshot work', () async {
       final transport = StubWebdavSyncTransport();
+      final remote = SyncTestRemote('22222222222222222222222222222222');
+      await transport.simulateRemoteBatch(remote.deviceId, 1, [
+        remote.expense('pre-cutover', 25, batchId: 'pre-batch'),
+      ]);
       final device = await SyncTestDevice.create(
         deviceId: '11111111111111111111111111111111',
         transport: transport,
       );
       addTearDown(device.dispose);
-      expect(await device.engine.prepareSnapshotCutover(), isNull);
+      expect(
+        await device.engine.prepareSnapshotCutover(),
+        'legacy_client_upgrade_required',
+      );
+      await device.controller.confirmSnapshotCutover();
+      expect(
+        (await device.engine.runSnapshot(
+          trigger: SyncTrigger.manual,
+        )).errorCode,
+        isNull,
+      );
       transport.failV1ListRequests = true;
+      final snapshotCounts = Map<String, int>.from(
+        transport.snapshotRequestCounts,
+      );
 
       await expectLater(
         device.engine.prepareSnapshotCutover(),
         throwsA(isA<WebdavException>()),
       );
-      expect(transport.snapshotRequestCounts, isEmpty);
+      expect(transport.snapshotRequestCounts, snapshotCounts);
     });
   });
 }

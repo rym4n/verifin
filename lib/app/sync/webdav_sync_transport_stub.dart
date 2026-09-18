@@ -51,6 +51,9 @@ class StubWebdavSyncTransport implements WebdavSyncTransport {
   /// Test control: fail the read-only v1 bridge listing.
   bool failV1ListRequests = false;
 
+  /// Test control: fail immutable snapshot uploads.
+  bool failSnapshotUploads = false;
+
   @override
   Future<void> ensureSyncTree(WebdavConfig config) async {
     _countV1('MKCOL');
@@ -255,6 +258,9 @@ class StubWebdavSyncTransport implements WebdavSyncTransport {
     int length,
   ) async {
     _countSnapshot('PUT');
+    if (failSnapshotUploads) {
+      throw const WebdavException('Test: snapshot upload failure');
+    }
     final builder = BytesBuilder(copy: false);
     await for (final chunk in bytes) {
       builder.add(chunk);

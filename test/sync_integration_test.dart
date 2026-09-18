@@ -16,11 +16,11 @@ void main() {
     setUp(() async {
       transport = StubWebdavSyncTransport();
       a = await SyncTestDevice.create(
-        deviceId: 'device-a',
+        deviceId: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
         transport: transport,
       );
       b = await SyncTestDevice.create(
-        deviceId: 'device-b',
+        deviceId: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
         transport: transport,
       );
     });
@@ -36,12 +36,12 @@ void main() {
 
       expect(await a.repository.sync.loadOutbox(), isNotEmpty);
       expect(await b.repository.sync.loadOutbox(), isNotEmpty);
-      final syncedA = await a.engine.run(trigger: SyncTrigger.manual);
+      final syncedA = await a.engine.runSnapshot(trigger: SyncTrigger.manual);
       expect(syncedA.errorCode, isNull, reason: a.lastSyncError.toString());
-      final syncedB = await b.engine.run(trigger: SyncTrigger.manual);
+      final syncedB = await b.engine.runSnapshot(trigger: SyncTrigger.manual);
       expect(syncedB.errorCode, isNull, reason: b.lastSyncError.toString());
       expect(
-        (await a.engine.run(trigger: SyncTrigger.manual)).errorCode,
+        (await a.engine.runSnapshot(trigger: SyncTrigger.manual)).errorCode,
         isNull,
       );
 
@@ -59,12 +59,12 @@ void main() {
 
     test('causal edit replaces the entry without a conflict', () async {
       await a.addExpense('causal-entry', 100);
-      await a.engine.run(trigger: SyncTrigger.manual);
-      await b.engine.run(trigger: SyncTrigger.manual);
+      await a.engine.runSnapshot(trigger: SyncTrigger.manual);
+      await b.engine.runSnapshot(trigger: SyncTrigger.manual);
 
       await a.editExpense('causal-entry', 150);
-      await a.engine.run(trigger: SyncTrigger.manual);
-      final result = await b.engine.run(trigger: SyncTrigger.manual);
+      await a.engine.runSnapshot(trigger: SyncTrigger.manual);
+      final result = await b.engine.runSnapshot(trigger: SyncTrigger.manual);
 
       expect(result.errorCode, isNull);
       expect(result.conflicts, 0);
@@ -76,14 +76,14 @@ void main() {
       'concurrent edits retain a conflict instead of silently overwriting',
       () async {
         await a.addExpense('concurrent-entry', 100);
-        await a.engine.run(trigger: SyncTrigger.manual);
-        await b.engine.run(trigger: SyncTrigger.manual);
+        await a.engine.runSnapshot(trigger: SyncTrigger.manual);
+        await b.engine.runSnapshot(trigger: SyncTrigger.manual);
 
         await a.editExpense('concurrent-entry', 200);
         await b.editExpense('concurrent-entry', 300);
-        await a.engine.run(trigger: SyncTrigger.manual);
-        await b.engine.run(trigger: SyncTrigger.manual);
-        await a.engine.run(trigger: SyncTrigger.manual);
+        await a.engine.runSnapshot(trigger: SyncTrigger.manual);
+        await b.engine.runSnapshot(trigger: SyncTrigger.manual);
+        await a.engine.runSnapshot(trigger: SyncTrigger.manual);
 
         final conflicts = [
           ...await a.engine.conflicts(),
@@ -101,14 +101,14 @@ void main() {
 
     test('concurrent delete and edit retain a conflict', () async {
       await a.addExpense('delete-edit-entry', 100);
-      await a.engine.run(trigger: SyncTrigger.manual);
-      await b.engine.run(trigger: SyncTrigger.manual);
+      await a.engine.runSnapshot(trigger: SyncTrigger.manual);
+      await b.engine.runSnapshot(trigger: SyncTrigger.manual);
 
       await a.deleteExpense('delete-edit-entry');
       await b.editExpense('delete-edit-entry', 200);
-      await a.engine.run(trigger: SyncTrigger.manual);
-      await b.engine.run(trigger: SyncTrigger.manual);
-      await a.engine.run(trigger: SyncTrigger.manual);
+      await a.engine.runSnapshot(trigger: SyncTrigger.manual);
+      await b.engine.runSnapshot(trigger: SyncTrigger.manual);
+      await a.engine.runSnapshot(trigger: SyncTrigger.manual);
 
       final conflicts = [
         ...await a.engine.conflicts(),
@@ -125,10 +125,10 @@ void main() {
       'replaying an already scanned remote event leaves one SQLite entry',
       () async {
         await a.addExpense('replay-entry', 100);
-        await a.engine.run(trigger: SyncTrigger.manual);
-        await b.engine.run(trigger: SyncTrigger.manual);
+        await a.engine.runSnapshot(trigger: SyncTrigger.manual);
+        await b.engine.runSnapshot(trigger: SyncTrigger.manual);
 
-        final replay = await b.engine.run(trigger: SyncTrigger.manual);
+        final replay = await b.engine.runSnapshot(trigger: SyncTrigger.manual);
 
         expect(replay.errorCode, isNull);
         expect(replay.downloaded, 0);
@@ -151,13 +151,13 @@ void main() {
       expect(queued, isNotEmpty);
       expect(queued.every((record) => record.event != null), isTrue);
 
-      transport.failCommitUploads = true;
-      final failed = await a.engine.run(trigger: SyncTrigger.manual);
+      transport.failSnapshotUploads = true;
+      final failed = await a.engine.runSnapshot(trigger: SyncTrigger.manual);
       expect(failed.errorCode, isNotNull);
       expect(await a.repository.sync.loadOutbox(), isNotEmpty);
 
-      transport.failCommitUploads = false;
-      final retried = await a.engine.run(trigger: SyncTrigger.manual);
+      transport.failSnapshotUploads = false;
+      final retried = await a.engine.runSnapshot(trigger: SyncTrigger.manual);
       expect(retried.errorCode, isNull);
       expect(retried.uploaded, 1);
       expect(await a.repository.sync.loadOutbox(), isEmpty);

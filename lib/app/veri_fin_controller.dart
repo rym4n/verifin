@@ -309,9 +309,12 @@ class VeriFinController extends ChangeNotifier
     )) {
       final local = current.entity(remote.entity);
       final hash = local?.payloadHash ?? computeSyncPayloadHash(null);
-      final conflictId = 'conflict-${remote.operationId}';
-      if (shadow[remote.entity] == hash &&
-          conflicts.any((c) => c.id == conflictId)) {
+      final existingConflict = conflicts.where(
+        (conflict) =>
+            conflict.entity == remote.entity &&
+            conflict.remote.operationId == remote.operationId,
+      );
+      if (shadow[remote.entity] == hash && existingConflict.isNotEmpty) {
         continue;
       }
       final event = SyncEvent(
@@ -326,6 +329,11 @@ class VeriFinController extends ChangeNotifier
         payload: local?.payload,
         batchId: clock.nextOperationId(),
         keyFingerprint: 'local',
+      );
+      final conflictId = canonicalSyncConflictId(
+        remote.entity,
+        event.operationId,
+        remote.operationId,
       );
       await sync.saveDeviceState(clock.getState());
       await sync.enqueueBatch(

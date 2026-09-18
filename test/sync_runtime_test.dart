@@ -75,10 +75,10 @@ void main() {
           '同步阶段 run=$runId phase=reconcile state=success',
           '同步阶段 run=$runId phase=ensure_remote state=start',
           '同步阶段 run=$runId phase=ensure_remote state=success',
-          '同步阶段 run=$runId phase=upload state=start',
-          '同步阶段 run=$runId phase=upload state=success',
           '同步阶段 run=$runId phase=download state=start',
           '同步阶段 run=$runId phase=download state=success',
+          '同步阶段 run=$runId phase=upload state=start',
+          '同步阶段 run=$runId phase=upload state=success',
         ]),
       );
       expect(
@@ -145,14 +145,14 @@ void main() {
       expect(
         messages,
         contains(
-          '同步阶段 run=$runId phase=initialize state=error '
+          '同步阶段 run=$runId phase=ensure_remote state=error '
           'errorCode=network',
         ),
       );
       expect(
         messages,
         contains(
-          'WebDAV失败 run=$runId phase=initialize method=GET '
+          'WebDAV失败 run=$runId phase=ensure_remote method=GET '
           'operation=download file=manifest status=302 redirects=0 '
           'redirect=downgrade reason=redirect_downgrade',
         ),
@@ -489,7 +489,7 @@ void main() {
 
 class _DiagnosticFailureTransport extends StubWebdavSyncTransport {
   @override
-  Future<void> ensureSyncTree(WebdavConfig config) {
+  Future<List<WebdavSyncFile>> listSyncFiles(WebdavConfig config) {
     throw const WebdavException(
       'https://private-user:private-password@dav.example.com/private/path '
       'Authorization ledger-body',

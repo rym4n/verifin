@@ -16,8 +16,10 @@ import 'sync_models.dart';
 import 'sync_projection.dart';
 import 'sync_ledger_reducer.dart';
 import 'sync_schema.dart';
+import 'sync_snapshot.dart';
 import 'sync_wire.dart';
 import 'sync_store.dart';
+import 'webdav_snapshot_transport.dart';
 import 'webdav_sync_transport.dart';
 
 /// Stable public status codes; exception detail belongs only in local logs.
@@ -234,6 +236,400 @@ class SyncEngine {
     }
   }
 
+  /// Snapshot-v2 production flow. The legacy [run] remains available only for
+  /// v1 compatibility tests and the read-only migration bridge.
+  Future<SyncRunResult> runSnapshot({
+    required SyncTrigger trigger,
+    SyncPhaseReporter? onPhase,
+  }) async {
+    final transport = _transport;
+    if (_config == null || transport == null) {
+      return const SyncRunResult(
+        uploaded: 0,
+        downloaded: 0,
+        conflicts: 0,
+        pending: 0,
+        errorCode: 'no_config',
+      );
+    }
+    final progress = _SyncRunProgress();
+    try {
+      await _ensureClock();
+      await _repository.abandonIncompleteSnapshotPublications();
+      final migrationError = await _runPhase(
+        SyncPhase.ensureRemote,
+        prepareSnapshotCutover,
+        onPhase,
+      );
+      if (migrationError != null) {
+        return SyncRunResult(
+          uploaded: 0,
+          downloaded: 0,
+          conflicts: (await _repository.loadConflicts()).length,
+          pending: (await _repository.loadPendingBatches()).length,
+          errorCode: migrationError,
+        );
+      }
+
+      final rootFiles = await _runPhase(
+        SyncPhase.download,
+        () => transport.listRoot(_config!),
+        onPhase,
+      );
+      final merged = await _mergeSnapshotCandidates(rootFiles);
+      progress.downloaded = merged.$1;
+      progress.conflicts = merged.$2;
+
+      final state = await _repository.loadSnapshotState();
+      final outbox = await _repository.loadOutbox();
+      if (outbox.isNotEmpty || state.lastPublishedSequence == null) {
+        progress.uploaded = await _runPhase(
+          SyncPhase.upload,
+          () => _publishSnapshot(rootFiles),
+          onPhase,
+        );
+      }
+      progress.pending = (await _repository.loadPendingBatches()).length;
+      return SyncRunResult(
+        uploaded: progress.uploaded,
+        downloaded: progress.downloaded,
+        conflicts: progress.conflicts,
+        pending: progress.pending,
+      );
+    } catch (error) {
+      _onError?.call(error);
+      return SyncRunResult(
+        uploaded: progress.uploaded,
+        downloaded: progress.downloaded,
+        conflicts: progress.conflicts,
+        pending: progress.pending,
+        errorCode: syncErrorCode(error),
+      );
+    }
+  }
+
+  Future<(int, int)> _mergeSnapshotCandidates(
+    List<WebdavRootFile> rootFiles,
+  ) async {
+    final localDevice = _clock!.deviceId;
+    final byDevice = <String, List<WebdavRootFile>>{};
+    for (final file in rootFiles) {
+      final name = file.name;
+      if (name.isBlob || name.deviceId == localDevice) continue;
+      byDevice.putIfAbsent(name.deviceId!, () => []).add(file);
+    }
+    var downloaded = 0;
+    var conflicts = 0;
+    for (final entry in byDevice.entries) {
+      final cursor = await _repository.loadSnapshotCursor(entry.key);
+      final candidates =
+          entry.value
+              .where(
+                (file) =>
+                    file.name.snapshotSequence! >
+                    (cursor?.lastMergedSequence ?? 0),
+              )
+              .toList()
+            ..sort(
+              (left, right) => right.name.snapshotSequence!.compareTo(
+                left.name.snapshotSequence!,
+              ),
+            );
+      Object? lastError;
+      for (final candidate in candidates) {
+        try {
+          final downloadedFile = await _transport!.downloadRootFile(
+            _config!,
+            candidate.name,
+            maxBytes: const SyncSnapshotLimits().maxEnvelopeBytes,
+          );
+          final snapshot = await SyncSnapshotCodec(
+            passphrase: _passphrase,
+          ).decode(downloadedFile.bytes, source: downloadedFile.name);
+          final batchId =
+              'snapshot-${snapshot.deviceId}-${snapshot.snapshotSequence}';
+          final wireEvents = <SyncEvent>[
+            for (final version in snapshot.heads)
+              _snapshotVersionEvent(version, batchId, snapshot.keyFingerprint),
+            for (final conflict in snapshot.conflicts) ...[
+              _snapshotVersionEvent(
+                conflict.local,
+                batchId,
+                snapshot.keyFingerprint,
+              ),
+              _snapshotVersionEvent(
+                conflict.remote,
+                batchId,
+                snapshot.keyFingerprint,
+              ),
+            ],
+          ];
+          final rawBlobs = await _downloadSnapshotBlobs(snapshot, rootFiles);
+          final events = <SyncEvent>[
+            for (final event in wireEvents)
+              materializeSyncEvent(event, rawBlobs, limits: wireLimits),
+          ];
+          final result = await _mergeAndApply(
+            events,
+            applyBatchId: batchId,
+            cursorAdvance: SnapshotCursorAdvance(
+              deviceId: snapshot.deviceId,
+              sequence: snapshot.snapshotSequence,
+              snapshotHash: candidate.name.fileHash,
+              mergedAt: DateTime.now(),
+            ),
+          );
+          downloaded += result.$1;
+          conflicts += result.$2;
+          lastError = null;
+          break;
+        } catch (error) {
+          lastError = error;
+        }
+      }
+      if (candidates.isNotEmpty && lastError != null) throw lastError;
+    }
+    return (downloaded, conflicts);
+  }
+
+  Future<Map<String, Uint8List>> _downloadSnapshotBlobs(
+    SyncSnapshot snapshot,
+    List<WebdavRootFile> rootFiles,
+  ) async {
+    final byHash = <String, SnapshotFileName>{
+      for (final file in rootFiles)
+        if (file.name.isBlob) file.name.fileHash: file.name,
+    };
+    final result = <String, Uint8List>{};
+    for (final attachment in snapshot.attachmentBlobs) {
+      for (final chunk in attachment.chunks) {
+        if (result.containsKey(chunk.rawHash)) continue;
+        final knownMappings = await _repository.loadSnapshotBlobMappings(
+          chunk.rawHash,
+        );
+        if (knownMappings.any(
+          (mapping) => mapping.fileHash == chunk.fileHash && !mapping.verified,
+        )) {
+          throw const FormatException('snapshot_blob_invalid');
+        }
+        final name = byHash[chunk.fileHash];
+        if (name == null) throw const FormatException('snapshot_blob_missing');
+        try {
+          final downloaded = await _transport!.downloadRootFile(
+            _config!,
+            name,
+            maxBytes: wireLimits.maxEnvelopeBytes,
+          );
+          final envelope = jsonDecode(utf8.decode(downloaded.bytes));
+          if (envelope is! Map) {
+            throw const FormatException('snapshot_blob_envelope');
+          }
+          final decoded = await SyncCodec(passphrase: _passphrase).decodeValue(
+            Map<String, Object?>.from(envelope),
+            expectedProtocolVersion: syncSnapshotProtocolVersion,
+            maxPlaintextBytes: wireLimits.maxEnvelopeBytes,
+          );
+          if (decoded is! Map ||
+              decoded['rawHash'] != chunk.rawHash ||
+              decoded['data'] is! String) {
+            throw const FormatException('snapshot_blob_mapping');
+          }
+          final bytes = Uint8List.fromList(
+            base64Decode(decoded['data'] as String),
+          );
+          if (sha256.convert(bytes).toString() != chunk.rawHash) {
+            throw const FormatException('snapshot_blob_raw_hash');
+          }
+          result[chunk.rawHash] = bytes;
+          await _repository.saveVerifiedBlobMapping(
+            SnapshotBlobMapping(
+              rawHash: chunk.rawHash,
+              fileHash: chunk.fileHash,
+              rawLength: bytes.length,
+              verified: true,
+              verifiedAt: DateTime.now(),
+              source: 'remote_download',
+            ),
+          );
+        } catch (_) {
+          await _repository.markSnapshotBlobMappingInvalid(
+            chunk.rawHash,
+            chunk.fileHash,
+          );
+          rethrow;
+        }
+      }
+    }
+    return result;
+  }
+
+  SyncEvent _snapshotVersionEvent(
+    SyncEntityVersion version,
+    String batchId,
+    String keyFingerprint,
+  ) => SyncEvent(
+    protocolVersion: syncProtocolVersion,
+    operationId: version.operationId,
+    version: version.version,
+    entity: version.entity,
+    operation: version.deleted
+        ? SyncOperationKind.delete
+        : SyncOperationKind.upsert,
+    payloadHash: version.payloadHash,
+    payload: version.payload,
+    batchId: batchId,
+    keyFingerprint: keyFingerprint,
+  );
+
+  Future<int> _publishSnapshot(List<WebdavRootFile> rootFiles) async {
+    final prepared = await _repository.prepareSnapshotPublication();
+    final batchId = 'snapshot-${prepared.publication.sequence}';
+    final originalEvents = <SyncEvent>[
+      for (final version in prepared.heads)
+        _snapshotVersionEvent(version, batchId, 'local'),
+    ];
+    final rawBlobs = syncAttachmentBlobs(originalEvents, limits: wireLimits);
+    final existingRootHashes = <String>{
+      for (final file in rootFiles)
+        if (file.name.isBlob) file.name.fileHash,
+    };
+    final selectedMappings = <String, SnapshotBlobMapping>{};
+    for (final raw in rawBlobs.entries) {
+      final persisted = await _repository.loadVerifiedBlobMappings(raw.key);
+      final reusable = persisted
+          .where((mapping) => existingRootHashes.contains(mapping.fileHash))
+          .firstOrNull;
+      if (reusable != null) {
+        selectedMappings[raw.key] = reusable;
+        continue;
+      }
+      final envelope = await SyncCodec(passphrase: _passphrase).encodeValue(
+        <String, Object?>{'rawHash': raw.key, 'data': base64Encode(raw.value)},
+        syncSnapshotProtocolVersion,
+      );
+      final bytes = Uint8List.fromList(
+        utf8.encode(canonicalSyncJson(envelope)),
+      );
+      if (bytes.length > wireLimits.maxEnvelopeBytes) {
+        throw const FormatException('snapshot_blob_too_large');
+      }
+      final mapping = SnapshotBlobMapping(
+        rawHash: raw.key,
+        fileHash: sha256.convert(bytes).toString(),
+        rawLength: raw.value.length,
+        verified: true,
+        verifiedAt: DateTime.now(),
+        source: 'local_upload',
+      );
+      await _transport!.putBlob(
+        _config!,
+        SnapshotFileName.blob(fileHash: mapping.fileHash),
+        Stream.value(bytes),
+        bytes.length,
+      );
+      await _repository.saveVerifiedBlobMapping(mapping);
+      selectedMappings[raw.key] = mapping;
+      existingRootHashes.add(mapping.fileHash);
+    }
+    await _repository.freezeSnapshotBlobMembers(
+      prepared.publication.sequence,
+      selectedMappings.values.toList(),
+    );
+    final deviceState = await _repository.loadDeviceState();
+    final codec = SyncSnapshotCodec(passphrase: _passphrase);
+    final createdAt = DateTime.fromMillisecondsSinceEpoch(
+      DateTime.now().toUtc().millisecondsSinceEpoch,
+      isUtc: true,
+    );
+    final attachmentBlobs = <SyncSnapshotAttachmentBlob>[];
+    for (final event in originalEvents) {
+      final wire = syncEventForWire(event, limits: wireLimits);
+      if (wire.entity.type != 'attachments' ||
+          wire.operation == SyncOperationKind.delete) {
+        continue;
+      }
+      final payload = Map<String, Object?>.from(wire.payload as Map);
+      attachmentBlobs.add(
+        SyncSnapshotAttachmentBlob(
+          attachmentId: wire.entity.id,
+          byteLength: payload['byteLength'] as int,
+          dataUrlPrefix: payload['dataUrlPrefix'] as String,
+          chunks: [
+            for (final rawHash
+                in (payload['blobChunks'] as List).cast<String>())
+              SyncSnapshotBlobRef(
+                rawHash: rawHash,
+                fileHash: selectedMappings[rawHash]!.fileHash,
+              ),
+          ],
+        ),
+      );
+    }
+    final snapshot = SyncSnapshot.fromProjection(
+      deviceId: deviceState.deviceId,
+      snapshotSequence: prepared.publication.sequence,
+      createdAtUtc: createdAt,
+      keyFingerprint: SyncCodec(passphrase: _passphrase).keyFingerprint,
+      knownVector: deviceState.knownVector,
+      events: originalEvents,
+      attachmentBlobs: attachmentBlobs,
+      conflicts: prepared.conflicts,
+    );
+    final bytes = await codec.encode(snapshot);
+    final name = SnapshotFileName.snapshot(
+      deviceId: deviceState.deviceId,
+      snapshotSequence: prepared.publication.sequence,
+      createdAtUtc: snapshot.createdAtUtc,
+      fileHash: sha256.convert(bytes).toString(),
+    );
+    await _transport!.putSnapshot(
+      _config!,
+      name,
+      Stream.value(bytes),
+      bytes.length,
+    );
+    final migration = await _repository.loadSnapshotState();
+    if (migration.v1MigrationState == V1MigrationState.readyToCutover) {
+      await _repository.completeV1CutoverWithPublication(
+        prepared.publication.sequence,
+        filename: name.toString(),
+        snapshotHash: name.fileHash,
+      );
+    } else {
+      await _repository.markSnapshotPublished(
+        prepared.publication.sequence,
+        filename: name.toString(),
+        snapshotHash: name.fileHash,
+      );
+    }
+    await _cleanupLocalSnapshots(rootFiles, deviceState.deviceId);
+    return 1;
+  }
+
+  Future<void> _cleanupLocalSnapshots(
+    List<WebdavRootFile> rootFiles,
+    String localDevice,
+  ) async {
+    final snapshots =
+        rootFiles
+            .where(
+              (file) => !file.name.isBlob && file.name.deviceId == localDevice,
+            )
+            .toList()
+          ..sort(
+            (left, right) => right.name.snapshotSequence!.compareTo(
+              left.name.snapshotSequence!,
+            ),
+          );
+    for (final file in snapshots.skip(2)) {
+      try {
+        await _transport!.deleteSnapshot(_config!, file.name);
+      } catch (_) {
+        // Snapshot publication already succeeded; cleanup is best effort.
+      }
+    }
+  }
+
   Future<T> _runPhase<T>(
     SyncPhase phase,
     Future<T> Function() action,
@@ -259,6 +655,10 @@ class SyncEngine {
     if (_config == null || transport == null) return 'no_config';
 
     final state = await _repository.loadSnapshotState();
+    if (state.v1MigrationState == V1MigrationState.cutoverComplete &&
+        state.v1LastSeenFingerprint == null) {
+      return null;
+    }
     final remoteFiles = await transport.listSyncFiles(_config!);
     final batches = await _groupFilesByBatchAsync(remoteFiles);
     final complete = _causalBatchOrder(
@@ -1118,6 +1518,7 @@ class SyncEngine {
   Future<(int, int)> _mergeAndApply(
     List<SyncEvent> events, {
     String? applyBatchId,
+    SnapshotCursorAdvance? cursorAdvance,
   }) async {
     for (final event in events) {
       if (event.operation != SyncOperationKind.delete) {
@@ -1127,15 +1528,24 @@ class SyncEngine {
     final target = _controller;
     if (target is SyncRemoteApplyTarget) {
       return (target as SyncRemoteApplyTarget).runSyncRemoteMerge(
-        () => _mergeUnderGate(events, applyBatchId: applyBatchId),
+        () => _mergeUnderGate(
+          events,
+          applyBatchId: applyBatchId,
+          cursorAdvance: cursorAdvance,
+        ),
       );
     }
-    return _mergeUnderGate(events, applyBatchId: applyBatchId);
+    return _mergeUnderGate(
+      events,
+      applyBatchId: applyBatchId,
+      cursorAdvance: cursorAdvance,
+    );
   }
 
   Future<(int, int)> _mergeUnderGate(
     List<SyncEvent> events, {
     String? applyBatchId,
+    SnapshotCursorAdvance? cursorAdvance,
   }) async {
     final heads = await _repository.loadEntityHeads(
       events.map((e) => e.entity).toSet(),
@@ -1195,6 +1605,7 @@ class SyncEngine {
         const [],
         conflicts: conflicts,
         batchId: applyBatchId ?? events.first.batchId,
+        cursorAdvance: cursorAdvance,
       );
     } else if (accepted.isNotEmpty || superseded.isNotEmpty) {
       await _applyEvents(
@@ -1202,6 +1613,13 @@ class SyncEngine {
         acknowledgedEvents: superseded,
         conflicts: conflicts,
         batchId: applyBatchId ?? events.first.batchId,
+        cursorAdvance: cursorAdvance,
+      );
+    } else if (cursorAdvance != null) {
+      await _applyEvents(
+        const [],
+        batchId: applyBatchId ?? events.first.batchId,
+        cursorAdvance: cursorAdvance,
       );
     }
     return (
@@ -1251,6 +1669,7 @@ class SyncEngine {
     List<String> resolvedConflictIds = const [],
     List<String> completedPendingIds = const [],
     List<SyncEvent> acknowledgedEvents = const [],
+    SnapshotCursorAdvance? cursorAdvance,
   }) async {
     final currentHeads = await _repository.loadEntityHeads(
       events.map((e) => e.entity).toSet(),
@@ -1306,6 +1725,7 @@ class SyncEngine {
       resolutionEvents: resolutionEvents,
       resolvedConflictIds: resolvedConflictIds,
       completedPendingIds: completedPendingIds,
+      cursorAdvance: cursorAdvance,
     );
 
     // Route through the echo-suppression wrapper when provided.
@@ -1378,8 +1798,13 @@ class SyncEngine {
       operationId: remoteEvent.operationId,
     );
 
+    final conflictId = canonicalSyncConflictId(
+      remoteEvent.entity,
+      localVersion.operationId,
+      remoteEvent.operationId,
+    );
     return SyncConflictRecord(
-      id: 'conflict-${remoteEvent.operationId}',
+      id: conflictId,
       entity: remoteEvent.entity,
       local: localVersion,
       remote: remoteVersion,
