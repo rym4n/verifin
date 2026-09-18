@@ -726,6 +726,11 @@ class SyncEngine {
       await _repository.markV1MigrationNotRequired();
       return null;
     }
+    if (legacyTreePresent == false &&
+        state.v1LastSeenFingerprint == null &&
+        state.v1MigrationState == V1MigrationState.cutoverComplete) {
+      return null;
+    }
     final remoteFiles = await transport.listSyncFiles(_config!);
     final batches = await _groupFilesByBatchAsync(remoteFiles);
     final complete = _causalBatchOrder(
