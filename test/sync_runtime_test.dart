@@ -12,6 +12,7 @@ import 'package:verifin/app/sync/sync_clock.dart';
 import 'package:verifin/app/sync/sync_models.dart';
 import 'package:verifin/app/sync/webdav_sync_transport_stub.dart';
 import 'package:verifin/app/sync/webdav_sync_transport.dart';
+import 'package:verifin/app/sync/webdav_snapshot_transport.dart';
 import 'package:verifin/app/veri_fin_controller.dart';
 import 'package:verifin/data/app_database.dart';
 import 'package:verifin/data/ledger_repository.dart';
@@ -492,6 +493,23 @@ void main() {
 }
 
 class _DiagnosticFailureTransport extends StubWebdavSyncTransport {
+  @override
+  Future<WebdavRootListing> listRoot(WebdavConfig config) {
+    throw const WebdavException(
+      'https://private-user:private-password@dav.example.com/private/path '
+      'Authorization ledger-body',
+      diagnostic: WebdavDiagnostic(
+        method: 'GET',
+        operation: 'download',
+        fileKind: 'manifest',
+        statusCode: 302,
+        redirectCount: 0,
+        redirectRelation: 'downgrade',
+        reason: 'redirect_downgrade',
+      ),
+    );
+  }
+
   @override
   Future<List<WebdavSyncFile>> listSyncFiles(WebdavConfig config) {
     throw const WebdavException(
