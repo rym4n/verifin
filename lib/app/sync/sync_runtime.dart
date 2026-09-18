@@ -133,15 +133,14 @@ class SyncRuntime {
   }
 
   Future<void> _recordError(String? code) async {
-    if (code == null) return;
     final previous = await _repository.loadScanState();
     await _repository.saveScanState(
       SyncScanState(
         contiguousSequences: previous.contiguousSequences,
         gaps: previous.gaps,
-        lastSuccess: previous.lastSuccess,
+        lastSuccess: code == null ? DateTime.now() : previous.lastSuccess,
         lastErrorCode: code,
-        retryCount: previous.retryCount + 1,
+        retryCount: code == null ? 0 : previous.retryCount + 1,
       ),
     );
   }

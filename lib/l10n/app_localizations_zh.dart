@@ -2830,6 +2830,30 @@ class AppLocalizationsZh extends AppLocalizations {
   String get syncStatusRunning => '同步中';
 
   @override
+  String syncLegacyUpgradeRequired(String fingerprint) {
+    return '等待旧设备升级（标识 $fingerprint）';
+  }
+
+  @override
+  String get syncLegacyUpgradeAction => '所有设备已升级';
+
+  @override
+  String get syncLegacyUpgradeHint => '确认并准备切换';
+
+  @override
+  String get syncLegacyUpgradeDialogTitle => '确认所有设备已升级？';
+
+  @override
+  String get syncLegacyUpgradeDialogMessage =>
+      '请先升级或停用所有共享此 WebDAV 目录的旧设备。确认后，下一次同步会再次检查旧数据，再切换到整包 JSON 同步。';
+
+  @override
+  String get syncLegacyUpgradeConfirm => '确认已升级';
+
+  @override
+  String get syncLegacyUpgradeConfirmed => '已准备切换，将在下次同步前再次检查';
+
+  @override
   String syncConflictCount(int count) {
     String _temp0 = intl.Intl.pluralLogic(
       count,

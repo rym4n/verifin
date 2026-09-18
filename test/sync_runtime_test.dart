@@ -52,6 +52,10 @@ void main() {
       );
 
       final result = await runtime.run(SyncTrigger.manual);
+      final scan = await repo.sync.loadScanState();
+      expect(scan.lastSuccess, isNotNull);
+      expect(scan.lastErrorCode, isNull);
+      expect(scan.retryCount, 0);
 
       final messages = logger.records.reversed
           .where((record) => record.source == 'sync')

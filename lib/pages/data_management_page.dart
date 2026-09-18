@@ -389,6 +389,11 @@ class _DataManagementPageState extends State<DataManagementPage> {
                         ),
                         const Divider(),
                         _syncStatusRow(context, controller),
+                        if (_syncStatus?.requiresV1UpgradeConfirmation ??
+                            false) ...<Widget>[
+                          const Divider(),
+                          _snapshotMigrationRow(context, controller),
+                        ],
                         const Divider(),
                         SettingsRow(
                           icon: Icons.sync,
@@ -512,6 +517,9 @@ class _DataManagementPageState extends State<DataManagementPage> {
     if (status != null && status.conflictCount > 0) {
       detail = l10n.syncConflictCount(status.conflictCount);
       color = veriSemantic(context, veriExpense);
+    } else if (status?.requiresV1UpgradeConfirmation ?? false) {
+      detail = l10n.syncLegacyUpgradeRequired(status!.shortV1Fingerprint);
+      color = veriSemantic(context, veriWarning);
     } else if (status != null && status.lastErrorCode != null) {
       detail = l10n.syncStatusError;
       color = veriSemantic(context, veriExpense);
@@ -547,6 +555,56 @@ class _DataManagementPageState extends State<DataManagementPage> {
             : _refreshSyncStatus(controller),
       ),
     );
+  }
+
+  Widget _snapshotMigrationRow(
+    BuildContext context,
+    VeriFinController controller,
+  ) {
+    final l10n = AppLocalizations.of(context);
+    return SettingsRow(
+      icon: Icons.system_update_alt,
+      title: l10n.syncLegacyUpgradeAction,
+      trailing: l10n.syncLegacyUpgradeHint,
+      trailingIcon: Icons.chevron_right,
+      contentColor: veriSemantic(context, veriWarning),
+      onTap: () => _confirmSnapshotMigration(context, controller),
+    );
+  }
+
+  Future<void> _confirmSnapshotMigration(
+    BuildContext context,
+    VeriFinController controller,
+  ) async {
+    final l10n = AppLocalizations.of(context);
+    final confirmed = await showConfirmDialog(
+      context,
+      title: l10n.syncLegacyUpgradeDialogTitle,
+      message: l10n.syncLegacyUpgradeDialogMessage,
+      confirmLabel: l10n.syncLegacyUpgradeConfirm,
+    );
+    if (!confirmed || !context.mounted) return;
+    try {
+      await controller.confirmSnapshotCutover();
+      if (!context.mounted) return;
+      await _refreshSyncStatus(controller);
+      if (!context.mounted) return;
+      _notify(
+        context,
+        message: l10n.syncLegacyUpgradeConfirmed,
+        tone: VeriFeedbackTone.success,
+      );
+    } catch (error) {
+      controller.logger?.error('确认同步协议升级失败', source: 'sync', error: error);
+      if (!context.mounted) return;
+      _notify(
+        context,
+        message: l10n.syncFailed,
+        tone: VeriFeedbackTone.error,
+        duration: VeriFeedbackDuration.long,
+        priority: VeriFeedbackPriority.high,
+      );
+    }
   }
 
   /// 打开冲突审阅页。返回后重新读取状态：用户可能刚在那边决议掉了若干冲突，

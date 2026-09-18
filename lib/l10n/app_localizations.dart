@@ -5210,6 +5210,48 @@ abstract class AppLocalizations {
   /// **'同步中'**
   String get syncStatusRunning;
 
+  /// 检测到旧版同步数据时的阻断状态
+  ///
+  /// In zh, this message translates to:
+  /// **'等待旧设备升级（标识 {fingerprint}）'**
+  String syncLegacyUpgradeRequired(String fingerprint);
+
+  /// No description provided for @syncLegacyUpgradeAction.
+  ///
+  /// In zh, this message translates to:
+  /// **'所有设备已升级'**
+  String get syncLegacyUpgradeAction;
+
+  /// No description provided for @syncLegacyUpgradeHint.
+  ///
+  /// In zh, this message translates to:
+  /// **'确认并准备切换'**
+  String get syncLegacyUpgradeHint;
+
+  /// No description provided for @syncLegacyUpgradeDialogTitle.
+  ///
+  /// In zh, this message translates to:
+  /// **'确认所有设备已升级？'**
+  String get syncLegacyUpgradeDialogTitle;
+
+  /// No description provided for @syncLegacyUpgradeDialogMessage.
+  ///
+  /// In zh, this message translates to:
+  /// **'请先升级或停用所有共享此 WebDAV 目录的旧设备。确认后，下一次同步会再次检查旧数据，再切换到整包 JSON 同步。'**
+  String get syncLegacyUpgradeDialogMessage;
+
+  /// No description provided for @syncLegacyUpgradeConfirm.
+  ///
+  /// In zh, this message translates to:
+  /// **'确认已升级'**
+  String get syncLegacyUpgradeConfirm;
+
+  /// No description provided for @syncLegacyUpgradeConfirmed.
+  ///
+  /// In zh, this message translates to:
+  /// **'已准备切换，将在下次同步前再次检查'**
+  String get syncLegacyUpgradeConfirmed;
+
   /// 同步冲突计数
   ///
   /// In zh, this message translates to:

@@ -11,6 +11,8 @@ class SyncPreferenceStatus {
     required this.remotePendingCount,
     required this.lastSuccess,
     required this.lastErrorCode,
+    required this.v1MigrationState,
+    required this.v1Fingerprint,
   });
 
   final int pendingCount;
@@ -19,11 +21,22 @@ class SyncPreferenceStatus {
   final int remotePendingCount;
   final DateTime? lastSuccess;
   final String? lastErrorCode;
+  final V1MigrationState v1MigrationState;
+  final String? v1Fingerprint;
 
   bool get hasError => conflictCount > 0;
   bool get hasPending =>
       pendingCount > 0 || remotePendingCount > 0 || outboxCount > 0;
   bool get hasAttempted => lastSuccess != null || lastErrorCode != null;
+  bool get requiresV1UpgradeConfirmation =>
+      v1MigrationState == V1MigrationState.needsUpgradeConfirmation;
+  String get shortV1Fingerprint =>
+      v1Fingerprint == null || v1Fingerprint!.isEmpty
+      ? '--------'
+      : v1Fingerprint!.substring(
+          0,
+          v1Fingerprint!.length < 8 ? v1Fingerprint!.length : 8,
+        );
 }
 
 /// 控制器的「领域操作」层：交易/账户/分组/账本/分类/标签/预算/偏好/备份/
@@ -956,6 +969,7 @@ mixin _ControllerOps on ChangeNotifier, _ControllerState {
     final outbox = await sync.loadOutbox();
     final remotePending = await sync.loadPendingBatches();
     final scan = await sync.loadScanState();
+    final snapshot = await sync.loadSnapshotState();
     return SyncPreferenceStatus(
       pendingCount: pending.length,
       conflictCount: conflicts.length,
@@ -963,6 +977,8 @@ mixin _ControllerOps on ChangeNotifier, _ControllerState {
       remotePendingCount: remotePending.length,
       lastSuccess: scan.lastSuccess,
       lastErrorCode: scan.lastErrorCode,
+      v1MigrationState: snapshot.v1MigrationState,
+      v1Fingerprint: snapshot.v1LastSeenFingerprint,
     );
   }
 

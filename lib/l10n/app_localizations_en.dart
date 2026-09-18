@@ -2885,6 +2885,32 @@ class AppLocalizationsEn extends AppLocalizations {
   String get syncStatusRunning => 'Syncing';
 
   @override
+  String syncLegacyUpgradeRequired(String fingerprint) {
+    return 'Waiting for old devices to upgrade ($fingerprint)';
+  }
+
+  @override
+  String get syncLegacyUpgradeAction => 'All devices upgraded';
+
+  @override
+  String get syncLegacyUpgradeHint => 'Confirm and prepare migration';
+
+  @override
+  String get syncLegacyUpgradeDialogTitle =>
+      'Confirm all devices are upgraded?';
+
+  @override
+  String get syncLegacyUpgradeDialogMessage =>
+      'Upgrade or stop every old device that shares this WebDAV directory. After confirmation, the next sync checks legacy data again before switching to whole-JSON snapshots.';
+
+  @override
+  String get syncLegacyUpgradeConfirm => 'Confirm upgraded';
+
+  @override
+  String get syncLegacyUpgradeConfirmed =>
+      'Migration is ready; legacy data will be checked again before the next sync';
+
+  @override
   String syncConflictCount(int count) {
     String _temp0 = intl.Intl.pluralLogic(
       count,

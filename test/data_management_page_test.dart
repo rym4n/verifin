@@ -425,6 +425,31 @@ void main() {
       expect(row.trailingIcon, isNull);
     });
 
+    testWidgets('检测到 v1 历史时阻断并仅在确认后写入待切换状态', (tester) async {
+      final repo = InMemoryLedgerRepository();
+      await repo.sync.recordV1Scan(
+        v1HistoryFound: true,
+        fingerprint:
+            '1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef',
+      );
+      await pumpPage(tester, repository: repo);
+
+      expect(find.text('等待旧设备升级（标识 12345678）'), findsOneWidget);
+      expect(find.text('所有设备已升级'), findsOneWidget);
+
+      await tester.tap(find.text('所有设备已升级'));
+      await tester.pumpAndSettle();
+      expect(find.text('确认所有设备已升级？'), findsOneWidget);
+      await tester.tap(find.text('确认已升级'));
+      await tester.pumpAndSettle();
+
+      expect(
+        (await repo.sync.loadSnapshotState()).v1MigrationState,
+        V1MigrationState.readyToCutover,
+      );
+      expect(find.text('所有设备已升级'), findsNothing);
+    });
+
     testWidgets('无冲突时点击状态行只刷新状态，不进入冲突页', (tester) async {
       final repo = InMemoryLedgerRepository();
       await pumpPage(tester, repository: repo);

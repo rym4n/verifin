@@ -1844,6 +1844,21 @@
   "syncStatusError": "同步出错",
   "syncStatusNever": "尚未同步成功",
   "syncStatusRunning": "同步中",
+  "syncLegacyUpgradeRequired": "等待旧设备升级（标识 {fingerprint}）",
+  "@syncLegacyUpgradeRequired": {
+    "description": "检测到旧版同步数据时的阻断状态",
+    "placeholders": {
+      "fingerprint": {
+        "type": "String"
+      }
+    }
+  },
+  "syncLegacyUpgradeAction": "所有设备已升级",
+  "syncLegacyUpgradeHint": "确认并准备切换",
+  "syncLegacyUpgradeDialogTitle": "确认所有设备已升级？",
+  "syncLegacyUpgradeDialogMessage": "请先升级或停用所有共享此 WebDAV 目录的旧设备。确认后，下一次同步会再次检查旧数据，再切换到整包 JSON 同步。",
+  "syncLegacyUpgradeConfirm": "确认已升级",
+  "syncLegacyUpgradeConfirmed": "已准备切换，将在下次同步前再次检查",
   "@syncStatusError": {
     "description": "同步状态:存在冲突或写入失败"
   },
