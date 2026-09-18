@@ -16,6 +16,14 @@ final RegExp _snapshotName = RegExp(
 );
 final RegExp _blobName = RegExp(r'^verifin-sync-v2-blob-([0-9a-f]{64})\.blob$');
 
+int? _exactInteger(Object? value) {
+  if (value is int) return value;
+  if (value is double && value.isFinite && value == value.truncateToDouble()) {
+    return value.toInt();
+  }
+  return null;
+}
+
 class SyncSnapshotException implements Exception {
   const SyncSnapshotException(this.code);
 
@@ -301,9 +309,9 @@ class SyncSnapshot {
   };
 
   factory SyncSnapshot.fromJson(Map<String, Object?> json) {
-    final protocolVersion = (json['protocolVersion'] as num?)?.toInt();
+    final protocolVersion = _exactInteger(json['protocolVersion']);
     final deviceId = json['deviceId'] as String?;
-    final snapshotSequence = (json['snapshotSequence'] as num?)?.toInt();
+    final snapshotSequence = _exactInteger(json['snapshotSequence']);
     final createdAt = json['createdAtUtc'] as String?;
     final keyFingerprint = json['keyFingerprint'] as String?;
     final knownVector = json['knownVector'];
@@ -313,6 +321,7 @@ class SyncSnapshot {
     if (protocolVersion != syncSnapshotProtocolVersion ||
         deviceId == null ||
         snapshotSequence == null ||
+        snapshotSequence < 0 ||
         createdAt == null ||
         keyFingerprint == null ||
         knownVector is! Map ||
@@ -410,6 +419,12 @@ class SyncSnapshot {
         throw const FormatException('snapshot_duplicate_attachment');
       }
       for (final chunk in attachment.chunks) {
+        if (!_hex64.hasMatch(chunk.rawHash)) {
+          throw const FormatException('raw_hash');
+        }
+        if (!_hex64.hasMatch(chunk.fileHash)) {
+          throw const FormatException('file_hash');
+        }
         final previous = rawHashes[chunk.rawHash];
         if (previous != null && previous != chunk.fileHash) {
           throw const FormatException('snapshot_blob_mapping');

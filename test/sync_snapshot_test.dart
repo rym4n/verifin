@@ -165,6 +165,133 @@ void main() {
     );
 
     test(
+      'rejects an oversized plaintext document before JSON decoding',
+      () async {
+        const encoder = SyncSnapshotCodec(passphrase: '');
+        const constrained = SyncSnapshotCodec(
+          passphrase: '',
+          limits: SyncSnapshotLimits(
+            maxPlaintextBytes: 1,
+            maxEnvelopeBytes: 1024,
+          ),
+        );
+        final bytes = await encoder.encode(sampleSnapshot());
+
+        await expectLater(
+          constrained.decode(
+            bytes,
+            source: source.withFileHash(sha256.convert(bytes).toString()),
+          ),
+          throwsA(
+            isA<SyncSnapshotException>().having(
+              (error) => error.code,
+              'code',
+              'snapshot_plaintext_too_large',
+            ),
+          ),
+        );
+      },
+    );
+
+    test(
+      'rejects oversized decrypted plaintext with its stable error code before JSON decoding',
+      () async {
+        final snapshot = sampleSnapshot(
+          keyFingerprint: SyncCodec.keyFingerprintFor('secret'),
+        );
+        const encoder = SyncSnapshotCodec(passphrase: 'secret');
+        const constrained = SyncSnapshotCodec(
+          passphrase: 'secret',
+          limits: SyncSnapshotLimits(
+            maxPlaintextBytes: 1,
+            maxEnvelopeBytes: 1024 * 1024,
+          ),
+        );
+        final bytes = await encoder.encode(snapshot);
+
+        await expectLater(
+          constrained.decode(
+            bytes,
+            source: source.withFileHash(sha256.convert(bytes).toString()),
+          ),
+          throwsA(
+            isA<SyncCodecException>().having(
+              (error) => error.message,
+              'message',
+              'snapshot_plaintext_too_large',
+            ),
+          ),
+        );
+      },
+    );
+
+    test('rejects a hash-correct v1 document in the v2 decoder', () async {
+      const v1Codec = SyncCodec(passphrase: '');
+      final v1 = await v1Codec.encodeValue({'value': 1}, syncProtocolVersion);
+      final bytes = Uint8List.fromList(utf8.encode(canonicalSyncJson(v1)));
+
+      await expectLater(
+        const SyncSnapshotCodec(passphrase: '').decode(
+          bytes,
+          source: source.withFileHash(sha256.convert(bytes).toString()),
+        ),
+        throwsFormatException,
+      );
+    });
+
+    test(
+      'rejects encrypted envelope filename mismatch before decryption',
+      () async {
+        final snapshot = sampleSnapshot(
+          keyFingerprint: SyncCodec.keyFingerprintFor('secret'),
+        );
+        final bytes = await const SyncSnapshotCodec(
+          passphrase: 'secret',
+        ).encode(snapshot);
+
+        await expectLater(
+          const SyncSnapshotCodec(
+            passphrase: 'wrong',
+          ).decode(bytes, source: source),
+          throwsA(
+            isA<SyncSnapshotException>().having(
+              (error) => error.code,
+              'code',
+              'snapshot_file_hash_mismatch',
+            ),
+          ),
+        );
+      },
+    );
+
+    test('rejects non-integral or negative snapshot metadata', () {
+      final json = sampleSnapshot().toJson();
+      for (final invalid in [2.5, double.nan, double.infinity]) {
+        expect(
+          () => SyncSnapshot.fromJson({...json, 'protocolVersion': invalid}),
+          throwsFormatException,
+        );
+      }
+      for (final invalid in [42.5, -1, double.nan, double.infinity]) {
+        expect(
+          () => SyncSnapshot.fromJson({...json, 'snapshotSequence': invalid}),
+          throwsFormatException,
+        );
+      }
+    });
+
+    test('rejects invalid blob hashes before encoding a snapshot', () async {
+      final snapshot = sampleSnapshotWithBlob(
+        SyncSnapshotBlobRef(rawHash: 'not-a-hash', fileHash: 'f' * 64),
+      );
+
+      await expectLater(
+        const SyncSnapshotCodec(passphrase: '').encode(snapshot),
+        throwsFormatException,
+      );
+    });
+
+    test(
       'preserves raw and file attachment hashes through projection',
       () async {
         final rawHash = sha256.convert([1, 2, 3]).toString();
@@ -222,8 +349,47 @@ void main() {
         );
       },
     );
+
+    test(
+      'round trips attachment mappings without swapping raw and file hashes',
+      () async {
+        final rawHash = 'a' * 64;
+        final fileHash = 'b' * 64;
+        final snapshot = sampleSnapshotWithBlob(
+          SyncSnapshotBlobRef(rawHash: rawHash, fileHash: fileHash),
+        );
+        const codec = SyncSnapshotCodec(passphrase: '');
+        final bytes = await codec.encode(snapshot);
+        final decoded = await codec.decode(
+          bytes,
+          source: source.withFileHash(sha256.convert(bytes).toString()),
+        );
+        final chunk = decoded.attachmentBlobs.single.chunks.single;
+
+        expect(chunk.rawHash, rawHash);
+        expect(chunk.fileHash, fileHash);
+      },
+    );
   });
 }
+
+SyncSnapshot sampleSnapshotWithBlob(SyncSnapshotBlobRef chunk) => SyncSnapshot(
+  deviceId: deviceId,
+  snapshotSequence: 42,
+  createdAtUtc: DateTime.utc(2026, 9, 18, 3, 15, 22, 417),
+  keyFingerprint: 'none',
+  knownVector: const SyncVersionVector({deviceId: 1}),
+  heads: [sampleHead('head')],
+  attachmentBlobs: [
+    SyncSnapshotAttachmentBlob(
+      attachmentId: 'attachment',
+      byteLength: 3,
+      dataUrlPrefix: 'data:image/png;base64,',
+      chunks: [chunk],
+    ),
+  ],
+  conflicts: const [],
+);
 
 SyncSnapshot sampleSnapshot({
   List<SyncEntityVersion>? heads,

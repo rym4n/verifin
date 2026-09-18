@@ -149,6 +149,8 @@ class SyncCodec {
         }
         final payloadJson = utf8.decode(decrypted);
         return _verifyHash(envelope, jsonDecode(payloadJson));
+      } on SyncCodecException {
+        rethrow;
       } on SecretBoxAuthenticationError {
         throw const SyncCodecException(
           'Decryption failed: wrong passphrase or corrupted data',
