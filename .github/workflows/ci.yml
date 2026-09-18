@@ -55,7 +55,7 @@ jobs:
               echo '### Flutter test failure excerpt'
               grep -E '(^[[:space:]]*[0-9]+:.*\[E\]|^  Expected:|^  Actual:|Some tests failed|^[[:space:]]*Failed tests:)' /tmp/verifin-test.log | tail -n 120 || true
             } >> "$GITHUB_STEP_SUMMARY"
-            excerpt=$(grep -E '(^[[:space:]]*[0-9]+:.*-[0-9]+:|^  Expected:|^  Actual:|^  Which:|^  Difference:|Some tests failed)' /tmp/verifin-test.log | tail -n 160 | tr '\n' ' ' | cut -c1-6000)
+            excerpt=$(grep -E '(\[E\]|^  Expected:|^  Actual:|^  Which:|^  Difference:|Some tests failed)' /tmp/verifin-test.log | head -n 120 | tr '\n' ' ' | cut -c1-6000)
             echo "::error title=Flutter test failure::$excerpt"
           fi
           exit "$status"
