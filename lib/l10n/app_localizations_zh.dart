@@ -646,10 +646,21 @@ class AppLocalizationsZh extends AppLocalizations {
   }
 
   @override
+  String yearBudgetTitle(int year) {
+    return '$year年预算';
+  }
+
+  @override
   String get budgetRemaining => '剩余';
 
   @override
   String get budgetDailyRemaining => '剩余日均';
+
+  @override
+  String get budgetRemainingMonthly => '剩余每月可支出';
+
+  @override
+  String get budgetYearToDate => '本年累计';
 
   @override
   String budgetTotalLabel(String amount) {
@@ -1608,6 +1619,18 @@ class AppLocalizationsZh extends AppLocalizations {
   String get budgetMonthExpense => '本月支出';
 
   @override
+  String get budgetOverspentThisYear => '本年已超支';
+
+  @override
+  String get budgetAvailableThisYear => '本年可用预算';
+
+  @override
+  String get budgetYearExpense => '本年支出';
+
+  @override
+  String get yearExpenseCategories => '本年支出分类';
+
+  @override
   String get budgetOverspentThisPeriod => '本期已超支';
 
   @override
@@ -2032,6 +2055,9 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get monthBudgetLabel => '本月预算';
+
+  @override
+  String get yearBudgetLabel => '年度预算';
 
   @override
   String countItems(int count) {

@@ -86,4 +86,45 @@ void main() {
       }
     });
   });
+
+  group('annual budget windows', () {
+    test('natural year window includes every day of the selected year', () {
+      final window = calendarYearWindowFor(DateTime(2026, 7, 15));
+
+      expect(window.start, DateTime(2026, 1, 1));
+      expect(window.end, DateTime(2026, 12, 31));
+    });
+
+    test('year-to-date window ends at the selected month end', () {
+      final window = calendarYearToDateWindowFor(DateTime(2026, 7, 15));
+
+      expect(window.start, DateTime(2026, 1, 1));
+      expect(window.end, DateTime(2026, 7, 31));
+    });
+
+    test('remaining month count includes the selected month', () {
+      expect(remainingCalendarMonths(DateTime(2026, 1)), 12);
+      expect(remainingCalendarMonths(DateTime(2026, 9)), 4);
+      expect(remainingCalendarMonths(DateTime(2026, 12)), 1);
+    });
+
+    test('remaining annual budget is averaged over remaining months', () {
+      expect(
+        remainingAnnualBudgetPerMonth(
+          annualBudget: 12000,
+          yearToDateExpense: 3000,
+          remainingMonths: 4,
+        ),
+        2250,
+      );
+      expect(
+        remainingAnnualBudgetPerMonth(
+          annualBudget: 12000,
+          yearToDateExpense: 13000,
+          remainingMonths: 4,
+        ),
+        -250,
+      );
+    });
+  });
 }

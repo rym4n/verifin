@@ -662,10 +662,21 @@ class AppLocalizationsEn extends AppLocalizations {
   }
 
   @override
+  String yearBudgetTitle(int year) {
+    return '$year budget';
+  }
+
+  @override
   String get budgetRemaining => 'Remaining';
 
   @override
   String get budgetDailyRemaining => 'Daily remaining';
+
+  @override
+  String get budgetRemainingMonthly => 'Remaining monthly spend';
+
+  @override
+  String get budgetYearToDate => 'Year to date';
 
   @override
   String budgetTotalLabel(String amount) {
@@ -1646,6 +1657,18 @@ class AppLocalizationsEn extends AppLocalizations {
   String get budgetMonthExpense => 'This month\'s spending';
 
   @override
+  String get budgetOverspentThisYear => 'Over budget this year';
+
+  @override
+  String get budgetAvailableThisYear => 'Available this year';
+
+  @override
+  String get budgetYearExpense => 'This year\'s spending';
+
+  @override
+  String get yearExpenseCategories => 'This year\'s expense categories';
+
+  @override
   String get budgetOverspentThisPeriod => 'Over budget this period';
 
   @override
@@ -2076,6 +2099,9 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get monthBudgetLabel => 'This month\'s budget';
+
+  @override
+  String get yearBudgetLabel => 'Annual budget';
 
   @override
   String countItems(int count) {

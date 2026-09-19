@@ -1316,6 +1316,12 @@ abstract class AppLocalizations {
   /// **'{month}预算'**
   String monthBudgetTitle(DateTime month);
 
+  /// 首页和看板预算卡标题(某年预算)
+  ///
+  /// In zh, this message translates to:
+  /// **'{year}年预算'**
+  String yearBudgetTitle(int year);
+
   /// No description provided for @budgetRemaining.
   ///
   /// In zh, this message translates to:
@@ -1327,6 +1333,18 @@ abstract class AppLocalizations {
   /// In zh, this message translates to:
   /// **'剩余日均'**
   String get budgetDailyRemaining;
+
+  /// No description provided for @budgetRemainingMonthly.
+  ///
+  /// In zh, this message translates to:
+  /// **'剩余每月可支出'**
+  String get budgetRemainingMonthly;
+
+  /// No description provided for @budgetYearToDate.
+  ///
+  /// In zh, this message translates to:
+  /// **'本年累计'**
+  String get budgetYearToDate;
 
   /// No description provided for @budgetTotalLabel.
   ///
@@ -3068,6 +3086,30 @@ abstract class AppLocalizations {
   /// **'本月支出'**
   String get budgetMonthExpense;
 
+  /// No description provided for @budgetOverspentThisYear.
+  ///
+  /// In zh, this message translates to:
+  /// **'本年已超支'**
+  String get budgetOverspentThisYear;
+
+  /// No description provided for @budgetAvailableThisYear.
+  ///
+  /// In zh, this message translates to:
+  /// **'本年可用预算'**
+  String get budgetAvailableThisYear;
+
+  /// No description provided for @budgetYearExpense.
+  ///
+  /// In zh, this message translates to:
+  /// **'本年支出'**
+  String get budgetYearExpense;
+
+  /// No description provided for @yearExpenseCategories.
+  ///
+  /// In zh, this message translates to:
+  /// **'本年支出分类'**
+  String get yearExpenseCategories;
+
   /// No description provided for @budgetOverspentThisPeriod.
   ///
   /// In zh, this message translates to:
@@ -3757,6 +3799,12 @@ abstract class AppLocalizations {
   /// In zh, this message translates to:
   /// **'本月预算'**
   String get monthBudgetLabel;
+
+  /// No description provided for @yearBudgetLabel.
+  ///
+  /// In zh, this message translates to:
+  /// **'年度预算'**
+  String get yearBudgetLabel;
 
   /// No description provided for @countItems.
   ///

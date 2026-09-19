@@ -1417,6 +1417,41 @@ void main() {
         );
       },
     );
+
+    test(
+      'PROPFIND whose body stalls after the headers fails instead of hanging',
+      () async {
+        // 服务器先回 207 响应头，再把响应体吊住不发不关——反代缓冲、连接半开时
+        // 的真实形态。响应头的超时盖不住这一段，读响应体必须自己有上界。
+        final stalled = Completer<void>();
+        final server = await _TestWebdavServer.start((request) async {
+          request.response.statusCode = HttpStatus.multiStatus;
+          request.response.headers.contentType = ContentType(
+            'application',
+            'xml',
+            charset: 'utf-8',
+          );
+          request.response.write(
+            '<?xml version="1.0" encoding="utf-8"?>'
+            '<d:multistatus xmlns:d="DAV:">',
+          );
+          await request.response.flush();
+          await stalled.future;
+        });
+        // teardown 是后进先出：必须注册在 start() 之后，才能在夹具等待 handler
+        // 之前先放它走。
+        addTearDown(() {
+          if (!stalled.isCompleted) stalled.complete();
+        });
+
+        await expectLater(
+          WebdavSyncTransportImpl(
+            responseTimeout: const Duration(milliseconds: 200),
+          ).listRoot(server.config).timeout(const Duration(seconds: 3)),
+          throwsA(isA<WebdavException>()),
+        );
+      },
+    );
   });
 }
 

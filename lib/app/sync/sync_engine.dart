@@ -57,6 +57,9 @@ String syncErrorCode(Object error) {
     return message.contains('Invalid sync') ? 'validation' : 'decode';
   }
   if (error is SyncConflictException) return 'validation';
+  // 运行时兜底超时。传输层自己的超时已被包成 WebdavException('Connection timeout')
+  // 走 network 分支，能落到这里的只有「整次运行超出总时限」。
+  if (error is TimeoutException) return 'timeout';
   return 'apply';
 }
 

@@ -2,7 +2,9 @@ import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:verifin/app/budget_cycle.dart';
 import 'package:verifin/app/chart_painters.dart';
+import 'package:verifin/app/ledger_math.dart';
 import 'package:verifin/app/models.dart';
 import 'package:verifin/app/veri_fin_scope.dart';
 import 'package:verifin/local_storage/local_storage.dart';
@@ -563,6 +565,113 @@ void main() {
 
     // 支出 150、预算 100：剩余应显示 -50（负数），而不再夹到 0。
     expect(find.text('-50'), findsOneWidget);
+  });
+
+  testWidgets(
+    'annual budget cards show year-to-date spending and monthly remainder',
+    (WidgetTester tester) async {
+      final store = LocalKeyValueStore();
+      final controller = await makeController(store);
+      final now = DateTime.now();
+      controller
+        ..addEntry(
+          LedgerEntry(
+            id: 'annual-expense',
+            bookId: controller.activeBook.id,
+            type: EntryType.expense,
+            amount: 3000,
+            categoryId: 'dining',
+            accountId: 'cash-test',
+            note: '年度支出',
+            occurredAt: DateTime(now.year, now.month, 1),
+          ),
+        )
+        ..setAnnualBudget(now, 12000)
+        ..setBudgetPeriodKind(BudgetPeriodKind.year)
+        ..dispose();
+
+      await pumpApp(tester, store);
+      await tester.scrollUntilVisible(
+        find.byType(BudgetPanel),
+        300,
+        scrollable: firstVerticalScrollable(),
+      );
+
+      expect(find.text('本年支出'), findsOneWidget);
+      expect(find.text(formatExpenseAmount(3000)), findsOneWidget);
+      expect(
+        find.text(
+          formatAmount(
+            remainingAnnualBudgetPerMonth(
+              annualBudget: 12000,
+              yearToDateExpense: 3000,
+              remainingMonths: remainingCalendarMonths(now),
+            ),
+          ),
+        ),
+        findsOneWidget,
+      );
+
+      await tester.tap(find.byType(BudgetPanel));
+      await tester.pumpAndSettle();
+      expect(find.text('本年支出'), findsOneWidget);
+      expect(
+        find.byKey(const Key('category_budget_actions_dining')),
+        findsNothing,
+      );
+      expect(find.textContaining('本月单独'), findsNothing);
+      expect(
+        find.text(
+          formatAmount(
+            remainingAnnualBudgetPerMonth(
+              annualBudget: 12000,
+              yearToDateExpense: 3000,
+              remainingMonths: remainingCalendarMonths(now),
+            ),
+          ),
+        ),
+        findsOneWidget,
+      );
+
+      await tapBottomTab(tester, 2);
+      expect(find.text('年度预算'), findsOneWidget);
+      expect(find.text('本年支出'), findsOneWidget);
+      expect(find.text(formatAmount(12000)), findsOneWidget);
+    },
+  );
+
+  testWidgets('annual home budget card does not show negative monthly spend', (
+    WidgetTester tester,
+  ) async {
+    final store = LocalKeyValueStore();
+    final controller = await makeController(store);
+    final now = DateTime.now();
+    controller
+      ..addEntry(
+        LedgerEntry(
+          id: 'annual-over-budget',
+          bookId: controller.activeBook.id,
+          type: EntryType.expense,
+          amount: 13000,
+          categoryId: 'dining',
+          accountId: 'cash-test',
+          note: '年度超支',
+          occurredAt: DateTime(now.year, now.month, 1),
+        ),
+      )
+      ..setAnnualBudget(now, 12000)
+      ..setBudgetPeriodKind(BudgetPeriodKind.year)
+      ..dispose();
+
+    await pumpApp(tester, store);
+    await tester.scrollUntilVisible(
+      find.byType(BudgetPanel),
+      300,
+      scrollable: firstVerticalScrollable(),
+    );
+
+    expect(find.text('剩余每月可支出'), findsOneWidget);
+    expect(find.text('-250'), findsNothing);
   });
 
   test('category budget rolls up sub-category spending into parent', () async {

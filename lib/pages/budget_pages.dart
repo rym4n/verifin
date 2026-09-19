@@ -103,15 +103,52 @@ class _BudgetOverviewPageState extends State<BudgetOverviewPage> {
     final dailyAvailable = remainingDays <= 0 || remaining <= 0
         ? 0.0
         : remaining / remainingDays;
+    final annual = controller.budgetPeriodKind == BudgetPeriodKind.year;
+    final yearToDateEntries = annual
+        ? entriesInWindow(
+            controller.entries,
+            calendarYearToDateWindowFor(_month),
+          )
+        : const <LedgerEntry>[];
+    final displayExpense = annual
+        ? sumByType(yearToDateEntries, EntryType.expense)
+        : monthExpense;
+    final displayBudget = annual ? controller.annualBudget(_month) : budget;
+    final displayRemaining = displayBudget - displayExpense;
+    final displayRatio = displayBudget <= 0
+        ? 0.0
+        : (displayExpense / displayBudget).clamp(0, 1).toDouble();
+    final displayRemainingMonths = annual
+        ? remainingCalendarMonths(_month)
+        : remainingDays;
+    final displayMonthlyRemaining = annual
+        ? remainingAnnualBudgetPerMonth(
+            annualBudget: displayBudget,
+            yearToDateExpense: displayExpense,
+            remainingMonths: displayRemainingMonths,
+          )
+        : dailyAvailable;
     // 自定义周期时标签展示日期范围（如「7月22日 至 8月21日」）而非「2026年7月」。
-    final cycleLabel = cyclic
+    final cycleLabel = annual
+        ? l10n.yearBudgetTitle(_month.year)
+        : cyclic
         ? l10n.budgetCycleRange(window.start, window.end)
         : l10n.yearMonth(_month);
+    final categoryEntries = annual ? yearToDateEntries : monthEntries;
+    final previousCategoryEntries = annual
+        ? entriesInWindow(
+            controller.entries,
+            calendarYearToDateWindowFor(
+              DateTime(_month.year - 1, _month.month),
+            ),
+          )
+        : previousMonthEntries;
     final categoryBudgetSnapshots = computeCategoryBudgetSnapshots(
       controller: controller,
       month: _month,
-      monthEntries: monthEntries,
-      previousMonthEntries: previousMonthEntries,
+      monthEntries: categoryEntries,
+      previousMonthEntries: previousCategoryEntries,
+      useAnnualBudget: annual,
     );
     final recentBudgetMonths = _budgetMonthSnapshots(
       controller: controller,
@@ -170,15 +207,15 @@ class _BudgetOverviewPageState extends State<BudgetOverviewPage> {
                                 height: 118,
                                 child: CustomPaint(
                                   painter: BudgetRingPainter(
-                                    value: ratio,
+                                    value: annual ? displayRatio : ratio,
                                     trackColor: Theme.of(context)
                                         .colorScheme
                                         .surfaceContainerHighest
                                         .withValues(alpha: 0.48),
                                     progressColor: budgetProgressColor(
-                                      budget,
-                                      remaining,
-                                      ratio,
+                                      annual ? displayBudget : budget,
+                                      annual ? displayRemaining : remaining,
+                                      annual ? displayRatio : ratio,
                                       Theme.of(context).brightness,
                                     ),
                                   ),
@@ -201,16 +238,24 @@ class _BudgetOverviewPageState extends State<BudgetOverviewPage> {
                                         ),
                                   ),
                                   Text(
-                                    '${(budget <= 0 ? 0 : monthExpense / budget * 100).toStringAsFixed(0)}%',
+                                    '${((annual
+                                            ? displayBudget <= 0
+                                                  ? 0
+                                                  : displayExpense / displayBudget
+                                            : budget <= 0
+                                            ? 0
+                                            : monthExpense / budget) * 100).toStringAsFixed(0)}%',
                                     style: Theme.of(context)
                                         .textTheme
                                         .titleLarge
                                         ?.copyWith(
                                           fontWeight: FontWeight.w900,
                                           color: budgetProgressColor(
-                                            budget,
-                                            remaining,
-                                            ratio,
+                                            annual ? displayBudget : budget,
+                                            annual
+                                                ? displayRemaining
+                                                : remaining,
+                                            annual ? displayRatio : ratio,
                                             Theme.of(context).brightness,
                                           ),
                                         ),
@@ -226,7 +271,11 @@ class _BudgetOverviewPageState extends State<BudgetOverviewPage> {
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: <Widget>[
                               Text(
-                                remaining < 0
+                                annual
+                                    ? (displayRemaining < 0
+                                          ? l10n.budgetOverspentThisYear
+                                          : l10n.budgetAvailableThisYear)
+                                    : remaining < 0
                                     ? (cyclic
                                           ? l10n.budgetOverspentThisPeriod
                                           : l10n.budgetOverspentThisMonth)
@@ -238,14 +287,23 @@ class _BudgetOverviewPageState extends State<BudgetOverviewPage> {
                               ),
                               const SizedBox(height: 5),
                               Text(
-                                remaining < 0
+                                annual
+                                    ? (displayRemaining < 0
+                                          ? formatExpenseAmount(
+                                              displayRemaining.abs(),
+                                            )
+                                          : formatAmount(displayRemaining))
+                                    : remaining < 0
                                     ? formatExpenseAmount(remaining.abs())
                                     : formatAmount(remaining),
                                 maxLines: 1,
                                 overflow: TextOverflow.ellipsis,
                                 style: Theme.of(context).textTheme.displaySmall
                                     ?.copyWith(
-                                      color: remaining < 0
+                                      color:
+                                          (annual
+                                              ? displayRemaining < 0
+                                              : remaining < 0)
                                           ? veriSemantic(context, veriExpense)
                                           : Theme.of(
                                               context,
@@ -255,13 +313,15 @@ class _BudgetOverviewPageState extends State<BudgetOverviewPage> {
                               ),
                               const SizedBox(height: 6),
                               Text(
-                                _budgetPeriodLabel(
-                                  AppLocalizations.of(context),
-                                  remainingDays,
-                                  isPastMonth,
-                                  isCurrentMonth,
-                                  cyclic: cyclic,
-                                ),
+                                annual
+                                    ? l10n.budgetYearToDate
+                                    : _budgetPeriodLabel(
+                                        AppLocalizations.of(context),
+                                        remainingDays,
+                                        isPastMonth,
+                                        isCurrentMonth,
+                                        cyclic: cyclic,
+                                      ),
                                 style: Theme.of(context).textTheme.bodySmall
                                     ?.copyWith(
                                       color: Theme.of(context)
@@ -272,18 +332,15 @@ class _BudgetOverviewPageState extends State<BudgetOverviewPage> {
                                     ),
                               ),
                               const SizedBox(height: 8),
-                              _MonthBudgetStatusChip(
-                                isOverride: controller.monthlyBudgetIsOverride(
-                                  _month,
+                              if (!annual)
+                                _MonthBudgetStatusChip(
+                                  isOverride: controller
+                                      .monthlyBudgetIsOverride(_month),
+                                  defaultBudget:
+                                      controller.defaultMonthlyBudget,
+                                  customPeriod: cyclic,
+                                  onTap: () => _openOverride(_month),
                                 ),
-                                defaultBudget:
-                                    controller.budgetPeriodKind ==
-                                        BudgetPeriodKind.year
-                                    ? controller.annualBudget(_month) / 12
-                                    : controller.defaultMonthlyBudget,
-                                customPeriod: cyclic,
-                                onTap: () => _openOverride(_month),
-                              ),
                             ],
                           ),
                         ),
@@ -306,28 +363,50 @@ class _BudgetOverviewPageState extends State<BudgetOverviewPage> {
                           ),
                           children: <Widget>[
                             _BudgetMetricTile(
-                              label: cyclic
+                              label: annual
+                                  ? l10n.budgetYearExpense
+                                  : cyclic
                                   ? l10n.budgetPeriodExpense
                                   : l10n.budgetMonthExpense,
-                              value: formatExpenseAmount(monthExpense),
+                              value: formatExpenseAmount(
+                                annual ? displayExpense : monthExpense,
+                              ),
                               icon: Icons.payments_outlined,
                               color: veriSemantic(context, veriExpense),
                             ),
                             _BudgetMetricTile(
-                              label: remaining < 0
+                              label: annual
+                                  ? (displayRemaining < 0
+                                        ? AppLocalizations.of(
+                                            context,
+                                          ).budgetOverAmountLabel
+                                        : l10n.budgetRemainingMonthly)
+                                  : remaining < 0
                                   ? AppLocalizations.of(
                                       context,
                                     ).budgetOverAmountLabel
                                   : AppLocalizations.of(
                                       context,
                                     ).budgetRemainingQuota,
-                              value: remaining < 0
+                              value: annual
+                                  ? (displayRemaining < 0
+                                        ? formatExpenseAmount(
+                                            displayRemaining.abs(),
+                                          )
+                                        : formatAmount(displayMonthlyRemaining))
+                                  : remaining < 0
                                   ? formatExpenseAmount(remaining.abs())
                                   : formatAmount(remaining),
-                              icon: remaining < 0
+                              icon:
+                                  (annual
+                                      ? displayRemaining < 0
+                                      : remaining < 0)
                                   ? Icons.warning_amber_rounded
                                   : Icons.account_balance_wallet_outlined,
-                              color: remaining < 0
+                              color:
+                                  (annual
+                                      ? displayRemaining < 0
+                                      : remaining < 0)
                                   ? veriSemantic(context, veriExpense)
                                   : veriSemantic(context, veriIncome),
                             ),
@@ -343,7 +422,9 @@ class _BudgetOverviewPageState extends State<BudgetOverviewPage> {
                               label: AppLocalizations.of(
                                 context,
                               ).budgetAmountLabel,
-                              value: formatAmount(budget),
+                              value: formatAmount(
+                                annual ? displayBudget : budget,
+                              ),
                               icon: Icons.flag_outlined,
                               color: veriSemantic(context, veriBlue),
                             ),
@@ -409,7 +490,11 @@ class _BudgetOverviewPageState extends State<BudgetOverviewPage> {
                           ),
                         ),
                         Text(
-                          cyclic
+                          annual
+                              ? AppLocalizations.of(
+                                  context,
+                                ).yearExpenseCategories
+                              : cyclic
                               ? AppLocalizations.of(
                                   context,
                                 ).periodExpenseCategories
@@ -468,8 +553,8 @@ class _BudgetOverviewPageState extends State<BudgetOverviewPage> {
   }
 
   /// 递归渲染分类预算树：按分类的父子层级展开，父行显示已含子类的合计
-  /// 花销/预算，可折叠子树。点行主体管理所选周期的单期覆盖；分类默认预算仍在
-  /// 预算设置页维护。[byId] 提供各分类的预算快照（父快照已聚合子类花销）。
+  /// 花销/预算，可折叠子树。按月时点行主体管理所选周期的单期覆盖；按年时只读，
+  /// 年度分类预算在预算设置页维护。[byId] 提供各分类的预算快照（父快照已聚合子类花销）。
   List<Widget> _buildCategoryBudgetTree(
     VeriFinController controller,
     Map<String, CategoryBudgetSnapshot> byId,
@@ -484,19 +569,26 @@ class _BudgetOverviewPageState extends State<BudgetOverviewPage> {
       }
       final children = controller.childCategories(category.id);
       final collapsed = _collapsedCategories.contains(category.id);
-      final actionEntries = _categoryBudgetActionEntries(
-        context: context,
-        hasBudget: controller.categoryBudgetIsOverride(_month, category.id),
-        onSet: () => unawaited(_editCategoryBudget(category)),
-        onClear: () =>
-            controller.clearCategoryBudgetOverride(_month, category.id),
-      );
+      final annual = controller.budgetPeriodKind == BudgetPeriodKind.year;
+      final actionEntries = annual
+          ? const <VeriMenuEntry>[]
+          : _categoryBudgetActionEntries(
+              context: context,
+              hasBudget: controller.categoryBudgetIsOverride(
+                _month,
+                category.id,
+              ),
+              onSet: () => unawaited(_editCategoryBudget(category)),
+              onClear: () =>
+                  controller.clearCategoryBudgetOverride(_month, category.id),
+            );
       rows.add(
         VeriAnchoredMenuAnchor(
           entries: actionEntries,
           semanticLabel: category.label,
           builder: (context, openMenu, menuOpen) => _CategoryBudgetRow(
             snapshot: snapshot,
+            previousPeriodKind: controller.budgetPeriodKind,
             depth: depth,
             childCount: children.length,
             collapsed: collapsed,
@@ -509,8 +601,8 @@ class _BudgetOverviewPageState extends State<BudgetOverviewPage> {
                       _collapsedCategories.add(category.id);
                     }
                   }),
-            onTap: openMenu,
-            onActions: openMenu,
+            onTap: annual ? null : openMenu,
+            onActions: annual ? null : openMenu,
           ),
         ),
       );

@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart' show listEquals;
 import 'package:flutter/material.dart';
 
 import '../app/app_theme.dart';
+import '../app/budget_cycle.dart';
 import '../app/category_tree.dart';
 import '../app/chart_painters.dart';
 import '../app/common_widgets.dart';
@@ -34,18 +35,26 @@ class ReportsPage extends StatelessWidget {
     final monthExpense = sumByType(monthEntries, EntryType.expense);
     final monthIncome = sumByType(monthEntries, EntryType.income);
     final monthNet = monthIncome - monthExpense;
-    // 预算执行卡按预算周期取数（键月 + 周期窗口）；看板其余统计仍按自然月。
-    final budgetKeyMonth = controller.budgetKeyMonthFor(now);
+    // 预算执行卡按当前预算口径取数；看板其余统计仍按自然月。
+    final annual = controller.budgetPeriodKind == BudgetPeriodKind.year;
+    final budgetKeyMonth = annual
+        ? DateTime(now.year, now.month)
+        : controller.budgetKeyMonthFor(now);
     final budgetEntries = entriesInWindow(
       entries,
-      controller.budgetWindow(budgetKeyMonth),
+      annual
+          ? calendarYearToDateWindowFor(budgetKeyMonth)
+          : controller.budgetWindow(budgetKeyMonth),
     );
     final budgetExpense = sumByType(budgetEntries, EntryType.expense);
-    final monthlyBudget = controller.monthlyBudget(budgetKeyMonth);
+    final budget = annual
+        ? controller.annualBudget(budgetKeyMonth)
+        : controller.monthlyBudget(budgetKeyMonth);
     final categoryBudgetSnapshots = computeCategoryBudgetSnapshots(
       controller: controller,
       month: budgetKeyMonth,
       monthEntries: budgetEntries,
+      useAnnualBudget: annual,
     );
     final expenseEntries = monthEntries
         .where((entry) => entry.type == EntryType.expense)
@@ -78,7 +87,7 @@ class ReportsPage extends StatelessWidget {
       switch (id) {
         case 'budget_execution':
           return _BudgetExecutionCard(
-            budget: monthlyBudget,
+            budget: budget,
             expense: budgetExpense,
             keyMonth: budgetKeyMonth,
             snapshots: categoryBudgetSnapshots,
@@ -389,8 +398,10 @@ class _BudgetExecutionCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final controller = VeriFinScope.of(context);
     final scheme = Theme.of(context).colorScheme;
-    // 自定义预算周期时角标展示周期日期范围，自然月展示「N月」。
-    final periodBadge = controller.budgetCycleIsCustom
+    // 按年时角标展示自然年；自定义预算周期展示日期范围，自然月展示「N月」。
+    final periodBadge = controller.budgetPeriodKind == BudgetPeriodKind.year
+        ? AppLocalizations.of(context).yearBudgetTitle(keyMonth.year)
+        : controller.budgetCycleIsCustom
         ? AppLocalizations.of(context).budgetCycleRange(
             controller.budgetWindow(keyMonth).start,
             controller.budgetWindow(keyMonth).end,
@@ -512,12 +523,16 @@ class _BudgetExecutionCard extends StatelessWidget {
           Row(
             children: <Widget>[
               SummaryMetric(
-                label: AppLocalizations.of(context).monthBudgetLabel,
+                label: controller.budgetPeriodKind == BudgetPeriodKind.year
+                    ? AppLocalizations.of(context).yearBudgetLabel
+                    : AppLocalizations.of(context).monthBudgetLabel,
                 value: formatAmount(budget),
                 color: scheme.onSurface,
               ),
               SummaryMetric(
-                label: AppLocalizations.of(context).budgetMonthExpense,
+                label: controller.budgetPeriodKind == BudgetPeriodKind.year
+                    ? AppLocalizations.of(context).budgetYearExpense
+                    : AppLocalizations.of(context).budgetMonthExpense,
                 value: formatExpenseAmount(expense),
                 color: veriSemantic(context, veriExpense),
               ),

@@ -1,3 +1,4 @@
+// ignore_for_file: prefer_initializing_formals
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -113,8 +114,8 @@ class WebdavDiagnostic {
       'redirect=$redirectRelation reason=$reason';
 }
 
-const Duration _connectTimeout = Duration(seconds: 30);
-const Duration _responseTimeout = Duration(seconds: 60);
+const Duration _defaultConnectTimeout = Duration(seconds: 30);
+const Duration _defaultResponseTimeout = Duration(seconds: 60);
 const int _maxGetRedirects = 5;
 
 const String _propfindBody =
@@ -123,7 +124,8 @@ const String _propfindBody =
     '<d:getlastmodified/><d:getcontentlength/><d:resourcetype/>'
     '</d:prop></d:propfind>';
 
-HttpClient _newClient() => HttpClient()..connectionTimeout = _connectTimeout;
+HttpClient _newClient(Duration connectTimeout) =>
+    HttpClient()..connectionTimeout = connectTimeout;
 
 String _authHeader(WebdavConfig config) {
   final raw = '${config.username}:${config.password}';
@@ -134,9 +136,12 @@ Future<HttpClientRequest> _open(
   HttpClient client,
   String method,
   Uri uri,
-  WebdavConfig config,
-) async {
-  final request = await client.openUrl(method, uri);
+  WebdavConfig config, {
+  required Duration responseTimeout,
+}) async {
+  // `connectionTimeout` 只覆盖 TCP 建连，不覆盖 DNS 解析和 TLS 握手；这两步卡住
+  // 时 openUrl 会无限等，所以这里单独加一层上界。
+  final request = await client.openUrl(method, uri).timeout(responseTimeout);
   request.headers.set(HttpHeaders.authorizationHeader, _authHeader(config));
   request.followRedirects = false;
   return request;
@@ -148,6 +153,7 @@ Future<_RedirectedResponse> _getFollowingRedirects(
   WebdavConfig config, {
   required String operation,
   required String fileKind,
+  required Duration responseTimeout,
 }) async {
   final credentialOrigin = _collectionUri(config);
   final visited = <Uri>{initialUri};
@@ -158,7 +164,9 @@ Future<_RedirectedResponse> _getFollowingRedirects(
   while (true) {
     late final HttpClientResponse response;
     try {
-      final request = await client.openUrl('GET', currentUri);
+      final request = await client
+          .openUrl('GET', currentUri)
+          .timeout(responseTimeout);
       if (_sameOrigin(currentUri, credentialOrigin)) {
         request.headers.set(
           HttpHeaders.authorizationHeader,
@@ -166,7 +174,7 @@ Future<_RedirectedResponse> _getFollowingRedirects(
         );
       }
       request.followRedirects = false;
-      response = await request.close().timeout(_responseTimeout);
+      response = await request.close().timeout(responseTimeout);
     } catch (error) {
       throw _withRedirectDiagnostic(
         error,
@@ -285,7 +293,7 @@ Future<_RedirectedResponse> _getFollowingRedirects(
     }
 
     try {
-      await response.drain<void>().timeout(_responseTimeout);
+      await response.drain<void>().timeout(responseTimeout);
     } catch (error) {
       throw _withRedirectDiagnostic(
         error,
@@ -684,11 +692,18 @@ List<WebdavSyncFile> _parseSyncPropfind(
 
 void _abortResponse(HttpClient client) => client.close(force: true);
 
+/// 读响应体并限制总大小。
+///
+/// [idleTimeout] 是「连续多久没收到任何字节就判超时」，而不是整体耗时上限——大文件
+/// 下载本来就该允许慢，但不允许停。请求级的 `request.close().timeout(...)` 只盖得住
+/// 响应头；服务器回完头就把响应体吊住（反代缓冲、连接半开）时，这里若无上界就会
+/// 永远等下去，把调用方连同整条同步队列一起焊死。
 Future<Uint8List> _readResponseWithLimit(
   HttpClient client,
   HttpClientResponse response, {
   required int maxBytes,
   required String errorMessage,
+  required Duration idleTimeout,
   WebdavDiagnostic? diagnostic,
 }) async {
   if (response.contentLength > maxBytes) {
@@ -698,7 +713,7 @@ Future<Uint8List> _readResponseWithLimit(
 
   final builder = BytesBuilder(copy: false);
   var totalBytes = 0;
-  final iterator = StreamIterator<List<int>>(response);
+  final iterator = StreamIterator<List<int>>(response.timeout(idleTimeout));
   try {
     while (await iterator.moveNext()) {
       final chunk = iterator.current;
@@ -710,6 +725,9 @@ Future<Uint8List> _readResponseWithLimit(
       builder.add(chunk);
     }
     return builder.toBytes();
+  } on TimeoutException {
+    _abortResponse(client);
+    rethrow;
   } finally {
     unawaited(iterator.cancel());
   }
@@ -726,9 +744,19 @@ void _validatePropfindDepth(String relativePath, String basePath) {
 
 /// Real WebDAV sync transport implementation.
 class WebdavSyncTransportImpl implements WebdavSyncTransport {
+  /// 超时值可注入，测试才能在毫秒级验证「服务器吊住不回」的分支，而不必真等 60 秒。
+  WebdavSyncTransportImpl({
+    Duration connectTimeout = _defaultConnectTimeout,
+    Duration responseTimeout = _defaultResponseTimeout,
+  }) : _connectTimeout = connectTimeout,
+       _responseTimeout = responseTimeout;
+
+  final Duration _connectTimeout;
+  final Duration _responseTimeout;
+
   @override
   Future<void> ensureSyncTree(WebdavConfig config) async {
-    final client = _newClient();
+    final client = _newClient(_connectTimeout);
     try {
       // Create directories level by level
       final paths = [
@@ -754,9 +782,15 @@ class WebdavSyncTransportImpl implements WebdavSyncTransport {
     Uri uri,
     WebdavConfig config,
   ) async {
-    final request = await _open(client, 'MKCOL', uri, config);
+    final request = await _open(
+      client,
+      'MKCOL',
+      uri,
+      config,
+      responseTimeout: _responseTimeout,
+    );
     final response = await request.close().timeout(_responseTimeout);
-    await response.drain<void>();
+    await response.drain<void>().timeout(_responseTimeout);
     if (response.statusCode != HttpStatus.created &&
         response.statusCode != HttpStatus.methodNotAllowed) {
       throw WebdavException(
@@ -780,7 +814,7 @@ class WebdavSyncTransportImpl implements WebdavSyncTransport {
     int length,
     String expectedHash,
   ) async {
-    final client = _newClient();
+    final client = _newClient(_connectTimeout);
     try {
       final uri = _syncFileUri(config, relativePath);
 
@@ -807,7 +841,13 @@ class WebdavSyncTransportImpl implements WebdavSyncTransport {
       }
 
       // Upload new file
-      final request = await _open(client, 'PUT', uri, config);
+      final request = await _open(
+        client,
+        'PUT',
+        uri,
+        config,
+        responseTimeout: _responseTimeout,
+      );
       request.headers.contentType = ContentType('application', 'octet-stream');
       request.headers.contentLength = length;
 
@@ -816,7 +856,7 @@ class WebdavSyncTransportImpl implements WebdavSyncTransport {
       }
 
       final response = await request.close();
-      await response.drain<void>();
+      await response.drain<void>().timeout(_responseTimeout);
 
       if (response.statusCode != HttpStatus.ok &&
           response.statusCode != HttpStatus.created &&
@@ -857,11 +897,12 @@ class WebdavSyncTransportImpl implements WebdavSyncTransport {
         config,
         operation: 'inspect_existing',
         fileKind: fileKind,
+        responseTimeout: _responseTimeout,
       );
       final response = redirected.response;
 
       if (response.statusCode == 404) {
-        await response.drain<void>();
+        await response.drain<void>().timeout(_responseTimeout);
         return null;
       }
 
@@ -885,6 +926,7 @@ class WebdavSyncTransportImpl implements WebdavSyncTransport {
         response,
         maxBytes: syncMaxDownloadBytes,
         errorMessage: 'Existing file exceeds sync size limit',
+        idleTimeout: _responseTimeout,
         diagnostic: WebdavDiagnostic(
           method: 'GET',
           operation: 'inspect_existing',
@@ -931,7 +973,7 @@ class WebdavSyncTransportImpl implements WebdavSyncTransport {
 
   @override
   Future<List<WebdavSyncFile>> listSyncFiles(WebdavConfig config) async {
-    final client = _newClient();
+    final client = _newClient(_connectTimeout);
     try {
       final files = <WebdavSyncFile>[];
 
@@ -1020,7 +1062,13 @@ class WebdavSyncTransportImpl implements WebdavSyncTransport {
     String basePath,
     WebdavConfig config,
   ) async {
-    final request = await _open(client, 'PROPFIND', uri, config);
+    final request = await _open(
+      client,
+      'PROPFIND',
+      uri,
+      config,
+      responseTimeout: _responseTimeout,
+    );
     request.headers.set('Depth', '1');
     request.headers.contentType = ContentType(
       'application',
@@ -1072,7 +1120,13 @@ class WebdavSyncTransportImpl implements WebdavSyncTransport {
     String basePath,
     WebdavConfig config,
   ) async {
-    final request = await _open(client, 'PROPFIND', uri, config);
+    final request = await _open(
+      client,
+      'PROPFIND',
+      uri,
+      config,
+      responseTimeout: _responseTimeout,
+    );
     request.headers.set('Depth', '1');
     request.headers.contentType = ContentType(
       'application',
@@ -1111,7 +1165,7 @@ class WebdavSyncTransportImpl implements WebdavSyncTransport {
     String relativePath, {
     required int maxBytes,
   }) async {
-    final client = _newClient();
+    final client = _newClient(_connectTimeout);
     try {
       final uri = _syncFileUri(config, relativePath);
       final redirected = await _getFollowingRedirects(
@@ -1120,6 +1174,7 @@ class WebdavSyncTransportImpl implements WebdavSyncTransport {
         config,
         operation: 'download',
         fileKind: _fileKindFromPath(relativePath),
+        responseTimeout: _responseTimeout,
       );
       final response = redirected.response;
 
@@ -1143,6 +1198,7 @@ class WebdavSyncTransportImpl implements WebdavSyncTransport {
         response,
         maxBytes: maxBytes,
         errorMessage: 'File exceeds maxBytes limit',
+        idleTimeout: _responseTimeout,
         diagnostic: WebdavDiagnostic(
           method: 'GET',
           operation: 'download',
@@ -1166,13 +1222,14 @@ class WebdavSyncTransportImpl implements WebdavSyncTransport {
 
   @override
   Future<WebdavRootListing> listRoot(WebdavConfig config) async {
-    final client = _newClient();
+    final client = _newClient(_connectTimeout);
     try {
       final request = await _open(
         client,
         'PROPFIND',
         _snapshotCollectionUri(config),
         config,
+        responseTimeout: _responseTimeout,
       );
       request.headers.set('Depth', '1');
       request.headers.contentType = ContentType(
@@ -1200,6 +1257,7 @@ class WebdavSyncTransportImpl implements WebdavSyncTransport {
         response,
         maxBytes: 1024 * 1024,
         errorMessage: 'Snapshot listing exceeds size limit',
+        idleTimeout: _responseTimeout,
         diagnostic: const WebdavDiagnostic(
           method: 'PROPFIND',
           operation: 'list_snapshots',
@@ -1298,13 +1356,14 @@ class WebdavSyncTransportImpl implements WebdavSyncTransport {
         throw const WebdavException('Upload hash mismatch');
       }
 
-      final client = _newClient();
+      final client = _newClient(_connectTimeout);
       try {
         final request = await _open(
           client,
           'PUT',
           _rootFileUri(config, name),
           config,
+          responseTimeout: _responseTimeout,
         );
         request.headers.contentType = ContentType(
           'application',
@@ -1314,7 +1373,7 @@ class WebdavSyncTransportImpl implements WebdavSyncTransport {
         request.headers.set(HttpHeaders.ifNoneMatchHeader, '*');
         await request.addStream(file.openRead());
         final response = await request.close().timeout(_responseTimeout);
-        await response.drain<void>();
+        await response.drain<void>().timeout(_responseTimeout);
         if (response.statusCode == HttpStatus.preconditionFailed) {
           final existing = await downloadRootFile(
             config,
@@ -1374,7 +1433,7 @@ class WebdavSyncTransportImpl implements WebdavSyncTransport {
     SnapshotFileName name, {
     required int maxBytes,
   }) async {
-    final client = _newClient();
+    final client = _newClient(_connectTimeout);
     try {
       final redirected = await _getFollowingRedirects(
         client,
@@ -1382,6 +1441,7 @@ class WebdavSyncTransportImpl implements WebdavSyncTransport {
         config,
         operation: 'download_snapshot',
         fileKind: name.isBlob ? 'blob' : 'snapshot',
+        responseTimeout: _responseTimeout,
       );
       if (redirected.response.statusCode < HttpStatus.ok ||
           redirected.response.statusCode >= 300) {
@@ -1404,6 +1464,7 @@ class WebdavSyncTransportImpl implements WebdavSyncTransport {
         redirected.response,
         maxBytes: maxBytes,
         errorMessage: 'File exceeds maxBytes limit',
+        idleTimeout: _responseTimeout,
         diagnostic: WebdavDiagnostic(
           method: 'GET',
           operation: 'download_snapshot',
@@ -1435,16 +1496,17 @@ class WebdavSyncTransportImpl implements WebdavSyncTransport {
     SnapshotFileName name,
   ) async {
     if (name.isBlob) throw const WebdavException('Expected snapshot name');
-    final client = _newClient();
+    final client = _newClient(_connectTimeout);
     try {
       final request = await _open(
         client,
         'DELETE',
         _rootFileUri(config, name),
         config,
+        responseTimeout: _responseTimeout,
       );
       final response = await request.close().timeout(_responseTimeout);
-      await response.drain<void>();
+      await response.drain<void>().timeout(_responseTimeout);
       if (response.statusCode >= 400 &&
           response.statusCode != HttpStatus.notFound) {
         throw WebdavException(

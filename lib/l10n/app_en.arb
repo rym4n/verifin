@@ -221,8 +221,19 @@
       }
     }
   },
+  "yearBudgetTitle": "{year} budget",
+  "@yearBudgetTitle": {
+    "description": "Home and dashboard budget card title for a calendar year",
+    "placeholders": {
+      "year": {
+        "type": "int"
+      }
+    }
+  },
   "budgetRemaining": "Remaining",
   "budgetDailyRemaining": "Daily remaining",
+  "budgetRemainingMonthly": "Remaining monthly spend",
+  "budgetYearToDate": "Year to date",
   "budgetTotalLabel": "Budget {amount}",
   "incomeExpenseTitle": "Income & expense",
   "homeNoStatsTitle": "No data",
@@ -547,6 +558,10 @@
   "budgetOverspentThisMonth": "Over budget this month",
   "budgetAvailableThisMonth": "Available this month",
   "budgetMonthExpense": "This month's spending",
+  "budgetOverspentThisYear": "Over budget this year",
+  "budgetAvailableThisYear": "Available this year",
+  "budgetYearExpense": "This year's spending",
+  "yearExpenseCategories": "This year's expense categories",
   "budgetOverspentThisPeriod": "Over budget this period",
   "budgetAvailableThisPeriod": "Available this period",
   "budgetPeriodExpense": "This period's spending",
@@ -733,6 +748,7 @@
   "expenseOnlyNote": "Expenses only",
   "usedPercent": "{percent}% used",
   "monthBudgetLabel": "This month's budget",
+  "yearBudgetLabel": "Annual budget",
   "countItems": "{count}",
   "overCountLabel": "{count} over budget",
   "normalLabel": "OK",

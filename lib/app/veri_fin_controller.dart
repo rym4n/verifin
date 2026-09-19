@@ -210,6 +210,7 @@ class VeriFinController extends ChangeNotifier
 
   Future<SyncRuntime> createSyncRuntime({
     WebdavSyncTransport? transport,
+    Duration? runTimeout,
   }) async {
     if (_syncRuntime != null) return _syncRuntime!;
     final pending = _syncRuntimeCreation;
@@ -219,6 +220,7 @@ class VeriFinController extends ChangeNotifier
       repository: _repository.sync,
       store: _store,
       transport: transport ?? WebdavSyncTransportImpl(),
+      runTimeout: runTimeout,
     );
     _syncRuntimeCreation = creation;
     try {

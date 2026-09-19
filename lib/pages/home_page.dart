@@ -3,6 +3,7 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 
 import '../app/app_theme.dart';
+import '../app/budget_cycle.dart';
 import '../app/chart_painters.dart';
 import '../app/common_widgets.dart';
 import '../app/home_metrics.dart';
@@ -55,16 +56,24 @@ class HomePage extends StatelessWidget {
         .where((e) => e.type != EntryType.refund)
         .take(5)
         .toList();
-    // 预算面板按预算周期取数（键月 + 周期窗口）；首页其余统计仍按自然月。
-    final budgetKeyMonth = controller.budgetKeyMonthFor(now);
+    // 按月预算面板使用预算周期，按年预算面板使用自然年累计；首页其余统计仍按自然月。
+    final annual = controller.budgetPeriodKind == BudgetPeriodKind.year;
+    final budgetKeyMonth = annual
+        ? DateTime(now.year, now.month)
+        : controller.budgetKeyMonthFor(now);
     final budgetWindow = controller.budgetWindow(budgetKeyMonth);
-    final budgetEntries = entriesInWindow(entries, budgetWindow);
+    final budgetEntries = annual
+        ? entriesInWindow(entries, calendarYearToDateWindowFor(budgetKeyMonth))
+        : entriesInWindow(entries, budgetWindow);
     final budgetExpense = sumByType(budgetEntries, EntryType.expense);
-    final monthlyBudget = controller.monthlyBudget(budgetKeyMonth);
+    final budget = annual
+        ? controller.annualBudget(budgetKeyMonth)
+        : controller.monthlyBudget(budgetKeyMonth);
     final categoryBudgetSnapshots = computeCategoryBudgetSnapshots(
       controller: controller,
       month: budgetKeyMonth,
       monthEntries: budgetEntries,
+      useAnnualBudget: annual,
     );
     final categoryBudgetRisk = topCategoryBudgetRisk(categoryBudgetSnapshots);
     final panelIds = controller.enabledPanelIds(PanelPageKind.home);
@@ -149,7 +158,9 @@ class HomePage extends StatelessWidget {
             month: budgetKeyMonth,
             window: budgetWindow,
             expense: budgetExpense,
-            budget: monthlyBudget,
+            budget: budget,
+            annual: annual,
+            remainingMonths: remainingCalendarMonths(budgetKeyMonth),
             categoryRisk: categoryBudgetRisk,
             currencyCode: controller.activeBook.baseCurrencyCode,
             onTap: () {
@@ -693,6 +704,8 @@ class BudgetPanel extends StatelessWidget {
     required this.window,
     required this.expense,
     required this.budget,
+    required this.annual,
+    required this.remainingMonths,
     required this.categoryRisk,
     required this.currencyCode,
     required this.onTap,
@@ -706,6 +719,8 @@ class BudgetPanel extends StatelessWidget {
 
   final double expense;
   final double budget;
+  final bool annual;
+  final int remainingMonths;
   final CategoryBudgetSnapshot? categoryRisk;
   final String currencyCode;
   final VoidCallback onTap;
@@ -722,9 +737,18 @@ class BudgetPanel extends StatelessWidget {
         .length
         .clamp(1, daysInCycle);
     final ratio = budget <= 0 ? 0.0 : (expense / budget).clamp(0, 1).toDouble();
+    final remainingMonthly = annual && budget > 0 && !overspent
+        ? remainingAnnualBudgetPerMonth(
+            annualBudget: budget,
+            yearToDateExpense: expense,
+            remainingMonths: remainingMonths,
+          )
+        : (remaining < 0 ? 0.0 : remaining) / remainingDays;
     // 自定义预算周期时标题展示日期范围，避免「N月预算」误导。
     final cyclic = VeriFinScope.of(context).budgetCycleIsCustom;
-    final title = cyclic
+    final title = annual
+        ? AppLocalizations.of(context).yearBudgetTitle(month.year)
+        : cyclic
         ? AppLocalizations.of(
             context,
           ).budgetCycleRange(window.start, window.end)
@@ -757,7 +781,9 @@ class BudgetPanel extends StatelessWidget {
             children: <Widget>[
               Expanded(
                 child: BudgetSideStat(
-                  label: AppLocalizations.of(context).entryTypeExpense,
+                  label: annual
+                      ? AppLocalizations.of(context).budgetYearExpense
+                      : AppLocalizations.of(context).entryTypeExpense,
                   value: formatExpenseAmount(expense),
                   color: Theme.of(context).colorScheme.onSurface,
                 ),
@@ -827,11 +853,10 @@ class BudgetPanel extends StatelessWidget {
               ),
               Expanded(
                 child: BudgetSideStat(
-                  label: AppLocalizations.of(context).budgetDailyRemaining,
-                  // 超支时可分配日均为 0（负的日均无实际意义）。
-                  value: formatAmount(
-                    (remaining < 0 ? 0.0 : remaining) / remainingDays,
-                  ),
+                  label: annual
+                      ? AppLocalizations.of(context).budgetRemainingMonthly
+                      : AppLocalizations.of(context).budgetDailyRemaining,
+                  value: formatAmount(remainingMonthly),
                   color: Theme.of(context).colorScheme.onSurface,
                 ),
               ),

@@ -11,9 +11,24 @@ import 'sync_store.dart';
 import 'sync_models.dart';
 import 'webdav_sync_transport.dart';
 
+/// 一次同步运行的兜底总时限。
+///
+/// 传输层每个请求已各自有 60 秒上界，正常情况下轮不到这里。它存在的唯一理由是
+/// 保证「任何一处未加上界的 await 都不能把同步队列永久焊死」——[SyncRuntime._serialize]
+/// 把每次运行串在同一条 `_operationTail` 上，一次挂死会让此后每一次同步（含用户
+/// 手动点的「立即同步」）无声排队到进程结束。取值刻意放宽，宁可让一次真正缓慢的
+/// 首次同步跑完，也不要误杀；超时后下一次运行会幂等续传。
+const Duration _defaultSyncRunTimeout = Duration(minutes: 15);
+
 /// One process-owned clock, tracker and engine, shared by all triggers.
 class SyncRuntime {
-  SyncRuntime._(this.controller, this.clock, this.tracker, this.engine) {
+  SyncRuntime._(
+    this.controller,
+    this.clock,
+    this.tracker,
+    this.engine,
+    this.runTimeout,
+  ) {
     coordinator = SyncCoordinator(
       getTransportMode: () => controller.backupTransportMode,
       runSync: run,
@@ -26,6 +41,7 @@ class SyncRuntime {
   final SyncClock clock;
   final SyncChangeTracker tracker;
   final SyncEngine engine;
+  final Duration runTimeout;
   late final SyncCoordinator coordinator;
   late final SyncRepository _repository;
   bool _disposed = false;
@@ -49,6 +65,7 @@ class SyncRuntime {
     required SyncRepository repository,
     required LocalKeyValueStore store,
     required WebdavSyncTransport transport,
+    Duration? runTimeout,
   }) async {
     final persisted = await repository.loadDeviceState();
     final clock = persisted.deviceId.isEmpty
@@ -72,8 +89,13 @@ class SyncRuntime {
       passphrase: controller.backupPassphrase,
     );
     await repository.saveDeviceState(clock.getState());
-    return SyncRuntime._(controller, clock, tracker, engine)
-      .._repository = repository;
+    return SyncRuntime._(
+      controller,
+      clock,
+      tracker,
+      engine,
+      runTimeout ?? _defaultSyncRunTimeout,
+    ).._repository = repository;
   }
 
   Future<SyncRunResult> run(SyncTrigger trigger) =>
@@ -97,20 +119,12 @@ class SyncRuntime {
     );
     engine.updatePassphrase(controller.backupPassphrase);
     try {
-      await runLog.phase(SyncPhase.prepare, () async {
-        await controller.waitForPendingWrites();
-        await controller.applySyncPreferenceJournal();
-      });
-      await runLog.phase(SyncPhase.initialize, () async {});
-      await runLog.phase(SyncPhase.reconcile, tracker.reconcile);
-      final result = await engine.runSnapshot(
-        trigger: trigger,
-        onPhase: runLog.reportPhase,
-      );
+      final result = await _runPhases(trigger, runLog).timeout(runTimeout);
       await _recordErrorSafely(result.errorCode, runLog);
       runLog.finish(result);
       return result;
     } catch (error) {
+      if (error is TimeoutException) runLog.timedOut(runTimeout);
       await _recordErrorSafely(syncErrorCode(error), runLog);
       final result = SyncRunResult(
         uploaded: 0,
@@ -122,6 +136,22 @@ class SyncRuntime {
       runLog.finish(result);
       return result;
     }
+  }
+
+  /// 阶段序列单独成一个 future，好让 [_run] 给它整体加上界。超时只放弃「等待」，
+  /// 被放弃的运行仍在后台跑；这是刻意的取舍——传输层已各自有超时会很快自行解开，
+  /// 而让 `_operationTail` 立刻释放，才能保证后续同步不被永久拖死。
+  Future<SyncRunResult> _runPhases(
+    SyncTrigger trigger,
+    _SyncRunLog runLog,
+  ) async {
+    await runLog.phase(SyncPhase.prepare, () async {
+      await controller.waitForPendingWrites();
+      await controller.applySyncPreferenceJournal();
+    });
+    await runLog.phase(SyncPhase.initialize, () async {});
+    await runLog.phase(SyncPhase.reconcile, tracker.reconcile);
+    return engine.runSnapshot(trigger: trigger, onPhase: runLog.reportPhase);
   }
 
   Future<void> _recordErrorSafely(String? code, _SyncRunLog runLog) async {
@@ -162,10 +192,21 @@ class _SyncRunLog {
   final VeriFinController _controller;
   final SyncTrigger _trigger;
   final String runId;
+  SyncPhase? _phaseInFlight;
 
   void start() {
     _controller.logger?.info(
       '同步开始 run=$runId trigger=${_trigger.name}',
+      source: 'sync',
+    );
+  }
+
+  /// 兜底超时触发时，阶段日志只会留下一条没有结尾的 `state=start`。这条日志把
+  /// 「卡在哪个阶段」直接写出来，免得排查时只能靠缺失的 success/error 反推。
+  void timedOut(Duration limit) {
+    _controller.logger?.error(
+      '同步超时 run=$runId phase=${_phaseInFlight?.logValue ?? 'none'} '
+      'limit=${limit.inSeconds}s',
       source: 'sync',
     );
   }
@@ -183,6 +224,7 @@ class _SyncRunLog {
   }
 
   void reportPhase(SyncPhase phase, SyncPhaseState state, Object? error) {
+    _phaseInFlight = state == SyncPhaseState.start ? phase : null;
     final errorCode = error == null ? '' : ' errorCode=${syncErrorCode(error)}';
     final message =
         '同步阶段 run=$runId phase=${phase.logValue} '

@@ -41,3 +41,26 @@ DateTime budgetCycleKeyMonthFor(DateTime date, int startDay) {
       ? DateTime(date.year, date.month)
       : DateTime(date.year, date.month - 1);
 }
+
+/// 自然年窗口（含首尾两端），用于按年预算的累计支出与年度预算比较。
+DateWindow calendarYearWindowFor(DateTime date) =>
+    DateWindow(start: DateTime(date.year), end: DateTime(date.year, 12, 31));
+
+/// 截至 [date] 所在月份月末的自然年累计窗口（含首尾两端）。
+DateWindow calendarYearToDateWindowFor(DateTime date) => DateWindow(
+  start: DateTime(date.year),
+  end: DateTime(date.year, date.month + 1, 0),
+);
+
+/// 从 [date] 所在月份起（含当月）到自然年末的剩余月份数。
+int remainingCalendarMonths(DateTime date) => 13 - date.month;
+
+/// 年度剩余额按剩余月份摊分后的每月可支出额。
+double remainingAnnualBudgetPerMonth({
+  required double annualBudget,
+  required double yearToDateExpense,
+  required int remainingMonths,
+}) {
+  final remaining = annualBudget - yearToDateExpense;
+  return remainingMonths <= 0 ? remaining : remaining / remainingMonths;
+}

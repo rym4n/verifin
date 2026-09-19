@@ -366,8 +366,19 @@
       }
     }
   },
+  "yearBudgetTitle": "{year}年预算",
+  "@yearBudgetTitle": {
+    "description": "首页和看板预算卡标题(某年预算)",
+    "placeholders": {
+      "year": {
+        "type": "int"
+      }
+    }
+  },
   "budgetRemaining": "剩余",
   "budgetDailyRemaining": "剩余日均",
+  "budgetRemainingMonthly": "剩余每月可支出",
+  "budgetYearToDate": "本年累计",
   "budgetTotalLabel": "预算 {amount}",
   "@budgetTotalLabel": {
     "placeholders": {
@@ -964,6 +975,10 @@
   "budgetOverspentThisMonth": "本月已超支",
   "budgetAvailableThisMonth": "本月可用预算",
   "budgetMonthExpense": "本月支出",
+  "budgetOverspentThisYear": "本年已超支",
+  "budgetAvailableThisYear": "本年可用预算",
+  "budgetYearExpense": "本年支出",
+  "yearExpenseCategories": "本年支出分类",
   "budgetOverspentThisPeriod": "本期已超支",
   "budgetAvailableThisPeriod": "本期可用预算",
   "budgetPeriodExpense": "本期支出",
@@ -1370,6 +1385,7 @@
     }
   },
   "monthBudgetLabel": "本月预算",
+  "yearBudgetLabel": "年度预算",
   "countItems": "{count} 个",
   "@countItems": {
     "placeholders": {

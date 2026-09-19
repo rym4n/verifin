@@ -148,6 +148,8 @@ List<CategoryBudgetSnapshot> computeCategoryBudgetSnapshots({
   // true 时快照的 budget 取「分类默认预算」（设置页编辑默认用）；否则取该键月的
   // 实际预算（单月覆盖 ?? 默认，总览展示用）。
   bool useDefaultBudget = false,
+  // 按年预算的汇总卡使用年度分类总额，而不是其月度执行额度。
+  bool useAnnualBudget = false,
 }) {
   // 多级分类按层级聚合：每笔支出计入其所属分类**及所有上级分类**，
   // 这样父分类的预算会包含其子分类的支出。
@@ -176,6 +178,15 @@ List<CategoryBudgetSnapshot> computeCategoryBudgetSnapshots({
   accumulate(spentByCategory, monthEntries);
   final previousSpentByCategory = <String, double>{};
   accumulate(previousSpentByCategory, previousMonthEntries);
+  double budgetFor(Category category) {
+    if (useAnnualBudget) {
+      return controller.annualCategoryBudget(month, category.id);
+    }
+    if (useDefaultBudget) {
+      return controller.defaultCategoryBudget(category.id);
+    }
+    return controller.categoryBudget(month, category.id);
+  }
 
   final snapshots = controller
       .categoriesForType(EntryType.expense)
@@ -184,9 +195,7 @@ List<CategoryBudgetSnapshot> computeCategoryBudgetSnapshots({
         (category) => CategoryBudgetSnapshot(
           category: category,
           spent: spentByCategory[category.id] ?? 0,
-          budget: useDefaultBudget
-              ? controller.defaultCategoryBudget(category.id)
-              : controller.categoryBudget(month, category.id),
+          budget: budgetFor(category),
           previousSpent: previousSpentByCategory[category.id] ?? 0,
         ),
       )

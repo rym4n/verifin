@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
@@ -297,6 +298,63 @@ void main() {
     },
   );
 
+  test('a hung transport cannot wedge later synchronization runs', () async {
+    final db = await AppDatabase.open(
+      factory: databaseFactoryFfi,
+      path: inMemoryDatabasePath,
+    );
+    final repo = SqliteLedgerRepository(db);
+    final store = LocalKeyValueStore();
+    final logger = AppLogger(store);
+    final controller = await VeriFinController.create(
+      store,
+      repository: repo,
+      logger: logger,
+    );
+    addTearDown(() async {
+      controller.dispose();
+      logger.dispose();
+      await db.close();
+    });
+    controller.setWebdavConfig(
+      const WebdavConfig(
+        url: 'https://dav.example.com',
+        username: 'user',
+        password: 'password',
+      ),
+    );
+    final runtime = await controller.createSyncRuntime(
+      transport: _HangingTransport(),
+      runTimeout: const Duration(milliseconds: 200),
+    );
+
+    final first = await runtime
+        .run(SyncTrigger.startup)
+        .timeout(const Duration(seconds: 3));
+    expect(first.errorCode, 'timeout');
+
+    // 真正的回归点：run 之间串行在 `_operationTail` 上，一次挂死的运行如果不
+    // 释放队列，此后每一次同步（含用户手动点的「立即同步」）都会永远排队。
+    final second = await runtime
+        .run(SyncTrigger.manual)
+        .timeout(const Duration(seconds: 3));
+    expect(second.errorCode, 'timeout');
+
+    // 状态必须被刷新，否则界面会一直停在上一次运行遗留的陈旧错误上。
+    final scan = await repo.sync.loadScanState();
+    expect(scan.lastErrorCode, 'timeout');
+
+    final messages = logger.records.reversed
+        .where((record) => record.source == 'sync')
+        .map((record) => record.message)
+        .toList(growable: false);
+    expect(
+      messages.where((m) => m.startsWith('同步结束')),
+      hasLength(2),
+      reason: '挂死的运行也必须留下收尾日志，否则日志只剩一个无结尾的阶段',
+    );
+  });
+
   test('AES-GCM envelope authenticates and round trips payload', () async {
     final clock = SyncClock.createWithDeviceId('codec');
     final event = SyncEvent(
@@ -490,6 +548,14 @@ void main() {
       second.dispose();
     },
   );
+}
+
+/// 传输层对一个永不完成的请求的最小复现：服务器收下请求后既不回数据也不断开。
+class _HangingTransport extends StubWebdavSyncTransport {
+  final Completer<WebdavRootListing> _never = Completer<WebdavRootListing>();
+
+  @override
+  Future<WebdavRootListing> listRoot(WebdavConfig config) => _never.future;
 }
 
 class _DiagnosticFailureTransport extends StubWebdavSyncTransport {
