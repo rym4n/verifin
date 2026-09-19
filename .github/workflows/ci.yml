@@ -45,7 +45,24 @@ jobs:
         run: flutter analyze
 
       - name: Test
-        run: flutter test
+        shell: bash
+        run: |
+          set +e
+          flutter test --reporter expanded 2>&1 | tee /tmp/verifin-test.log
+          status=${PIPESTATUS[0]}
+          if [ "$status" -ne 0 ]; then
+            excerpt=$(grep -E '(\[E\]|^  Expected:|^  Actual:|^  Which:|^  Difference:|Some tests failed)' /tmp/verifin-test.log | head -n 120 | tr '\n' ' ' | cut -c1-6000)
+            echo "::error title=Flutter test failure::$excerpt"
+          fi
+          exit "$status"
+
+      - name: Upload Flutter test log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: flutter-test-log
+          path: /tmp/verifin-test.log
+          if-no-files-found: error
 
       - name: Test release materials
         run: flutter test test/anchored_menu_test.dart test/material_stability_test.dart test/navigation_settings_test.dart test/design_consistency_test.dart test/home_density_test.dart --dart-define=UNIFIED_DESIGN_PREVIEW=true
