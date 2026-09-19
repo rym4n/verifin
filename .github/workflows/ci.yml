@@ -51,7 +51,7 @@ jobs:
           flutter test --reporter expanded 2>&1 | tee /tmp/verifin-test.log
           status=${PIPESTATUS[0]}
           if [ "$status" -ne 0 ]; then
-            excerpt=$(grep -E '(\[E\]|^  Expected:|^  Actual:|^  Which:|^  Difference:|Some tests failed)' /tmp/verifin-test.log | head -n 120 | tr '\n' ' ' | cut -c1-6000)
+            excerpt=$(grep -E '(C2 one conflicted|Expected:|Actual:|Which:|Difference:|Some tests failed)' /tmp/verifin-test.log | head -n 80 | tr '\n' ' ' | cut -c1-6000)
             echo "::error title=Flutter test failure::$excerpt"
           fi
           exit "$status"
