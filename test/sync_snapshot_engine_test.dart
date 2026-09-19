@@ -84,6 +84,67 @@ void main() {
   );
 
   test(
+    'snapshot merge keeps independent entities when another entity conflicts',
+    () async {
+      final transport = StubWebdavSyncTransport();
+      final source = await SyncTestDevice.create(
+        deviceId: '11111111111111111111111111111111',
+        transport: transport,
+      );
+      final target = await SyncTestDevice.create(
+        deviceId: '22222222222222222222222222222222',
+        transport: transport,
+      );
+      addTearDown(source.dispose);
+      addTearDown(target.dispose);
+
+      await source.addExpense('conflict-entry', 10);
+      await source.addExpense('independent-entry', 10);
+      expect(
+        (await source.engine.runSnapshot(trigger: SyncTrigger.manual))
+            .errorCode,
+        isNull,
+      );
+      expect(
+        (await target.engine.runSnapshot(trigger: SyncTrigger.manual))
+            .errorCode,
+        isNull,
+      );
+
+      await source.editExpense('conflict-entry', 20);
+      await source.editExpense('independent-entry', 20);
+      await target.editExpense('conflict-entry', 30);
+      expect(
+        (await source.engine.runSnapshot(trigger: SyncTrigger.manual))
+            .errorCode,
+        isNull,
+      );
+
+      final result = await target.engine.runSnapshot(
+        trigger: SyncTrigger.manual,
+      );
+      expect(result.errorCode, isNull, reason: target.lastSyncError.toString());
+      expect(result.downloaded, 1);
+      expect(result.conflicts, 1);
+      expect(
+        target.entries.singleWhere((entry) => entry.id == 'conflict-entry')
+            .amount,
+        30,
+      );
+      expect(
+        target.entries.singleWhere((entry) => entry.id == 'independent-entry')
+            .amount,
+        20,
+      );
+      expect(await target.engine.conflicts(), hasLength(1));
+      final cursor = await target.repository.sync.loadSnapshotCursor(
+        source.clock.deviceId,
+      );
+      expect(cursor!.lastMergedSequence, 2);
+    },
+  );
+
+  test(
     'corrupt latest snapshot falls back and advances to actual sequence',
     () async {
       final transport = StubWebdavSyncTransport();
