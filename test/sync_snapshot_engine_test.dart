@@ -101,13 +101,15 @@ void main() {
       await source.addExpense('conflict-entry', 10);
       await source.addExpense('independent-entry', 10);
       expect(
-        (await source.engine.runSnapshot(trigger: SyncTrigger.manual))
-            .errorCode,
+        (await source.engine.runSnapshot(
+          trigger: SyncTrigger.manual,
+        )).errorCode,
         isNull,
       );
       expect(
-        (await target.engine.runSnapshot(trigger: SyncTrigger.manual))
-            .errorCode,
+        (await target.engine.runSnapshot(
+          trigger: SyncTrigger.manual,
+        )).errorCode,
         isNull,
       );
 
@@ -115,8 +117,9 @@ void main() {
       await source.editExpense('independent-entry', 20);
       await target.editExpense('conflict-entry', 30);
       expect(
-        (await source.engine.runSnapshot(trigger: SyncTrigger.manual))
-            .errorCode,
+        (await source.engine.runSnapshot(
+          trigger: SyncTrigger.manual,
+        )).errorCode,
         isNull,
       );
 

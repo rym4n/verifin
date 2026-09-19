@@ -34,12 +34,10 @@ jobs:
 
       - name: Check formatting
         # 输出实际格式差异，便于排查本地与 CI SDK 的 formatter 差异。
-        shell: bash
         run: |
           if ! dart format --output=none --set-exit-if-changed .; then
-            dart format test/sync_snapshot_engine_test.dart
-            diff=$(git diff -- test/sync_snapshot_engine_test.dart | tr '\n' ' ' | cut -c1-6000)
-            echo "::error title=Formatting diff::$diff"
+            dart format .
+            git diff -- '*.dart'
             exit 1
           fi
 
