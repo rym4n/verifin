@@ -127,12 +127,14 @@ void main() {
       expect(result.downloaded, 1);
       expect(result.conflicts, 1);
       expect(
-        target.entries.singleWhere((entry) => entry.id == 'conflict-entry')
+        target.entries
+            .singleWhere((entry) => entry.id == 'conflict-entry')
             .amount,
         30,
       );
       expect(
-        target.entries.singleWhere((entry) => entry.id == 'independent-entry')
+        target.entries
+            .singleWhere((entry) => entry.id == 'independent-entry')
             .amount,
         20,
       );
