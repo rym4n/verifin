@@ -156,7 +156,8 @@ void main() {
         'dataUrl': 'data:image/png;base64,AQID',
       }, 'aggregate');
       await transport.simulateRemoteBatch('remote', 1, [expense, attachment]);
-      await device.engine.run(trigger: SyncTrigger.manual);
+      final result = await device.engine.run(trigger: SyncTrigger.manual);
+      expect(result.downloaded, 0);
       expect(await device.repository.loadAttachments(), isEmpty);
       expect(
         await device.db.db.query(

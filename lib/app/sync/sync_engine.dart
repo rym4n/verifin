@@ -739,8 +739,22 @@ class SyncEngine {
     );
     final fingerprint = _v1Fingerprint(complete);
 
+    var migrationConflict = false;
     for (final batch in complete) {
-      await _mergeAndApply(batch.events, applyBatchId: batch.batchId);
+      final result = await _mergeAndApply(
+        batch.events,
+        applyBatchId: batch.batchId,
+      );
+      if (result.$2 > 0) {
+        migrationConflict = true;
+        await _repository.savePendingBatch(
+          batch.batchId,
+          batch.events,
+          'conflict',
+        );
+      } else {
+        await _repository.removePendingBatch(batch.batchId);
+      }
     }
 
     if (fingerprint == null) {
@@ -769,6 +783,7 @@ class SyncEngine {
         }
         return 'legacy_client_upgrade_required';
       case V1MigrationState.readyToCutover:
+        if (migrationConflict) return 'legacy_client_upgrade_required';
         if (state.v1LastSeenFingerprint == fingerprint) return null;
         await _repository.recordV1Scan(
           v1HistoryFound: true,
@@ -776,6 +791,7 @@ class SyncEngine {
         );
         return 'legacy_client_upgrade_required';
       case V1MigrationState.cutoverComplete:
+        if (migrationConflict) return 'legacy_client_upgrade_required';
         if (state.v1LastSeenFingerprint == fingerprint) return null;
         await _repository.recordV1Scan(
           v1HistoryFound: true,
@@ -1709,7 +1725,9 @@ class SyncEngine {
       );
     }
     return (
-      accepted.where((e) => shadow[e.entity] != e.payloadHash).length,
+      conflicts.isNotEmpty && !allowPartialMergeOnConflict
+          ? 0
+          : accepted.where((e) => shadow[e.entity] != e.payloadHash).length,
       conflicts.length,
     );
   }

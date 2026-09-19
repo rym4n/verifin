@@ -1,5 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
+import 'package:verifin/app/sync/sync_conflict.dart';
 import 'package:verifin/app/sync/sync_engine.dart';
 import 'package:verifin/app/sync/sync_models.dart';
 import 'package:verifin/app/sync/webdav_sync_transport.dart';
@@ -72,6 +73,52 @@ void main() {
           'legacy_client_upgrade_required',
         );
         expect(transport.snapshotRequestCounts, isEmpty);
+      },
+    );
+
+    test(
+      'a conflicted v1 batch remains pending until its complete aggregate resolves',
+      () async {
+        final transport = StubWebdavSyncTransport();
+        final remote = SyncTestRemote('22222222222222222222222222222222');
+        final device = await SyncTestDevice.create(
+          deviceId: '11111111111111111111111111111111',
+          transport: transport,
+        );
+        addTearDown(device.dispose);
+
+        await device.addExpense('conflict-entry', 10);
+        await transport.simulateRemoteBatch(remote.deviceId, 1, [
+          remote.expense('conflict-entry', 20, batchId: 'legacy-aggregate'),
+          remote.expense('independent-entry', 30, batchId: 'legacy-aggregate'),
+        ]);
+
+        expect(
+          await device.engine.prepareSnapshotCutover(),
+          'legacy_client_upgrade_required',
+        );
+        expect(await device.repository.sync.loadPendingBatches(), isNotEmpty);
+
+        await device.controller.confirmSnapshotCutover();
+        expect(
+          await device.engine.prepareSnapshotCutover(),
+          'legacy_client_upgrade_required',
+        );
+        expect(
+          device.entries.map((entry) => entry.id),
+          isNot(contains('independent-entry')),
+        );
+
+        final conflict = (await device.engine.conflicts()).single;
+        await device.engine.resolveConflict(
+          conflict.id,
+          ConflictResolution.keepRemote,
+        );
+        expect(await device.engine.prepareSnapshotCutover(), isNull);
+        expect(
+          device.entries.map((entry) => entry.id),
+          contains('independent-entry'),
+        );
       },
     );
 
