@@ -403,6 +403,7 @@ class SyncEngine {
           final result = await _mergeAndApply(
             events,
             applyBatchId: batchId,
+            allowPartialMergeOnConflict: true,
             cursorAdvance: SnapshotCursorAdvance(
               deviceId: snapshot.deviceId,
               sequence: snapshot.snapshotSequence,
@@ -1590,6 +1591,7 @@ class SyncEngine {
   Future<(int, int)> _mergeAndApply(
     List<SyncEvent> events, {
     String? applyBatchId,
+    bool allowPartialMergeOnConflict = false,
     SnapshotCursorAdvance? cursorAdvance,
   }) async {
     for (final event in events) {
@@ -1603,6 +1605,7 @@ class SyncEngine {
         () => _mergeUnderGate(
           events,
           applyBatchId: applyBatchId,
+          allowPartialMergeOnConflict: allowPartialMergeOnConflict,
           cursorAdvance: cursorAdvance,
         ),
       );
@@ -1610,6 +1613,7 @@ class SyncEngine {
     return _mergeUnderGate(
       events,
       applyBatchId: applyBatchId,
+      allowPartialMergeOnConflict: allowPartialMergeOnConflict,
       cursorAdvance: cursorAdvance,
     );
   }
@@ -1617,6 +1621,7 @@ class SyncEngine {
   Future<(int, int)> _mergeUnderGate(
     List<SyncEvent> events, {
     String? applyBatchId,
+    required bool allowPartialMergeOnConflict,
     SnapshotCursorAdvance? cursorAdvance,
   }) async {
     final heads = await _repository.loadEntityHeads(
@@ -1672,7 +1677,15 @@ class SyncEngine {
         operationId: event.operationId,
       );
     }
-    if (conflicts.isNotEmpty) {
+    if (conflicts.isNotEmpty && !allowPartialMergeOnConflict) {
+      // Legacy v1 batches are atomic: a conflict keeps the complete batch
+      // pending so a later retry cannot acknowledge only part of it.
+      await _applyEvents(
+        const [],
+        conflicts: conflicts,
+        batchId: applyBatchId ?? events.first.batchId,
+      );
+    } else if (conflicts.isNotEmpty) {
       await _applyEvents(
         accepted,
         acknowledgedEvents: superseded,
